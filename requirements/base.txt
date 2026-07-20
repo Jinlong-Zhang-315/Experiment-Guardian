@@ -1,0 +1,13 @@
+fastapi<1
+uvicorn[standard]<1
+pydantic<3
+pydantic-settings<3
+sqlalchemy<3
+psycopg[binary]<4
+alembic<2
+langgraph<2
+mcp[cli]>=1.27,<2
+PyYAML<7
+structlog<26
+python-multipart<1
+httpx<1

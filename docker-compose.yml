@@ -1,0 +1,25 @@
+services:
+  cockroachdb:
+    image: cockroachdb/cockroach:v26.2.0
+    container_name: experiment-guardian-db
+    hostname: roach-single
+    restart: unless-stopped
+
+    command:
+      - start-single-node
+      - --http-addr=roach-single:8080
+
+    environment:
+      COCKROACH_DATABASE: ${COCKROACH_DATABASE}
+      COCKROACH_USER: ${COCKROACH_USER}
+      COCKROACH_PASSWORD: ${COCKROACH_PASSWORD}
+
+    ports:
+      - "127.0.0.1:26257:26257"
+      - "127.0.0.1:8080:8080"
+
+    volumes:
+      - experiment_guardian_crdb:/cockroach/cockroach-data
+
+volumes:
+  experiment_guardian_crdb:

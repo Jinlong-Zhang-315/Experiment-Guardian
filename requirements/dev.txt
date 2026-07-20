@@ -1,0 +1,7 @@
+-r base.txt
+pytest<9
+pytest-asyncio<2
+pytest-cov<7
+ruff<1
+mypy<2
+types-PyYAML
