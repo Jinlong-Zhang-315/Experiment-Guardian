@@ -1,0 +1,418 @@
+"""P0 数据库实体。
+
+模型优先表达追溯链和状态约束，不在 ORM 中堆叠复杂级联关系。关键写操作会由应用服务在
+显式事务中按顺序执行，便于审计，也更符合 CockroachDB 事务重试的要求。
+"""
+
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from experiment_guardian.domain.enums import (
+    ApprovalStatus,
+    ApprovalTargetType,
+    ArtifactType,
+    CheckResult,
+    ContextStatus,
+    ExperimentStatus,
+    IdempotencyOperationStatus,
+    IntentStatus,
+    ProtectionLevel,
+    RiskSeverity,
+    SubmissionStatus,
+    TeamRole,
+    WorkflowStep,
+)
+from experiment_guardian.infrastructure.models.base import (
+    Base,
+    CreatedAtMixin,
+    TimestampMixin,
+    UUIDPrimaryKeyMixin,
+    VectorType,
+)
+
+
+def enum_column(enum_type: type[Any], name: str) -> Enum:
+    """使用字符串 CHECK/Enum 映射，避免依赖 PostgreSQL 原生枚举迁移。"""
+
+    return Enum(enum_type, name=name, native_enum=False, validate_strings=True)
+
+
+class User(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "users"
+
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
+
+
+class Team(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "teams"
+
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class TeamMember(CreatedAtMixin, Base):
+    __tablename__ = "team_members"
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    role: Mapped[TeamRole] = mapped_column(enum_column(TeamRole, "team_role"), nullable=False)
+
+
+class Project(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "projects"
+    __table_args__ = (UniqueConstraint("team_id", "name"),)
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    repository_url: Mapped[str | None] = mapped_column(String(1000))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class ProjectContext(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "project_contexts"
+    __table_args__ = (
+        UniqueConstraint("project_id", "version"),
+        Index("ix_project_context_active", "project_id", "status"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    goal: Mapped[str] = mapped_column(Text, nullable=False)
+    non_goals: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    mainline_model: Mapped[str] = mapped_column(String(500), nullable=False)
+    baseline: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    dataset: Mapped[str] = mapped_column(String(200), nullable=False)
+    protocol: Mapped[str] = mapped_column(String(200), nullable=False)
+    primary_metric: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    default_seeds: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    active_branch: Mapped[str] = mapped_column(String(500), nullable=False)
+    active_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    deprecated_items: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    key_decisions: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    status: Mapped[ContextStatus] = mapped_column(
+        enum_column(ContextStatus, "context_status"), nullable=False
+    )
+    supersedes_context_id: Mapped[UUID | None] = mapped_column(ForeignKey("project_contexts.id"))
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExperimentIntent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "experiment_intents"
+    __table_args__ = (
+        UniqueConstraint("project_id", "version"),
+        Index("ix_experiment_intent_active", "project_id", "status"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    context_id: Mapped[UUID] = mapped_column(ForeignKey("project_contexts.id"), nullable=False)
+    context_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    hypothesis: Mapped[str] = mapped_column(Text, nullable=False)
+    allowed_variables: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    controlled_variables: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    expected_outputs: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    acceptance_criteria: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    status: Mapped[IntentStatus] = mapped_column(
+        enum_column(IntentStatus, "intent_status"), nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    activated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ProtectedParameter(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "protected_parameters"
+    __table_args__ = (UniqueConstraint("project_id", "context_version", "parameter_path"),)
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    context_id: Mapped[UUID] = mapped_column(ForeignKey("project_contexts.id"), nullable=False)
+    context_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    parameter_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    protection_level: Mapped[ProtectionLevel] = mapped_column(
+        enum_column(ProtectionLevel, "protection_level"), nullable=False
+    )
+    expected_value: Mapped[Any] = mapped_column(JSON, nullable=False)
+    allowed_range: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class PlanCheck(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "plan_checks"
+    __table_args__ = (
+        UniqueConstraint("requester_id", "idempotency_key"),
+        Index("ix_plan_check_project_created", "project_id", "created_at"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    intent_id: Mapped[UUID] = mapped_column(ForeignKey("experiment_intents.id"), nullable=False)
+    context_id: Mapped[UUID] = mapped_column(ForeignKey("project_contexts.id"), nullable=False)
+    context_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    requester_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    parsed_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    git_commit: Mapped[str] = mapped_column(String(64), nullable=False)
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+    local_attestation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    planned_changes: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    check_result: Mapped[CheckResult] = mapped_column(
+        enum_column(CheckResult, "check_result"), nullable=False
+    )
+    approval_status: Mapped[ApprovalStatus] = mapped_column(
+        enum_column(ApprovalStatus, "approval_status"), nullable=False
+    )
+    risk_level: Mapped[RiskSeverity] = mapped_column(
+        enum_column(RiskSeverity, "plan_risk_severity"), nullable=False
+    )
+    report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ApprovalRecord(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "approval_records"
+    __table_args__ = (Index("ix_approval_target", "target_type", "target_id"),)
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    target_type: Mapped[ApprovalTargetType] = mapped_column(
+        enum_column(ApprovalTargetType, "approval_target_type"), nullable=False
+    )
+    # 多态目标不建立数据库外键；应用服务必须验证 target 与 project_id 一致。
+    target_id: Mapped[UUID] = mapped_column(nullable=False)
+    approval_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[ApprovalStatus] = mapped_column(
+        enum_column(ApprovalStatus, "record_approval_status"), nullable=False
+    )
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    decided_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    request_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RunManifest(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "run_manifests"
+    __table_args__ = (
+        UniqueConstraint("project_id", "idempotency_key"),
+        UniqueConstraint("project_id", "manifest_hash"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    intent_id: Mapped[UUID] = mapped_column(ForeignKey("experiment_intents.id"), nullable=False)
+    plan_check_id: Mapped[UUID] = mapped_column(ForeignKey("plan_checks.id"), nullable=False)
+    approval_record_id: Mapped[UUID | None] = mapped_column(ForeignKey("approval_records.id"))
+    context_id: Mapped[UUID] = mapped_column(ForeignKey("project_contexts.id"), nullable=False)
+    context_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
+    config_s3_key: Mapped[str | None] = mapped_column(String(1500))
+    config_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    git_branch: Mapped[str] = mapped_column(String(500), nullable=False)
+    git_commit: Mapped[str] = mapped_column(String(64), nullable=False)
+    git_diff_hash: Mapped[str | None] = mapped_column(String(64))
+    dataset: Mapped[str] = mapped_column(String(200), nullable=False)
+    protocol: Mapped[str] = mapped_column(String(200), nullable=False)
+    seed: Mapped[int] = mapped_column(Integer, nullable=False)
+    checkpoint: Mapped[str | None] = mapped_column(String(1500))
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+    environment: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class ExperimentSubmission(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "experiment_submissions"
+    __table_args__ = (
+        UniqueConstraint("project_id", "submitted_by", "idempotency_key"),
+        Index("ix_submission_resume", "status", "processing_step"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    run_manifest_id: Mapped[UUID] = mapped_column(ForeignKey("run_manifests.id"), nullable=False)
+    submitted_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    source_agent: Mapped[str] = mapped_column(String(300), nullable=False)
+    idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[SubmissionStatus] = mapped_column(
+        enum_column(SubmissionStatus, "submission_status"), nullable=False
+    )
+    processing_step: Mapped[WorkflowStep | None] = mapped_column(
+        enum_column(WorkflowStep, "workflow_step")
+    )
+    processing_error: Mapped[str | None] = mapped_column(Text)
+    workflow_checkpoint: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    local_summary: Mapped[str | None] = mapped_column(Text)
+    generated_summary: Mapped[str | None] = mapped_column(Text)
+    risk_level: Mapped[RiskSeverity | None] = mapped_column(
+        enum_column(RiskSeverity, "submission_risk_severity")
+    )
+    receipt: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    embedding_payload: Mapped[list[float] | None] = mapped_column(JSON)
+
+
+class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "artifacts"
+    __table_args__ = (
+        UniqueConstraint("submission_id", "sha256", "filename"),
+        Index("ix_artifact_experiment", "experiment_id", "artifact_type"),
+    )
+
+    submission_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_submissions.id"), nullable=False
+    )
+    experiment_id: Mapped[UUID | None] = mapped_column(ForeignKey("experiments.id"))
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(200), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    s3_key: Mapped[str] = mapped_column(String(1500), nullable=False, unique=True)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_type: Mapped[ArtifactType] = mapped_column(
+        enum_column(ArtifactType, "artifact_type"), nullable=False
+    )
+    verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class SubmissionRisk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "submission_risks"
+
+    submission_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_submissions.id"), nullable=False, index=True
+    )
+    risk_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    severity: Mapped[RiskSeverity] = mapped_column(
+        enum_column(RiskSeverity, "risk_severity"), nullable=False
+    )
+    field_path: Mapped[str | None] = mapped_column(String(1000))
+    current_value: Mapped[Any] = mapped_column(JSON)
+    expected_value: Mapped[Any] = mapped_column(JSON)
+    rule_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    recommendation: Mapped[str | None] = mapped_column(Text)
+    blocking: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class Experiment(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "experiments"
+    __table_args__ = (
+        UniqueConstraint("submission_id"),
+        Index("ix_experiment_project_status", "project_id", "status"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    intent_id: Mapped[UUID] = mapped_column(ForeignKey("experiment_intents.id"), nullable=False)
+    run_manifest_id: Mapped[UUID] = mapped_column(ForeignKey("run_manifests.id"), nullable=False)
+    submission_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_submissions.id"), nullable=False
+    )
+    project_context_id: Mapped[UUID] = mapped_column(
+        ForeignKey("project_contexts.id"), nullable=False
+    )
+    project_context_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    dataset: Mapped[str] = mapped_column(String(200), nullable=False)
+    protocol: Mapped[str] = mapped_column(String(200), nullable=False)
+    seed: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[ExperimentStatus] = mapped_column(
+        enum_column(ExperimentStatus, "experiment_status"), nullable=False
+    )
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    git_commit: Mapped[str] = mapped_column(String(64), nullable=False)
+    checkpoint: Mapped[str | None] = mapped_column(String(1500))
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ExperimentMetric(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "experiment_metrics"
+    __table_args__ = (
+        UniqueConstraint("experiment_id", "name", "split", "aggregation_type", "epoch"),
+    )
+
+    experiment_id: Mapped[UUID] = mapped_column(ForeignKey("experiments.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    split: Mapped[str] = mapped_column(String(100), nullable=False)
+    aggregation_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    epoch: Mapped[int | None] = mapped_column(Integer)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class Memory(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "memories"
+    __table_args__ = (Index("ix_memory_project_verified", "project_id", "verification_status"),)
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    experiment_id: Mapped[UUID] = mapped_column(ForeignKey("experiments.id"), nullable=False)
+    memory_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(VectorType(1536), nullable=False)
+    verification_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_id: Mapped[UUID] = mapped_column(nullable=False)
+
+
+class AuditLog(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "audit_logs"
+    __table_args__ = (Index("ix_audit_project_created", "project_id", "created_at"),)
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"))
+    actor_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    actor_id: Mapped[UUID] = mapped_column(nullable=False)
+    action: Mapped[str] = mapped_column(String(200), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    target_id: Mapped[UUID] = mapped_column(nullable=False)
+    before_value: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    after_value: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class IdempotencyRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "idempotency_records"
+    __table_args__ = (
+        UniqueConstraint("actor_id", "operation", "idempotency_key"),
+        Index("ix_idempotency_expiry", "expires_at"),
+    )
+
+    actor_id: Mapped[UUID] = mapped_column(nullable=False)
+    operation: Mapped[str] = mapped_column(String(100), nullable=False)
+    idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    response_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    operation_status: Mapped[IdempotencyOperationStatus] = mapped_column(
+        enum_column(IdempotencyOperationStatus, "idempotency_operation_status"),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

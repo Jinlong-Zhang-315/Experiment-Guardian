@@ -1,0 +1,45 @@
+"""集中导出所有 ORM 模型，确保 Alembic 能发现完整 metadata。"""
+
+from experiment_guardian.infrastructure.models.base import Base
+from experiment_guardian.infrastructure.models.entities import (
+    ApprovalRecord,
+    Artifact,
+    AuditLog,
+    Experiment,
+    ExperimentIntent,
+    ExperimentMetric,
+    ExperimentSubmission,
+    IdempotencyRecord,
+    Memory,
+    PlanCheck,
+    Project,
+    ProjectContext,
+    ProtectedParameter,
+    RunManifest,
+    SubmissionRisk,
+    Team,
+    TeamMember,
+    User,
+)
+
+__all__ = [
+    "ApprovalRecord",
+    "Artifact",
+    "AuditLog",
+    "Base",
+    "Experiment",
+    "ExperimentIntent",
+    "ExperimentMetric",
+    "ExperimentSubmission",
+    "IdempotencyRecord",
+    "Memory",
+    "PlanCheck",
+    "Project",
+    "ProjectContext",
+    "ProtectedParameter",
+    "RunManifest",
+    "SubmissionRisk",
+    "Team",
+    "TeamMember",
+    "User",
+]
