@@ -40,10 +40,10 @@ from experiment_guardian.domain.enums import (
     ProtectionLevel,
     RiskSeverity,
     SubmissionStatus,
+    SubmittedRunStatus,
     TeamRole,
     TokenAudience,
     VerificationStatus,
-    WorkflowStep,
 )
 from experiment_guardian.infrastructure.models.base import (
     Base,
@@ -390,8 +390,16 @@ class RunManifest(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 class ExperimentSubmission(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "experiment_submissions"
     __table_args__ = (
-        UniqueConstraint("project_id", "submitted_by", "idempotency_key"),
-        Index("ix_submission_resume", "status", "processing_step"),
+        UniqueConstraint(
+            "project_id",
+            "submitted_by",
+            "idempotency_key",
+            name="uq_experiment_submissions_actor_idempotency",
+        ),
+        CheckConstraint(
+            "declared_experiment_status IN ('COMPLETED', 'FAILED')",
+            name="submission_declared_status_final",
+        ),
     )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
@@ -401,39 +409,38 @@ class ExperimentSubmission(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    declared_experiment_status: Mapped[SubmittedRunStatus] = mapped_column(
+        enum_column(SubmittedRunStatus, "submitted_run_status"), nullable=False
+    )
+    declared_metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     evidence_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     status: Mapped[SubmissionStatus] = mapped_column(
         enum_column(SubmissionStatus, "submission_status"), nullable=False
     )
-    processing_step: Mapped[WorkflowStep | None] = mapped_column(
-        enum_column(WorkflowStep, "workflow_step")
-    )
-    processing_error: Mapped[str | None] = mapped_column(Text)
-    workflow_checkpoint: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    local_summary: Mapped[str | None] = mapped_column(Text)
-    generated_summary: Mapped[str | None] = mapped_column(Text)
-    risk_level: Mapped[RiskSeverity | None] = mapped_column(
-        enum_column(RiskSeverity, "submission_risk_severity")
-    )
-    receipt: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    embedding_payload: Mapped[list[float] | None] = mapped_column(JSON)
 
 
 class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "artifacts"
     __table_args__ = (
-        UniqueConstraint("submission_id", "sha256", "filename"),
-        Index("ix_artifact_experiment", "experiment_id", "artifact_type"),
+        UniqueConstraint("submission_id", "filename", name="uq_artifacts_submission_filename"),
+        UniqueConstraint("s3_key", name="uq_artifacts_s3_key"),
+        CheckConstraint(
+            "size_bytes > 0 AND size_bytes <= 20971520",
+            name="artifact_size_limit",
+        ),
+        CheckConstraint("length(sha256) = 64", name="artifact_sha256_length"),
+        Index("ix_artifact_submission_type", "submission_id", "artifact_type"),
     )
 
     submission_id: Mapped[UUID] = mapped_column(
         ForeignKey("experiment_submissions.id"), nullable=False
     )
-    experiment_id: Mapped[UUID | None] = mapped_column(ForeignKey("experiments.id"))
-    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    # experiments 表尚未迁移；R9 始终写 NULL，正式实验切片再补数据库外键。
+    experiment_id: Mapped[UUID | None] = mapped_column()
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(200), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
-    s3_key: Mapped[str] = mapped_column(String(1500), nullable=False, unique=True)
+    s3_key: Mapped[str] = mapped_column(String(1500), nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     artifact_type: Mapped[ArtifactType] = mapped_column(
         enum_column(ArtifactType, "artifact_type"), nullable=False

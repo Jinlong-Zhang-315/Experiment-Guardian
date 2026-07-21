@@ -23,8 +23,9 @@
 | 2026-07-21 | R6 | `7bfe457` | 基础迁移、认证、项目初始化和上下文读取 |
 | 2026-07-21 | DOC-1 | `7bfe457` | 建立持续维护的开发文档体系 |
 | 2026-07-21 | R7 | `4f0a7b3` | 已认证、幂等、可追溯的训练前检查 |
-| 2026-07-21 | R7.1 | `working tree` | Plan Check 历史依据与事务稳定性加固 |
-| 2026-07-21 | R8 | `working tree` | Owner 计划审批和不可变 Run Manifest |
+| 2026-07-21 | R7.1 | `2937a0b` | Plan Check 历史依据与事务稳定性加固 |
+| 2026-07-21 | R8 | `2937a0b` | Owner 计划审批和不可变 Run Manifest |
+| 2026-07-21 | R9 | `working tree` | S3 实验草稿上传准备 |
 
 ## R0：需求分析与 MVP 收敛
 
@@ -267,7 +268,7 @@
 
 ## R7.1：Plan Check 历史依据与事务稳定性加固
 
-版本：`working tree`，当前修正轮次。
+版本：`2937a0b`。
 
 ### 更新内容
 
@@ -308,7 +309,7 @@
 
 ## R8：Owner 计划审批和不可变 Run Manifest
 
-版本：`working tree`，当前实现轮次。
+版本：`2937a0b`。
 
 ### 更新内容
 
@@ -359,6 +360,64 @@
 * `submission_prepare`、S3 上传槽位和 artifact 草稿尚未实现，收敛到 R9。
 * `submission_finalize`、S3 对象复核、分析工作流、Bedrock、正式实验确认和 Web 页面继续
   保持未实现，不在 R8 扩大范围。
+
+## R9：S3 实验草稿上传准备
+
+版本：`working tree`，当前实现轮次。
+
+### 更新内容
+
+* 新增 revision `20260721_05`，只将 `experiment_submissions` 和 `artifacts`
+  加入正式数据库；未提前迁移风险、正式实验或向量表。
+* 新增 `SubmissionArtifactInput`、`SubmissionPrepareCommand`、预签名上传目标和
+  `SubmissionPrepareResult` 契约。上传类型限于 YAML/JSON 配置、JSON 结果、
+  TXT 日志、Markdown 说明和可选 JSON Manifest。
+* 运行状态限于 `COMPLETED/FAILED`；指标名、数量和值域使用严格校验，
+  不允许布尔值、NaN 或 Infinity 被宽松转成合法指标。
+* 实现 `submission_prepare` 应用用例和 MCP 边界。调用者只来自服务端校验的
+  项目 Token，必须具备 `submission:create` scope 并通过项目、团队和成员检查。
+* 一个 CockroachDB 事务中写入 `RECEIVED` Submission、全部 Artifact 声明、
+  AuditLog 和 IdempotencyRecord。相同 key 的同体请求复用原 ID，异体请求返回冲突。
+* 同一 Run Manifest 可以产生多个 Submission，以支持人工多次运行；每个
+  Submission 仍完整保存 Manifest ID 和哈希。
+* 新增 `ArtifactStorage` 端口、boto3 S3 适配器和未配置 Bucket 时的稳定错误适配器。
+  URL 在数据库事务提交后生成，数据库只保存 object key 和文件声明。
+* 预签名 PUT 同时绑定 Content-Type、Content-Length、SHA-256 checksum 和
+  `If-None-Match: *`；默认 900 秒过期，可在 60 到 3600 秒范围内配置。
+* 幂等重放不持久化旧预签名 URL，而是为原 Artifact ID 签发新 URL；
+  S3 签名失败时已提交的 `RECEIVED` 草稿可使用原 key 安全重试。
+* 运行结果、指标和文件元数据标记为 `LOCAL_ATTESTED`；数据库中的 Manifest
+  关联标记为 `CLOUD_VERIFIED`；`cloud_hash_verified` 在 prepare 阶段始终为 false。
+
+### 修复的问题
+
+* 修复 Submission 和 Artifact 没有 ORM relationship 时单次 flush 可能先写子表的外键失败；
+  现在显式先 flush Submission，并仍由同一事务保证原子性。
+* MCP `metrics_summary` 保留原始 JSON 值到领域契约，避免协议层先把 `true`
+  宽松转成 `1.0` 而绕过严格指标校验。
+* 文件名采用大小写无关重复检查，并拒绝路径、控制字符、错误扩展名、
+  错误 MIME、非法 SHA-256、缺失核心文件和超限文件。
+* object key 仅使用 Project/Submission/Artifact UUID，不将客户端文件名拼入 S3 路径。
+
+### 验证结果
+
+* 常规套件共收集 94 项测试，92 项默认执行并全部通过；2 项外部集成测试
+  需要显式 opt-in。
+* 新增契约、S3 适配器、MCP 身份边界、草稿持久化、权限、Manifest 归属、
+  幂等同体/异体、新 URL 重放、签名失败恢复和 migration 升降级测试。
+* 开发 CockroachDB 已从 `20260721_04` 升级至 `20260721_05 (head)`。
+* 真实 CockroachDB 隔离库完成 revision 05 降级/升级、审批、Manifest、Submission、
+  Artifact 和幂等重放事务链路，并已实际执行通过。
+* 新增真实 AWS S3 预签名 PUT/HEAD/checksum 兼容性测试；当前未配置专用
+  Bucket/凭据，因此本轮没有对 AWS 实际执行该 opt-in 测试。
+* Ruff check、Ruff format、mypy、`git diff --check` 和全量 pytest 通过。
+
+### 已知遗留项
+
+* `submission_finalize` 仍明确返回尚未实现，S3 中的对象存在性、大小、MIME 和
+  SHA-256 尚未由云端复核。
+* LangGraph 分析、Bedrock、风险回执、正式实验确认、查询和 Web 继续延后，未在 R9
+  扩大实现范围。
 
 ## 新日志模板
 

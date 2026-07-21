@@ -1,7 +1,7 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-21  
-对应数据库 revision：`20260721_04`
+对应数据库 revision：`20260721_05`
 
 本文档维护当前仓库的实际框架。状态标记：
 
@@ -35,15 +35,15 @@
            |                                                           v
            |        Browser / API Client                    +------------------------+
            |                 |                              | GuardianApplication    |
-           |                 v                              | [PARTIAL: 3/6]         |
+           |                 v                              | [PARTIAL: 4/6]         |
            |      +------------------------+                | project_get_context    |
            |      | FastAPI                |                | experiment_check_plan  |
            |      | /health [DONE]         |                |   [DONE]               |
            |      | /capabilities [DONE]   |                | run_manifest_create    |
            |      | /plan-check decision  |                |   [DONE]               |
-           |      | [DONE]                 |                | other 3 [SCAFFOLD]     |
-           |      | /projects/initialize   |                +-----------+------------+
-           |      | [DONE]                 |                            |
+           |      | [DONE]                 |                | submission_prepare     |
+           |      | /projects/initialize   |                |   [DONE]               |
+           |      | [DONE]                 |                | other 2 [SCAFFOLD]     |
            |      +-----------+------------+                            |
            |                  | Bearer auth                             |
            |                  v                                         |
@@ -61,6 +61,7 @@
                   | - plan evaluation/idempotency |
                   | - Owner final decision        |
                   | - immutable Manifest          |
+                  | - submission upload draft     |
                   | - stable application errors   |
                   +---------------+---------------+
                                   |
@@ -74,6 +75,7 @@
                   | - policy consistency guard   |
                   | - Plan Check replay           |
                   | - approval/manifest locks     |
+                  | - submission/artifact replay  |
                   +---------------+---------------+
                                   |
                                   v
@@ -84,6 +86,7 @@
                   | protected_parameters, access_tokens           |
                   | audit_logs, idempotency_records, plan_checks  |
                   | approval_records, run_manifests               |
+                  | experiment_submissions, artifacts             |
                   +-----------------------------------------------+
 ```
 
@@ -94,7 +97,7 @@
 | Interface Layer                                                          |
 |                                                                          |
 |  FastAPI routes                 MCP tools                 Admin CLI       |
-|  [DONE partial API]             [DONE 3/6 use cases]      [DONE]          |
+|  [DONE partial API]             [DONE 4/6 use cases]      [DONE]          |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -120,7 +123,7 @@
 |  database.py      models/         repositories/        security.py       |
 |  SQLAlchemy       ORM schema      project/plan/governance repositories   |
 |                                                                          |
-|  S3 [PLANNED]     Bedrock [PLANNED]     CloudWatch [PLANNED]              |
+|  S3 presign [DONE]  S3 verify [PLANNED]  Bedrock/CloudWatch [PLANNED]     |
 +--------------------------------------------------------------------------+
 ```
 
@@ -160,6 +163,12 @@ User
   |                                  |                   +---- config/document/manifest hashes
   |                                  |                   +---- Git/command/environment evidence
   |                                  |
+  |                                  +----< ExperimentSubmission
+  |                                  |          |
+  |                                  |          +---- run_manifest_id/hash
+  |                                  |          +---- declared status/metrics/evidence
+  |                                  |          +----< Artifact (declared hash/size/S3 key)
+  |                                  |
   |                                  +----< AuditLog
   |
   +----< AccessToken
@@ -173,8 +182,7 @@ User
 以下对象已有 ORM 模型但尚未进入迁移，状态为 `[SCAFFOLD]`：
 
 ```text
-ExperimentSubmission -> Artifact / SubmissionRisk
-    -> Experiment -> ExperimentMetric -> Memory
+SubmissionRisk -> Experiment -> ExperimentMetric -> Memory
 ```
 
 这一区分是刻意的：没有业务服务和验收测试的表不提前加入 Alembic revision。
@@ -217,12 +225,18 @@ ExperimentSubmission -> Artifact / SubmissionRisk
    -> PASS/NOT_REQUIRED or NEEDS_APPROVAL/APPROVED eligibility gate
    -> build only from historical PlanCheck snapshots
    -> immutable RunManifest + canonical manifest_hash + audit/idempotency
+
+8. Local Agent calls submission_prepare(...)
+   -> MCP Token project/team/member/submission:create validation
+   -> validate Manifest ownership and CONFIG/RESULT/artifact declarations
+   -> one transaction: RECEIVED Submission + Artifacts + AuditLog + IdempotencyRecord
+   -> sign short-lived S3 PUT URLs after commit; URLs are never persisted
+   -> same key reuses database IDs and issues fresh upload URLs
 ```
 
 ## 已有但尚未接通的框架
 
 ```text
-submission_prepare          [SCAFFOLD: contract/model only, no S3]
 submission_finalize         [SCAFFOLD: contract/model/workflow topology only]
 experiments_query           [SCAFFOLD: query contract/model only]
 
@@ -245,7 +259,7 @@ Local Agent -> MCP Server -----+-> FastAPI/Application
              v                        v                        v
        CockroachDB               Amazon S3                Bedrock
        state/vector              artifacts                summary/risk
-       [PARTIAL]                 [PLANNED]                [PLANNED]
+       [PARTIAL]                 [PARTIAL: presign]       [PLANNED]
              |
              v
        CloudWatch [PLANNED]

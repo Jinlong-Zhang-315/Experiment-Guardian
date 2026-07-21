@@ -3,9 +3,10 @@
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -20,6 +21,7 @@ from experiment_guardian.application.errors import (
     ServiceUnavailableError,
 )
 from experiment_guardian.application.identity import RequestIdentity
+from experiment_guardian.application.ports import ArtifactStorage
 from experiment_guardian.application.transactions import run_with_serialization_retry
 from experiment_guardian.domain.administration import (
     PlanCheckDecisionRequest,
@@ -28,6 +30,7 @@ from experiment_guardian.domain.administration import (
     ProjectInitializeResponse,
 )
 from experiment_guardian.domain.contracts import (
+    ArtifactUploadTarget,
     ExperimentCheckPlanCommand,
     ExperimentCheckPlanResult,
     ExperimentQueryCommand,
@@ -35,11 +38,14 @@ from experiment_guardian.domain.contracts import (
     PlanEvaluationInput,
     ProjectContextBundle,
     RunManifestResult,
+    SubmissionPrepareCommand,
+    SubmissionPrepareResult,
 )
 from experiment_guardian.domain.enums import (
     ApprovalDecision,
     ApprovalStatus,
     ApprovalTargetType,
+    ArtifactType,
     CheckResult,
     ConstraintSource,
     ContextStatus,
@@ -48,6 +54,8 @@ from experiment_guardian.domain.enums import (
     IntentStatus,
     ProtectionLevel,
     RiskSeverity,
+    SubmissionStatus,
+    SubmittedRunStatus,
     TeamRole,
     VerificationStatus,
 )
@@ -59,8 +67,10 @@ from experiment_guardian.domain.plan_check import (
 from experiment_guardian.domain.run_manifest import build_manifest_content, canonical_json_hash
 from experiment_guardian.infrastructure.models import (
     ApprovalRecord,
+    Artifact,
     AuditLog,
     ExperimentIntent,
+    ExperimentSubmission,
     IdempotencyRecord,
     PlanCheck,
     Project,
@@ -72,11 +82,13 @@ from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyGovernanceRepository,
     SqlAlchemyPlanCheckRepository,
     SqlAlchemyProjectRepository,
+    SqlAlchemySubmissionRepository,
 )
 
 INITIALIZE_OPERATION = "project.initialize"
 PLAN_DECISION_OPERATION = "plan_check.decision"
 RUN_MANIFEST_OPERATION = "run_manifest.create"
+SUBMISSION_PREPARE_OPERATION = "submission.prepare"
 RISK_PRIORITY = {
     RiskSeverity.LOW: 0,
     RiskSeverity.MEDIUM: 1,
@@ -102,8 +114,32 @@ def _same_json_value(left: Any, right: Any) -> bool:
     return _canonical_hash(left) == _canonical_hash(right)
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedArtifact:
+    id: UUID
+    filename: str
+    artifact_type: ArtifactType
+    mime_type: str
+    size_bytes: int
+    sha256: str
+    s3_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedSubmission:
+    id: UUID
+    project_id: UUID
+    run_manifest_id: UUID
+    manifest_hash: str
+    status: SubmissionStatus
+    experiment_status: SubmittedRunStatus
+    metrics_summary: dict[str, float]
+    created_at: datetime
+    artifacts: tuple[_PreparedArtifact, ...]
+
+
 class GuardianApplication:
-    """当前已经接通正式上下文读取和训练前检查，后续工具继续明确失败。"""
+    """已接通 Context、Plan Check、Manifest 和 Submission Prepare 四个用例。"""
 
     def __init__(
         self,
@@ -111,11 +147,17 @@ class GuardianApplication:
         project_repository: SqlAlchemyProjectRepository,
         plan_check_repository: SqlAlchemyPlanCheckRepository,
         governance_repository: SqlAlchemyGovernanceRepository | None = None,
+        submission_repository: SqlAlchemySubmissionRepository | None = None,
+        artifact_storage: ArtifactStorage | None = None,
+        upload_url_ttl_seconds: int = 900,
     ) -> None:
         self._session_factory = session_factory
         self._projects = project_repository
         self._plan_checks = plan_check_repository
         self._governance = governance_repository or SqlAlchemyGovernanceRepository()
+        self._submissions = submission_repository or SqlAlchemySubmissionRepository()
+        self._artifact_storage = artifact_storage
+        self._upload_url_ttl_seconds = upload_url_ttl_seconds
 
     def project_get_context(
         self, *, project_id: UUID, identity: RequestIdentity
@@ -471,17 +513,265 @@ class GuardianApplication:
             )
             return None if record is None else self._replay_manifest(record, request_hash)
 
-    @staticmethod
     def submission_prepare(
-        *,
-        project_id: UUID,
-        run_manifest_id: UUID,
-        actor_id: UUID,
-        idempotency_key: UUID,
-        files: Sequence[Mapping[str, Any]],
-    ) -> Mapping[str, Any]:
-        del project_id, run_manifest_id, actor_id, idempotency_key, files
-        raise FeatureUnavailableError("submission_prepare 当前阶段尚未实现")
+        self, command: SubmissionPrepareCommand, identity: RequestIdentity
+    ) -> SubmissionPrepareResult:
+        prepared = run_with_serialization_retry(
+            lambda: self._submission_prepare_once(command, identity)
+        )
+        return self._issue_upload_targets(prepared)
+
+    def _submission_prepare_once(
+        self, command: SubmissionPrepareCommand, identity: RequestIdentity
+    ) -> _PreparedSubmission:
+        if "submission:create" not in identity.scopes:
+            raise AuthorizationError("Token 缺少 submission:create scope")
+        if identity.project_id != command.project_id:
+            raise AuthorizationError("MCP Token 未绑定当前项目")
+
+        request_hash = _canonical_hash(command.model_dump(mode="json", exclude={"idempotency_key"}))
+        try:
+            with self._session_factory() as session, session.begin():
+                project = self._projects.require_project_member(
+                    session,
+                    project_id=command.project_id,
+                    user_id=identity.user_id,
+                    team_id=identity.team_id,
+                )
+                existing = self._governance.find_idempotency(
+                    session,
+                    actor_id=identity.user_id,
+                    operation=SUBMISSION_PREPARE_OPERATION,
+                    idempotency_key=command.idempotency_key,
+                )
+                if existing is not None:
+                    return self._replay_submission(session, existing, request_hash)
+
+                manifest = self._submissions.get_manifest(session, command.run_manifest_id)
+                if manifest is None or manifest.project_id != command.project_id:
+                    raise ResourceNotFoundError("项目中不存在该 Run Manifest")
+
+                submission = ExperimentSubmission(
+                    id=uuid4(),
+                    project_id=command.project_id,
+                    run_manifest_id=manifest.id,
+                    submitted_by=identity.user_id,
+                    source_agent=command.source_agent,
+                    idempotency_key=command.idempotency_key,
+                    request_hash=request_hash,
+                    manifest_hash=manifest.manifest_hash,
+                    declared_experiment_status=command.experiment_status,
+                    declared_metrics=command.metrics_summary,
+                    evidence_snapshot=self._submission_evidence(command, manifest),
+                    status=SubmissionStatus.RECEIVED,
+                )
+                session.add(submission)
+                # Artifact 没有定义 ORM relationship，因此显式固化父记录，
+                # 避免不同数据库的 flush 排序差异导致外键失败。
+                session.flush()
+                artifacts: list[Artifact] = []
+                for item in command.files:
+                    artifact_id = uuid4()
+                    artifact = Artifact(
+                        id=artifact_id,
+                        submission_id=submission.id,
+                        experiment_id=None,
+                        filename=item.filename,
+                        mime_type=item.mime_type,
+                        size_bytes=item.size_bytes,
+                        s3_key=(
+                            f"projects/{command.project_id}/submissions/{submission.id}/"
+                            f"artifacts/{artifact_id}"
+                        ),
+                        sha256=item.sha256,
+                        artifact_type=item.artifact_type,
+                        cloud_hash_verified=False,
+                    )
+                    session.add(artifact)
+                    artifacts.append(artifact)
+                session.flush()
+
+                prepared = self._prepared_submission(submission, artifacts)
+                session.add_all(
+                    [
+                        AuditLog(
+                            team_id=project.team_id,
+                            project_id=command.project_id,
+                            actor_type="USER",
+                            actor_id=identity.user_id,
+                            action=SUBMISSION_PREPARE_OPERATION,
+                            target_type="EXPERIMENT_SUBMISSION",
+                            target_id=submission.id,
+                            before_value=None,
+                            after_value={
+                                "run_manifest_id": str(manifest.id),
+                                "status": submission.status.value,
+                                "artifact_ids": [str(item.id) for item in artifacts],
+                            },
+                        ),
+                        IdempotencyRecord(
+                            actor_id=identity.user_id,
+                            operation=SUBMISSION_PREPARE_OPERATION,
+                            idempotency_key=command.idempotency_key,
+                            request_hash=request_hash,
+                            response_snapshot={"submission_id": str(submission.id)},
+                            operation_status=IdempotencyOperationStatus.COMPLETED,
+                            expires_at=datetime.now(UTC) + timedelta(days=7),
+                        ),
+                    ]
+                )
+                return prepared
+        except IntegrityError as exc:
+            replay = self._replay_submission_after_integrity(
+                actor_id=identity.user_id,
+                idempotency_key=command.idempotency_key,
+                request_hash=request_hash,
+            )
+            if replay is not None:
+                return replay
+            raise ConflictError("Submission 与现有数据冲突") from exc
+
+    @staticmethod
+    def _submission_evidence(
+        command: SubmissionPrepareCommand, manifest: RunManifest
+    ) -> dict[str, Any]:
+        local_metadata = {
+            "evidence_type": "LOCAL_ATTESTED",
+            "source": "MCP submission_prepare request",
+            "collected_at": command.collected_at.isoformat(),
+            "collection_tool": command.source_agent,
+        }
+        return {
+            "experiment_status": {
+                **local_metadata,
+                "value": command.experiment_status.value,
+            },
+            "metrics_summary": {**local_metadata, "value": command.metrics_summary},
+            "files": [
+                {
+                    **local_metadata,
+                    "filename": item.filename,
+                    "artifact_type": item.artifact_type.value,
+                    "declared_sha256": item.sha256,
+                    "declared_size_bytes": item.size_bytes,
+                }
+                for item in command.files
+            ],
+            "run_manifest": {
+                "value": {"id": str(manifest.id), "hash": manifest.manifest_hash},
+                "evidence_type": "CLOUD_VERIFIED",
+                "source": "run_manifests",
+                "collected_at": datetime.now(UTC).isoformat(),
+                "collection_tool": "experiment-guardian-server",
+            },
+        }
+
+    def _replay_submission(
+        self, session: Session, record: IdempotencyRecord, request_hash: str
+    ) -> _PreparedSubmission:
+        if record.request_hash != request_hash:
+            raise ConflictError("相同 Idempotency-Key 已用于不同的 Submission 请求")
+        if (
+            record.operation_status is not IdempotencyOperationStatus.COMPLETED
+            or not record.response_snapshot
+            or not isinstance(record.response_snapshot.get("submission_id"), str)
+        ):
+            raise ConflictError("相同 Idempotency-Key 的 Submission 操作仍在处理中")
+        submission = self._submissions.get_submission(
+            session, UUID(record.response_snapshot["submission_id"])
+        )
+        if submission is None or submission.request_hash != request_hash:
+            raise ConflictError("Submission 幂等记录与草稿数据不一致")
+        artifacts = self._submissions.list_artifacts(session, submission.id)
+        if not artifacts:
+            raise ConflictError("Submission 缺少 Artifact 上传声明")
+        return self._prepared_submission(submission, artifacts)
+
+    def _replay_submission_after_integrity(
+        self, *, actor_id: UUID, idempotency_key: UUID, request_hash: str
+    ) -> _PreparedSubmission | None:
+        with self._session_factory() as session:
+            record = self._governance.find_idempotency(
+                session,
+                actor_id=actor_id,
+                operation=SUBMISSION_PREPARE_OPERATION,
+                idempotency_key=idempotency_key,
+            )
+            return (
+                None if record is None else self._replay_submission(session, record, request_hash)
+            )
+
+    @staticmethod
+    def _prepared_submission(
+        submission: ExperimentSubmission, artifacts: Sequence[Artifact]
+    ) -> _PreparedSubmission:
+        return _PreparedSubmission(
+            id=submission.id,
+            project_id=submission.project_id,
+            run_manifest_id=submission.run_manifest_id,
+            manifest_hash=submission.manifest_hash,
+            status=submission.status,
+            experiment_status=submission.declared_experiment_status,
+            metrics_summary={
+                str(name): float(value) for name, value in submission.declared_metrics.items()
+            },
+            created_at=submission.created_at,
+            artifacts=tuple(
+                _PreparedArtifact(
+                    id=item.id,
+                    filename=item.filename,
+                    artifact_type=item.artifact_type,
+                    mime_type=item.mime_type,
+                    size_bytes=item.size_bytes,
+                    sha256=item.sha256,
+                    s3_key=item.s3_key,
+                )
+                for item in artifacts
+            ),
+        )
+
+    def _issue_upload_targets(self, prepared: _PreparedSubmission) -> SubmissionPrepareResult:
+        if self._artifact_storage is None:
+            raise ServiceUnavailableError("S3 Artifact Storage 尚未配置")
+        expires_at = datetime.now(UTC) + timedelta(seconds=self._upload_url_ttl_seconds)
+        uploads: list[ArtifactUploadTarget] = []
+        try:
+            for artifact in prepared.artifacts:
+                signed = self._artifact_storage.create_upload_url(
+                    object_key=artifact.s3_key,
+                    content_type=artifact.mime_type,
+                    content_length=artifact.size_bytes,
+                    sha256=artifact.sha256,
+                    expires_in=self._upload_url_ttl_seconds,
+                )
+                uploads.append(
+                    ArtifactUploadTarget(
+                        artifact_id=artifact.id,
+                        filename=artifact.filename,
+                        artifact_type=artifact.artifact_type,
+                        mime_type=artifact.mime_type,
+                        size_bytes=artifact.size_bytes,
+                        sha256=artifact.sha256,
+                        upload_url=signed.upload_url,
+                        required_headers=signed.required_headers,
+                        expires_at=expires_at,
+                    )
+                )
+        except ServiceUnavailableError:
+            raise
+        except Exception as exc:
+            raise ServiceUnavailableError("S3 预签名服务暂时不可用") from exc
+        return SubmissionPrepareResult(
+            submission_id=prepared.id,
+            project_id=prepared.project_id,
+            run_manifest_id=prepared.run_manifest_id,
+            manifest_hash=prepared.manifest_hash,
+            status=SubmissionStatus.RECEIVED,
+            experiment_status=prepared.experiment_status,
+            metrics_summary=prepared.metrics_summary,
+            artifact_uploads=uploads,
+            created_at=prepared.created_at,
+        )
 
     @staticmethod
     def submission_finalize(

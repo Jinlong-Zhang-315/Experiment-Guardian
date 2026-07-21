@@ -7,7 +7,10 @@ from uuid import uuid4
 import pytest
 
 from experiment_guardian.application.identity import RequestIdentity
-from experiment_guardian.domain.contracts import ExperimentCheckPlanCommand
+from experiment_guardian.domain.contracts import (
+    ExperimentCheckPlanCommand,
+    SubmissionPrepareCommand,
+)
 from experiment_guardian.mcp_server import server
 
 mcp = server.mcp
@@ -131,3 +134,61 @@ def test_run_manifest_create_uses_server_authenticated_identity(
         "idempotency_key": idempotency_key,
     }
     assert result == {"schema_version": 1}
+
+
+def test_submission_prepare_uses_server_authenticated_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = RequestIdentity(
+        user_id=uuid4(),
+        team_id=uuid4(),
+        token_id=uuid4(),
+        project_id=uuid4(),
+        scopes=frozenset({"submission:create"}),
+    )
+    captured: dict[str, object] = {}
+
+    class FakeUseCases:
+        def submission_prepare(
+            self, command: SubmissionPrepareCommand, request_identity: RequestIdentity
+        ) -> SimpleNamespace:
+            captured["command"] = command
+            captured["identity"] = request_identity
+            return SimpleNamespace(model_dump=lambda **_: {"status": "RECEIVED"})
+
+    monkeypatch.setattr(
+        server,
+        "get_identity_provider",
+        lambda: SimpleNamespace(current_identity=lambda: identity),
+    )
+    monkeypatch.setattr(server, "get_guardian_use_cases", lambda: FakeUseCases())
+
+    result = server.submission_prepare(
+        project_id=str(identity.project_id),
+        run_manifest_id=str(uuid4()),
+        idempotency_key=str(uuid4()),
+        source_agent="test-agent/0.1",
+        collected_at="2026-07-21T12:00:00+00:00",
+        experiment_status="COMPLETED",
+        metrics_summary={"top1": 0.8},
+        files=[
+            {
+                "filename": "config.json",
+                "artifact_type": "CONFIG",
+                "mime_type": "application/json",
+                "size_bytes": 10,
+                "sha256": "a" * 64,
+            },
+            {
+                "filename": "result.json",
+                "artifact_type": "RESULT",
+                "mime_type": "application/json",
+                "size_bytes": 10,
+                "sha256": "b" * 64,
+            },
+        ],
+    )
+
+    assert isinstance(captured["command"], SubmissionPrepareCommand)
+    assert captured["identity"] is identity
+    assert result == {"status": "RECEIVED"}

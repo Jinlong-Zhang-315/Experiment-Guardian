@@ -31,6 +31,8 @@ from experiment_guardian.domain.contracts import (
     FieldEvidence,
     LocalAttestation,
     LocalEnvironment,
+    PresignedUpload,
+    SubmissionPrepareCommand,
 )
 from experiment_guardian.domain.enums import (
     ApprovalDecision,
@@ -40,6 +42,8 @@ from experiment_guardian.domain.enums import (
 )
 from experiment_guardian.infrastructure.models import (
     ApprovalRecord,
+    Artifact,
+    ExperimentSubmission,
     PlanCheck,
     RunManifest,
     Team,
@@ -50,12 +54,36 @@ from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyGovernanceRepository,
     SqlAlchemyPlanCheckRepository,
     SqlAlchemyProjectRepository,
+    SqlAlchemySubmissionRepository,
 )
 
 RUN_COCKROACH_INTEGRATION = os.getenv("RUN_COCKROACH_INTEGRATION") == "1"
 COLLECTED_AT = datetime(2026, 7, 21, tzinfo=UTC)
 GIT_COMMIT = "a1b2c3d4"
 RUN_COMMAND = "python train.py --config config.yaml"
+
+
+class _FakeStorage:
+    """CockroachDB 验收只关心事务数据，不在此处访问真实 S3。"""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def create_upload_url(
+        self,
+        *,
+        object_key: str,
+        content_type: str,
+        content_length: int,
+        sha256: str,
+        expires_in: int,
+    ) -> PresignedUpload:
+        del object_key, content_length, sha256, expires_in
+        self.call_count += 1
+        return PresignedUpload(
+            upload_url=f"https://upload.example.invalid/{self.call_count}",
+            required_headers={"Content-Type": content_type},
+        )
 
 
 def _run_alembic(database_url: str, *arguments: str) -> None:
@@ -127,14 +155,24 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         _run_alembic(rendered_test_url, "upgrade", "head")
 
         test_engine = create_engine(test_url)
-        assert {"approval_records", "run_manifests"} <= set(inspect(test_engine).get_table_names())
+        assert {
+            "approval_records",
+            "run_manifests",
+            "experiment_submissions",
+            "artifacts",
+        } <= set(inspect(test_engine).get_table_names())
         test_engine.dispose()
         test_engine = None
         _run_alembic(rendered_test_url, "downgrade", "20260721_03")
         downgrade_engine = create_engine(test_url)
         try:
             assert not (
-                {"approval_records", "run_manifests"}
+                {
+                    "approval_records",
+                    "run_manifests",
+                    "experiment_submissions",
+                    "artifacts",
+                }
                 & set(inspect(downgrade_engine).get_table_names())
             )
         finally:
@@ -165,11 +203,15 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         projects = SqlAlchemyProjectRepository()
         governance = SqlAlchemyGovernanceRepository()
         administration = ProjectAdministrationService(factory, projects)
+        storage = _FakeStorage()
         guardian = GuardianApplication(
             factory,
             projects,
             SqlAlchemyPlanCheckRepository(),
             governance,
+            SqlAlchemySubmissionRepository(),
+            storage,
+            900,
         )
         approvals = PlanApprovalService(factory, projects, governance)
         initialize_request = ProjectInitializeRequest.model_validate_json(
@@ -187,7 +229,7 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             team_id=team_id,
             token_id=uuid4(),
             project_id=initialized.project_id,
-            scopes=frozenset({"experiment:check", "manifest:create"}),
+            scopes=frozenset({"experiment:check", "manifest:create", "submission:create"}),
         )
 
         content = "dataset:\n  protocol: 40/20\nmodel:\n  backbone: shift-gcn\n  fusion: 0.3\n"
@@ -238,9 +280,48 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             idempotency_key=uuid4(),
         )
         assert manifest.approval_record_id == decision.approval_record_id
+
+        submission_request = SubmissionPrepareCommand.model_validate(
+            {
+                "project_id": initialized.project_id,
+                "run_manifest_id": manifest.manifest_id,
+                "idempotency_key": uuid4(),
+                "source_agent": "cockroach-integration-test/0.1",
+                "collected_at": COLLECTED_AT,
+                "experiment_status": "COMPLETED",
+                "metrics_summary": {"top1": 0.83},
+                "files": [
+                    {
+                        "filename": "config.yaml",
+                        "artifact_type": "CONFIG",
+                        "mime_type": "application/yaml",
+                        "size_bytes": len(content.encode("utf-8")),
+                        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    },
+                    {
+                        "filename": "result.json",
+                        "artifact_type": "RESULT",
+                        "mime_type": "application/json",
+                        "size_bytes": 13,
+                        "sha256": "c" * 64,
+                    },
+                ],
+            }
+        )
+        submission = guardian.submission_prepare(submission_request, identity)
+        submission_replay = guardian.submission_prepare(submission_request, identity)
+        assert submission_replay.submission_id == submission.submission_id
+        assert [item.artifact_id for item in submission_replay.artifact_uploads] == [
+            item.artifact_id for item in submission.artifact_uploads
+        ]
+        assert submission_replay.artifact_uploads[0].upload_url != (
+            submission.artifact_uploads[0].upload_url
+        )
         with factory() as session:
             assert session.scalar(select(func.count()).select_from(ApprovalRecord)) == 1
             assert session.scalar(select(func.count()).select_from(RunManifest)) == 1
+            assert session.scalar(select(func.count()).select_from(ExperimentSubmission)) == 1
+            assert session.scalar(select(func.count()).select_from(Artifact)) == 2
 
         test_engine.dispose()
         test_engine = None

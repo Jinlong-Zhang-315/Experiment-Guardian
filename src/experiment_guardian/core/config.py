@@ -45,6 +45,7 @@ class Settings(BaseSettings):
 
     aws_region: str = "us-east-1"
     s3_bucket: str = ""
+    s3_presign_expires_seconds: int = Field(default=900, ge=60, le=3600)
     bedrock_model_id: str = ""
     embedding_dimension: int = Field(default=1536, gt=0)
 

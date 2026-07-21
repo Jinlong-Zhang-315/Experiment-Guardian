@@ -131,6 +131,13 @@ class ExperimentStatus(StrEnum):
     SUPERSEDED = "SUPERSEDED"
 
 
+class SubmittedRunStatus(StrEnum):
+    """本地 Agent 在上传前声明的单次运行结果。"""
+
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 class ArtifactType(StrEnum):
     CONFIG = "CONFIG"
     LOG = "LOG"

@@ -16,7 +16,10 @@ FOUNDATION_TABLES = frozenset(
 )
 PLAN_CHECK_TABLES = frozenset({"plan_checks"})
 GOVERNANCE_TABLES = frozenset({"approval_records", "run_manifests"})
-MIGRATED_TABLES = FOUNDATION_TABLES | PLAN_CHECK_TABLES | GOVERNANCE_TABLES
+SUBMISSION_PREPARE_TABLES = frozenset({"experiment_submissions", "artifacts"})
+MIGRATED_TABLES = (
+    FOUNDATION_TABLES | PLAN_CHECK_TABLES | GOVERNANCE_TABLES | SUBMISSION_PREPARE_TABLES
+)
 
 
 def include_migrated_object(

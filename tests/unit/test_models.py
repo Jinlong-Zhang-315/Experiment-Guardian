@@ -80,6 +80,29 @@ def test_approval_and_manifest_are_immutable_by_schema() -> None:
     assert {"schema_version", "config_document_hash"} <= set(manifest.columns.keys())
 
 
+def test_submission_prepare_schema_keeps_upload_declarations_narrow() -> None:
+    submission = Base.metadata.tables["experiment_submissions"]
+    artifact = Base.metadata.tables["artifacts"]
+
+    assert {
+        "declared_experiment_status",
+        "declared_metrics",
+        "evidence_snapshot",
+        "status",
+    } <= set(submission.columns.keys())
+    assert "processing_step" not in submission.columns
+    assert "generated_summary" not in submission.columns
+    assert "fk_artifacts_experiment_id_experiments" not in {
+        constraint.name for constraint in artifact.constraints
+    }
+    assert {
+        "uq_artifacts_submission_filename",
+        "uq_artifacts_s3_key",
+        "ck_artifacts_artifact_size_limit",
+        "ck_artifacts_artifact_sha256_length",
+    } <= {constraint.name for constraint in artifact.constraints}
+
+
 def test_memory_has_structured_vector_filters() -> None:
     memory = Base.metadata.tables["memories"]
 

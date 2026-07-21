@@ -219,7 +219,7 @@ def test_issue_mcp_token_cli_grants_plan_check_scope(
     )
     assert authenticated.project_id == initialized.project_id
     assert authenticated.scopes == frozenset(
-        {"project:read", "experiment:check", "manifest:create"}
+        {"project:read", "experiment:check", "manifest:create", "submission:create"}
     )
 
 

@@ -14,8 +14,11 @@ from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanResult,
     ExperimentQueryCommand,
     ExperimentQueryResult,
+    PresignedUpload,
     ProjectContextBundle,
     RunManifestResult,
+    SubmissionPrepareCommand,
+    SubmissionPrepareResult,
 )
 
 
@@ -39,14 +42,8 @@ class GuardianUseCases(Protocol):
     ) -> RunManifestResult: ...
 
     def submission_prepare(
-        self,
-        *,
-        project_id: UUID,
-        run_manifest_id: UUID,
-        actor_id: UUID,
-        idempotency_key: UUID,
-        files: Sequence[Mapping[str, Any]],
-    ) -> Mapping[str, Any]: ...
+        self, command: SubmissionPrepareCommand, identity: RequestIdentity
+    ) -> SubmissionPrepareResult: ...
 
     def submission_finalize(
         self,
@@ -66,10 +63,14 @@ class ArtifactStorage(Protocol):
     """S3 适配器需要实现的最小能力。"""
 
     def create_upload_url(
-        self, *, object_key: str, content_type: str, sha256: str, expires_in: int
-    ) -> str: ...
-
-    def verify_object(self, *, object_key: str, expected_sha256: str) -> bool: ...
+        self,
+        *,
+        object_key: str,
+        content_type: str,
+        content_length: int,
+        sha256: str,
+        expires_in: int,
+    ) -> PresignedUpload: ...
 
 
 class SubmissionWorkflow(Protocol):

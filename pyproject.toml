@@ -22,6 +22,7 @@ dependencies = [
   "structlog<26",
   "python-multipart<1",
   "httpx<1",
+  "boto3<2",
 ]
 
 [project.scripts]

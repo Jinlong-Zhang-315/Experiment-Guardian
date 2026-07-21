@@ -4,8 +4,10 @@
 外部输入转换成这里的对象，核心规则因此可以独立测试，也便于未来复用于异步工作流。
 """
 
+import math
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
@@ -13,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from experiment_guardian.domain.enums import (
     ApprovalStatus,
+    ArtifactType,
     CheckResult,
     ConfigFormat,
     ConstraintSource,
@@ -23,11 +26,15 @@ from experiment_guardian.domain.enums import (
     IntentStatus,
     ProtectionLevel,
     RiskSeverity,
+    SubmissionStatus,
+    SubmittedRunStatus,
     VerificationStatus,
 )
 
 MAX_CONFIGURATION_BYTES = 1024 * 1024
 MAX_RUN_COMMAND_LENGTH = 8192
+MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
+MAX_SUBMISSION_BYTES = 100 * 1024 * 1024
 SHA256_PATTERN = r"^[0-9a-fA-F]{64}$"
 GIT_COMMIT_PATTERN = r"^[0-9a-fA-F]{7,64}$"
 
@@ -420,6 +427,134 @@ class RunManifestResult(ContractModel):
         if type(self.seed) is not int:
             raise ValueError("Manifest seed 必须是整数且不能是布尔值")
         return self
+
+
+class SubmissionArtifactInput(ContractModel):
+    """本地 Agent 对一个待上传文件的声明，内容将在 finalize 阶段由云端复核。"""
+
+    filename: str = Field(min_length=1, max_length=255)
+    artifact_type: ArtifactType
+    mime_type: str = Field(min_length=1, max_length=100)
+    size_bytes: int = Field(strict=True, ge=1, le=MAX_ARTIFACT_BYTES)
+    sha256: str = Field(pattern=SHA256_PATTERN)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_sha256(cls, value: Any) -> Any:
+        if isinstance(value, dict) and isinstance(value.get("sha256"), str):
+            return {**value, "sha256": value["sha256"].lower()}
+        return value
+
+    @model_validator(mode="after")
+    def validate_filename_and_media_type(self) -> "SubmissionArtifactInput":
+        if (
+            self.filename in {".", ".."}
+            or "/" in self.filename
+            or "\\" in self.filename
+            or any(ord(char) < 32 or ord(char) == 127 for char in self.filename)
+        ):
+            raise ValueError("filename 必须是普通文件名，不能包含路径或控制字符")
+
+        suffix = Path(self.filename).suffix.lower()
+        allowed: dict[ArtifactType, dict[str, set[str]]] = {
+            ArtifactType.CONFIG: {
+                ".yaml": {"application/yaml", "application/x-yaml", "text/yaml"},
+                ".yml": {"application/yaml", "application/x-yaml", "text/yaml"},
+                ".json": {"application/json"},
+            },
+            ArtifactType.RESULT: {".json": {"application/json"}},
+            ArtifactType.LOG: {".txt": {"text/plain"}},
+            ArtifactType.NOTE: {".md": {"text/markdown"}},
+            ArtifactType.MANIFEST: {".json": {"application/json"}},
+        }
+        if suffix not in allowed[self.artifact_type]:
+            raise ValueError(f"{self.artifact_type.value} 不允许使用扩展名 {suffix or '<none>'}")
+        if self.mime_type not in allowed[self.artifact_type][suffix]:
+            raise ValueError("mime_type 与 artifact_type/文件扩展名不一致")
+        return self
+
+
+class SubmissionPrepareCommand(ContractModel):
+    project_id: UUID
+    run_manifest_id: UUID
+    idempotency_key: UUID
+    source_agent: str = Field(min_length=1, max_length=300)
+    collected_at: datetime
+    experiment_status: SubmittedRunStatus
+    metrics_summary: dict[str, float] = Field(default_factory=dict)
+    files: list[SubmissionArtifactInput] = Field(min_length=2, max_length=10)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_metric_types(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        metrics = value.get("metrics_summary")
+        if not isinstance(metrics, dict):
+            return value
+        normalized: dict[str, float] = {}
+        if len(metrics) > 50:
+            raise ValueError("metrics_summary 最多包含 50 个指标")
+        for name, metric in metrics.items():
+            if not isinstance(name, str) or not name.strip() or len(name) > 100:
+                raise ValueError("指标名称必须是 1 到 100 字符的非空字符串")
+            if type(metric) not in {int, float} or not math.isfinite(metric):
+                raise ValueError(f"指标 {name} 必须是有限数值且不能是布尔值")
+            normalized[name] = float(metric)
+        return {**value, "metrics_summary": normalized}
+
+    @model_validator(mode="after")
+    def validate_submission_declaration(self) -> "SubmissionPrepareCommand":
+        if self.collected_at.tzinfo is None or self.collected_at.utcoffset() is None:
+            raise ValueError("collected_at 必须包含时区")
+        if self.experiment_status is SubmittedRunStatus.COMPLETED and not self.metrics_summary:
+            raise ValueError("COMPLETED 实验必须提供至少一个指标摘要")
+
+        filenames = [item.filename.casefold() for item in self.files]
+        if len(filenames) != len(set(filenames)):
+            raise ValueError("同一 Submission 中的 filename 不能重复")
+        if sum(item.size_bytes for item in self.files) > MAX_SUBMISSION_BYTES:
+            raise ValueError("单次 Submission 文件总大小不能超过 100 MiB")
+
+        counts = {
+            artifact_type: sum(item.artifact_type is artifact_type for item in self.files)
+            for artifact_type in ArtifactType
+        }
+        if counts[ArtifactType.CONFIG] != 1 or counts[ArtifactType.RESULT] != 1:
+            raise ValueError("Submission 必须恰好包含一个 CONFIG 和一个 RESULT")
+        if counts[ArtifactType.NOTE] > 1 or counts[ArtifactType.MANIFEST] > 1:
+            raise ValueError("NOTE 和 MANIFEST 最多各包含一个")
+        return self
+
+
+class PresignedUpload(ContractModel):
+    upload_url: str = Field(min_length=1)
+    required_headers: dict[str, str]
+
+
+class ArtifactUploadTarget(ContractModel):
+    artifact_id: UUID
+    filename: str
+    artifact_type: ArtifactType
+    mime_type: str
+    size_bytes: int
+    sha256: str = Field(pattern=SHA256_PATTERN)
+    upload_url: str = Field(min_length=1)
+    required_headers: dict[str, str]
+    expires_at: datetime
+
+
+class SubmissionPrepareResult(ContractModel):
+    submission_id: UUID
+    project_id: UUID
+    run_manifest_id: UUID
+    manifest_hash: str = Field(pattern=SHA256_PATTERN)
+    status: Literal[SubmissionStatus.RECEIVED] = SubmissionStatus.RECEIVED
+    experiment_status: SubmittedRunStatus
+    metrics_summary: dict[str, float]
+    required_files_check: Literal["PASS"] = "PASS"
+    artifact_uploads: list[ArtifactUploadTarget]
+    created_at: datetime
 
 
 class IntentInterpretation(ContractModel):

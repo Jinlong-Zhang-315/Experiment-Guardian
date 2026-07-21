@@ -2,7 +2,7 @@
 
 Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的治理系统。本仓库当前
 已完成 P0 基础骨架、已认证的正式上下文读取、可持久化的训练前确定性配置检查、
-Owner 审批和不可变 Run Manifest。
+Owner 审批、不可变 Run Manifest 和 S3 实验草稿上传准备。
 它不保证实验一定正确，也不声称能够
 完整验证真实训练行为。
 
@@ -20,7 +20,9 @@ Owner 审批和不可变 Run Manifest。
 * Plan Check 完整保存当时 Context/baseline、Intent、约束和原始配置依据；
 * Owner 对待审批计划的一次性批准/拒绝 API，以及不可修改的审批与审计记录；
 * `run_manifest_create` 只从历史 Plan Check 快照生成版本化、可重复计算哈希的 Manifest；
-* 四个收敛的 Alembic 迁移和可信本地管理 CLI；
+* `submission_prepare` 原子创建 `RECEIVED` 草稿和 artifact 声明，返回绑定
+  Content-Type 与 SHA-256 checksum 的短期 S3 PUT 地址；
+* 五个收敛的 Alembic 迁移和可信本地管理 CLI；
 * 提交分析 LangGraph 的固定节点顺序；
 * Alembic、pytest、Ruff 和 mypy 基础配置。
 
@@ -38,10 +40,10 @@ Owner 审批和不可变 Run Manifest。
 * 向量相似度只生成候选证据，执行前必须按项目、确认状态、实验状态和协议过滤。
 
 MCP 工具不接受客户端提交的用户 UUID，调用者来自服务端验证的项目绑定 Token。当前
-`project_get_context`、`experiment_check_plan` 和 `run_manifest_create` 已接入
-CockroachDB；其他三个工具
+`project_get_context`、`experiment_check_plan`、`run_manifest_create` 和
+`submission_prepare` 已接入 CockroachDB；其他两个工具
 会明确返回尚未实现，不会伪造数据。
-S3、Bedrock、CockroachDB checkpoint 和四个 Web 页面尚未实现。
+S3 对象复核、提交分析工作流持久化、Bedrock 和四个 Web 页面尚未实现。
 
 提交分析图可从最后成功的分析步骤恢复；`NEEDS_REVIEW` 是分析图的终态交接，并非
 LangGraph 原生 `interrupt()`。用户确认由独立、幂等的数据库事务完成。
@@ -70,7 +72,8 @@ alembic upgrade head
 
 `20260721_01` 创建 10 张基础表，`20260721_02` 增加 `plan_checks`，`20260721_03`
 补齐历史策略和原始配置快照，`20260721_04` 增加 `approval_records` 和
-`run_manifests`。后续表按开发阶段通过新 revision 添加，不提前冻结。
+`run_manifests`，`20260721_05` 增加 `experiment_submissions` 和 `artifacts`。
+后续表按开发阶段通过新 revision 添加，不提前冻结。
 
 ## 初始化与检查链路
 
@@ -102,7 +105,9 @@ experiment-guardian-admin issue-mcp-token \
 ```
 
 stdio MCP Server 从 `MCP_ACCESS_TOKEN` 环境变量读取凭据。新签发的 MCP Token 同时具备
-`project:read`、`experiment:check` 和 `manifest:create` scope；旧 Token 需要重新签发。
+`project:read`、`experiment:check`、`manifest:create` 和 `submission:create` scope；
+旧 Token 需要重新签发。使用 `submission_prepare` 前还需配置 `AWS_REGION`、
+`S3_BUCKET` 和 AWS SDK 凭据；预签名 URL 不写入数据库。
 新签发的 Owner API Token 包含 `plan:approve`；旧 Owner Token 也需要轮换后才能审批。
 原始 Token 只在签发时显示一次，数据库只保存 SHA-256，日志和审计记录不得包含原始值。
 
@@ -158,15 +163,22 @@ pytest
 ruff check src tests migrations
 ```
 
-默认测试不操作外部数据库。需要验证真实 CockroachDB 迁移、审批和 Manifest 事务链路时，
+默认测试不操作外部数据库或 S3。需要验证真实 CockroachDB 迁移、审批、
+Manifest 和 Submission 事务链路时，
 使用随机临时数据库执行：
 
 ```bash
 RUN_COCKROACH_INTEGRATION=1 pytest -q tests/integration/test_plan_check_cockroach.py
 ```
 
+配置独立测试 Bucket 和 AWS 凭据后，可显式验证真实预签名 PUT：
+
+```bash
+RUN_S3_INTEGRATION=1 pytest -q tests/integration/test_s3_storage.py
+```
+
 ## 下一开发步
 
-1. 实现 `submission_prepare`，创建实验草稿和白名单 artifact 上传槽位；
-2. 接入 S3 预签名上传与服务端可验证的对象元数据；
-3. `submission_finalize`、分析工作流、Bedrock 和 Web 页面仍保持在后续轮次。
+1. 只实现 `submission_finalize` 和 S3 HEAD/checksum 复核；
+2. 缺失、大小、Content-Type 或 SHA-256 不一致时不启动分析；
+3. 分析工作流、Bedrock、正式实验确认和 Web 页面仍保持在后续轮次。

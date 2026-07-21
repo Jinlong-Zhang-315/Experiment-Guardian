@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
 更新时间：2026-07-21  
-当前完成轮次：R8
-下一轮：R9 S3 草稿提交
+当前完成轮次：R9
+下一轮：R10 上传完成确认与 S3 对象复核
 
 本文档维护“每轮交付了什么”和“下一轮只做什么”。详细缺陷与修复过程见
 `docs/DEVELOPMENT_LOG.md`，当前代码结构见 `docs/ARCHITECTURE.md`。
@@ -20,10 +20,11 @@
 | R6 | 基础数据、认证和正式上下文读取 | 完成 | CockroachDB migration + API + MCP 读取链路 |
 | R7 | 训练前检查持久化 | 完成 | 已认证、幂等、完整策略快照 Plan Check |
 | R8 | 计划审批和 Run Manifest | 完成 | Owner 最终决策与不可变 Manifest |
-| R9 | S3 草稿提交 | 下一轮 | 只接通 prepare 与上传槽位 |
-| R10 | 提交分析和人工确认 | 排队 | 不属于下一轮 |
-| R11 | 正式实验查询和向量候选 | 排队 | 不属于下一轮 |
-| R12 | Web 页面与 AWS 演示部署 | 排队 | 不属于下一轮 |
+| R9 | S3 草稿提交 | 完成 | RECEIVED 草稿、artifact 声明与短期 PUT URL |
+| R10 | 上传确认与 S3 复核 | 下一轮 | 只接通 finalize 和对象元数据验证 |
+| R11 | 可恢复提交分析与审核回执 | 排队 | 不属于下一轮 |
+| R12 | 正式实验确认、查询和向量候选 | 排队 | 不属于下一轮 |
+| R13 | Web 页面与 AWS 演示部署 | 排队 | 不属于下一轮 |
 
 ## 已完成轮次
 
@@ -148,44 +149,71 @@ experiment_check_plan
 -> immutable RunManifest with complete version/evidence trace
 ```
 
-## 下一轮 R9：S3 草稿提交
+### R9：S3 草稿提交
+
+交付：
+
+* revision `20260721_05`，只迁移 `experiment_submissions` 和 `artifacts`。
+* MCP `submission_prepare`，身份来自项目绑定 Token 的 `submission:create` scope。
+* 每个草稿必须恰好包含一个 CONFIG 和一个 RESULT；LOG 可多个，NOTE 和
+  MANIFEST 各最多一个。
+* 扩展名、Content-Type、单文件 20 MiB、总文件 100 MiB、SHA-256、文件名和
+  数量边界在写库前统一校验。
+* 运行结果只接受 `COMPLETED/FAILED`；完成运行必须提供有限数值的指标摘要。
+* 一个事务创建 `RECEIVED` Submission、Artifact、AuditLog 和 IdempotencyRecord。
+* 同一 Manifest 允许多次实验提交；同 key 同请求复用 Submission/Artifact ID，异体
+  请求冲突。
+* S3 PUT 地址在数据库提交后生成，不持久化；每次幂等重放生成新的短期 URL。
+* 预签名请求绑定 Content-Type、Content-Length、SHA-256 checksum 和
+  `If-None-Match: *`，防止超大上传和已有 artifact 被覆盖。
+* 运行结果、指标和文件声明保存为 `LOCAL_ATTESTED`；Manifest 引用保存为
+  `CLOUD_VERIFIED`，没有把未上传内容标记为云端已验证。
+* 94 项测试被收集，92 项默认执行全部通过；CockroachDB 隔离库验收已显式
+  执行通过，真实 AWS S3 兼容性测试默认跳过。
+
+R9 没有实现 `submission_finalize`、S3 对象复核、提交分析、Bedrock 或正式实验确认。
+
+## 下一轮 R10：上传完成确认与 S3 对象复核
 
 ### 单一目标
 
-只实现 `submission_prepare`：根据有效 Manifest 创建实验草稿和白名单文件上传槽位，
-返回 S3 预签名 URL。下一轮不启动分析工作流，也不确认正式实验。
+只实现 `submission_finalize`：根据数据库中的 artifact 声明复核 S3 对象，记录“上传已验证”
+状态。不在该轮解析配置和结果，不启动 LangGraph。
 
 ### 本轮包含
 
-1. 为 `experiment_submissions` 和 `artifacts` 增加独立 migration。
-2. 固定 CONFIG/RESULT/LOG/NOTE/MANIFEST 文件类型、大小和内容类型白名单。
-3. 校验 Manifest 项目归属、调用者成员资格和 `submission:prepare` scope。
-4. 原子创建 RECEIVED submission、artifact 声明、审计和幂等结果。
-5. 使用 S3 适配器生成短期预签名 PUT URL；数据库只保存 object key 和声明哈希。
-6. 增加 fake storage 测试与最小真实 S3 兼容性测试配置，但默认测试不访问云服务。
+1. 为 finalize 定义专用输入/回执契约，不接受客户端 `actor_id`。
+2. 新增 `submission:finalize` scope，校验 Token 项目绑定、团队和成员资格。
+3. 只允许 finalize 当前 `RECEIVED` 且拥有完整 artifact 声明的 Submission。
+4. 对每个声明 object key 调用 S3 HEAD，比对 Content-Length、Content-Type 和
+   `ChecksumSHA256`；不信任客户端回传的文件元数据。
+5. 所有对象通过后，在单个 CockroachDB 事务中写入 Artifact 云端验证结果、
+   Submission 过渡状态、AuditLog 和幂等结果。
+6. 相同 key 重放返回原验证回执；异体请求冲突；部分缺失或不匹配不得留下
+   “部分已验证”状态。
+7. finalize 成功后，`submission_prepare` 的幂等重放不再为已完成上传的对象签发新 URL。
 
 ### 明确不包含
 
-* `submission_finalize`、对象 SHA-256 二次验证和可恢复分析工作流。
-* Bedrock 摘要、embedding、查重、风险分析和人工确认。
-* Web 页面、自动训练、自动修改配置或代码。
+* 下载或解析 CONFIG/RESULT/LOG 内容。
+* LangGraph 分析、查重、风险分析、Bedrock、embedding 和人工审核。
+* 正式实验确认、查询、Web 页面和 AWS 部署。
 
 ### 验收条件
 
-* 无效、跨项目或不存在的 Manifest 不能创建 submission。
-* 同 key 同请求返回原 submission 和上传槽位；异体请求返回冲突。
-* 文件类型、扩展名、大小、重复文件名或非法哈希在事务写入前被拒绝。
-* 数据库失败不遗留半条 submission；预签名失败不把草稿误标为可上传。
-* R8 的审批和 Manifest 链路保持全量回归通过。
+* 对象缺失、超时或任一元数据不匹配时 finalize 失败，Submission 仍可安全重试。
+* 通过时所有 Artifact 均带 `CLOUD_VERIFIED` 的复核时间和来源。
+* 默认 fake S3 测试、CockroachDB 隔离库事务测试和可选真实 S3 验收分层运行。
+* R9 的 prepare、幂等、上传约束和全量旧功能保持回归通过。
 
 ## 后续队列
 
-后续轮次只表示顺序，不在 R9 同时开发：
+后续轮次只表示顺序，不在 R10 同时开发：
 
 ```text
-R10 Submission finalize + S3 verification + recoverable analysis
-R11 Review + transactional confirmation + structured experiment query
-R12 Four Web pages + AWS deployment + final demonstration
+R11 Recoverable submission analysis + review receipt
+R12 Transactional experiment confirmation + structured/vector query
+R13 Four Web pages + AWS deployment + final demonstration
 ```
 
 ## 每轮更新要求

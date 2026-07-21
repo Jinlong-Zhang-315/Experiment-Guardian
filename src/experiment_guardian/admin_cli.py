@@ -92,7 +92,12 @@ def _issue_mcp_token(args: argparse.Namespace) -> dict[str, Any]:
             project_id=project.id,
             audience=TokenAudience.MCP,
             name=args.token_name,
-            scopes={"experiment:check", "manifest:create", "project:read"},
+            scopes={
+                "experiment:check",
+                "manifest:create",
+                "project:read",
+                "submission:create",
+            },
             lifetime_days=args.ttl_days,
             created_by=user.id,
         )

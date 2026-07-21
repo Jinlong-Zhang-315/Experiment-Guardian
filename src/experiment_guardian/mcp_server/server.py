@@ -19,8 +19,9 @@ from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanCommand,
     ExperimentQueryCommand,
     LocalAttestation,
+    SubmissionPrepareCommand,
 )
-from experiment_guardian.domain.enums import ConfigFormat, ExperimentStatus
+from experiment_guardian.domain.enums import ConfigFormat, ExperimentStatus, SubmittedRunStatus
 
 settings = get_settings()
 mcp = FastMCP(
@@ -94,19 +95,27 @@ def submission_prepare(
     project_id: str,
     run_manifest_id: str,
     idempotency_key: str,
+    source_agent: str,
+    collected_at: str,
+    experiment_status: str,
+    metrics_summary: dict[str, Any],
     files: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """创建实验草稿并为白名单文件返回 S3 预签名上传地址。"""
 
     identity = get_identity_provider().current_identity()
-    result = get_guardian_use_cases().submission_prepare(
+    command = SubmissionPrepareCommand(
         project_id=UUID(project_id),
         run_manifest_id=UUID(run_manifest_id),
-        actor_id=identity.user_id,
         idempotency_key=UUID(idempotency_key),
+        source_agent=source_agent,
+        collected_at=collected_at,
+        experiment_status=SubmittedRunStatus(experiment_status.upper()),
+        metrics_summary=metrics_summary,
         files=files,
     )
-    return dict(result)
+    result = get_guardian_use_cases().submission_prepare(command, identity)
+    return result.model_dump(mode="json")
 
 
 @mcp.tool()

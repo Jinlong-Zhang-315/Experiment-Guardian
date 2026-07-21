@@ -15,10 +15,15 @@ from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyGovernanceRepository,
     SqlAlchemyPlanCheckRepository,
     SqlAlchemyProjectRepository,
+    SqlAlchemySubmissionRepository,
 )
 from experiment_guardian.infrastructure.security import (
     EnvironmentIdentityProvider,
     SqlAlchemyTokenService,
+)
+from experiment_guardian.infrastructure.storage import (
+    S3ArtifactStorage,
+    UnconfiguredArtifactStorage,
 )
 
 
@@ -38,17 +43,34 @@ def get_governance_repository() -> SqlAlchemyGovernanceRepository:
 
 
 @lru_cache(maxsize=1)
+def get_submission_repository() -> SqlAlchemySubmissionRepository:
+    return SqlAlchemySubmissionRepository()
+
+
+@lru_cache(maxsize=1)
+def get_artifact_storage() -> S3ArtifactStorage | UnconfiguredArtifactStorage:
+    settings = get_settings()
+    if not settings.s3_bucket:
+        return UnconfiguredArtifactStorage()
+    return S3ArtifactStorage(bucket=settings.s3_bucket, region=settings.aws_region)
+
+
+@lru_cache(maxsize=1)
 def get_token_service() -> SqlAlchemyTokenService:
     return SqlAlchemyTokenService(get_session_factory())
 
 
 @lru_cache(maxsize=1)
 def get_guardian_use_cases() -> GuardianUseCases:
+    settings = get_settings()
     return GuardianApplication(
         get_session_factory(),
         get_project_repository(),
         get_plan_check_repository(),
         get_governance_repository(),
+        get_submission_repository(),
+        get_artifact_storage(),
+        settings.s3_presign_expires_seconds,
     )
 
 

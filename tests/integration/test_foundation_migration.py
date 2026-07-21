@@ -12,6 +12,7 @@ from migrations.scope import (
     GOVERNANCE_TABLES,
     MIGRATED_TABLES,
     PLAN_CHECK_TABLES,
+    SUBMISSION_PREPARE_TABLES,
 )
 
 
@@ -68,8 +69,24 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     assert "uq_approval_records_target" in {
         item["name"] for item in inspector.get_unique_constraints("approval_records")
     }
+    assert set(inspector.get_table_names()) >= SUBMISSION_PREPARE_TABLES
+    assert {
+        "uq_experiment_submissions_actor_idempotency",
+    } <= {item["name"] for item in inspector.get_unique_constraints("experiment_submissions")}
+    assert {
+        "uq_artifacts_submission_filename",
+        "uq_artifacts_s3_key",
+    } <= {item["name"] for item in inspector.get_unique_constraints("artifacts")}
     engine.dispose()
 
+    run_alembic("downgrade", "20260721_04")
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    assert not (set(inspector.get_table_names()) & SUBMISSION_PREPARE_TABLES)
+    assert set(inspector.get_table_names()) >= GOVERNANCE_TABLES
+    engine.dispose()
+
+    run_alembic("upgrade", "head")
     run_alembic("downgrade", "20260721_03")
     engine = create_engine(database_url)
     inspector = inspect(engine)
