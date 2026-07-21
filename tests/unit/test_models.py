@@ -39,9 +39,16 @@ def test_version_and_evidence_snapshots_are_persisted() -> None:
     manifest = Base.metadata.tables["run_manifests"]
     submission = Base.metadata.tables["experiment_submissions"]
 
-    assert {"context_id", "context_version", "intent_id", "intent_version"} <= set(
-        plan_check.columns.keys()
-    )
+    assert {
+        "context_id",
+        "context_version",
+        "intent_id",
+        "intent_version",
+        "configuration_document",
+        "input_document_hash",
+        "context_snapshot",
+        "intent_snapshot",
+    } <= set(plan_check.columns.keys())
     assert {"plan_check_id", "context_version", "intent_version", "evidence_snapshot"} <= set(
         manifest.columns.keys()
     )
@@ -56,6 +63,21 @@ def test_plan_check_result_and_approval_status_are_database_constrained() -> Non
 
     assert "ck_plan_checks_result_approval_consistent" in check_names
     assert "ck_plan_checks_approved_requires_actor" in check_names
+
+
+def test_approval_and_manifest_are_immutable_by_schema() -> None:
+    approval = Base.metadata.tables["approval_records"]
+    manifest = Base.metadata.tables["run_manifests"]
+
+    assert "uq_approval_records_target" in {constraint.name for constraint in approval.constraints}
+    manifest_constraints = {constraint.name for constraint in manifest.constraints}
+    assert {
+        "uq_run_manifests_plan_check",
+        "uq_run_manifests_project_idempotency",
+        "uq_run_manifests_project_hash",
+        "ck_run_manifests_run_manifest_schema_version_one",
+    } <= manifest_constraints
+    assert {"schema_version", "config_document_hash"} <= set(manifest.columns.keys())
 
 
 def test_memory_has_structured_vector_filters() -> None:

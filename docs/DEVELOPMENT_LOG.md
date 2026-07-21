@@ -22,7 +22,9 @@
 | 2026-07-21 | R5 | `7bfe457` | NOT_APPLICABLE 和 YAML 隐式类型修复 |
 | 2026-07-21 | R6 | `7bfe457` | 基础迁移、认证、项目初始化和上下文读取 |
 | 2026-07-21 | DOC-1 | `7bfe457` | 建立持续维护的开发文档体系 |
-| 2026-07-21 | R7 | `working tree` | 已认证、幂等、可追溯的训练前检查 |
+| 2026-07-21 | R7 | `4f0a7b3` | 已认证、幂等、可追溯的训练前检查 |
+| 2026-07-21 | R7.1 | `working tree` | Plan Check 历史依据与事务稳定性加固 |
+| 2026-07-21 | R8 | `working tree` | Owner 计划审批和不可变 Run Manifest |
 
 ## R0：需求分析与 MVP 收敛
 
@@ -226,7 +228,7 @@
 
 ## R7：已认证、幂等、可追溯的训练前检查
 
-版本：`working tree`，当前实现轮次。
+版本：`4f0a7b3`。
 
 ### 更新内容
 
@@ -262,6 +264,101 @@
 * `approval_records` 和 `run_manifests` 仍只有 ORM 骨架，未进入迁移。
 * `NEEDS_APPROVAL` 尚无 Owner 决策入口，因此当前不能转为 `APPROVED`。
 * `run_manifest_create`、S3、Submission、Bedrock、正式实验确认和 Web 页面仍未实现。
+
+## R7.1：Plan Check 历史依据与事务稳定性加固
+
+版本：`working tree`，当前修正轮次。
+
+### 更新内容
+
+* 新增 revision `20260721_03`，为 Plan Check 保存原始配置文档/哈希、完整 Context
+  参考和 payload、baseline `active_config`、完整 Intent 参考和策略 payload。
+* 幂等 report 只保存不可变的检查结论；`approval_status` 和 `can_create_manifest`
+  改为重放时从 Plan Check 当前数据库状态合成。
+* 配置比较改为递归校验类型和值，`true`、`1` 和 `1.0` 不再被视为相同。
+* 正式策略加载时拒绝同一参数同时出现在 Intent `allowed_variables` 和已确认
+  `LOCKED` 约束中。
+* 配置文档限制为 1 MiB UTF-8，运行命令限制为 8192 字符，Git commit 和
+  SHA-256 必须为规定长度的十六进制值，并校验布尔/字符串证据类型。
+* 云端对收到的配置内容重算原始字节 SHA-256，与 `LOCAL_ATTESTED` 值冲突时
+  生成 `CONFIG_DOCUMENT_SHA256_MISMATCH` Critical 阻断风险。
+* CockroachDB `40001` 序列化冲突改为服务端最多重跑完整事务三次，耗尽后才返回
+  可使用原 Idempotency-Key 重试的错误。
+
+### 修复的问题
+
+* Context 或 Intent 后续变化不再影响历史 Plan Check 的决策依据；迁移前已有但无法
+  补建快照的记录会被明确拒绝重放，要求使用新 key 重新检查。
+* 未来审批状态变化不会再被旧 report 中的 `PENDING` 覆盖。
+* Python 宽松相等语义不会隐藏配置类型漂移。
+* 配置哈希和内容不一致时不再可能返回 PASS。
+* README 和迭代文档在检查前已标记 R7，不存在所报的“仍为 R6”问题；本轮继续
+  同步 R7.1 和 revision `20260721_03`。
+
+### 验证结果
+
+* 常规套件收集 61 项测试，其中 60 项默认执行，1 项真实 CockroachDB 测试显式启用。
+* 真实 CockroachDB 测试使用随机临时数据库，完成 migration upgrade、Plan Check
+  持久化、幂等重放、异体冲突、失败回滚、downgrade 和临时库清理。
+* 开发 CockroachDB 已成功升级到 `20260721_03 (head)`。
+
+### 已知遗留项
+
+* R7.1 不实现 Owner 审批业务、Manifest、S3 或 Web；这些仍按 R8/R9 顺序开发。
+
+## R8：Owner 计划审批和不可变 Run Manifest
+
+版本：`working tree`，当前实现轮次。
+
+### 更新内容
+
+* 新增 revision `20260721_04`，只迁移 `approval_records` 和 `run_manifests`；迁移包含
+  最终审批状态、单目标唯一审批、单 Plan 唯一 Manifest、项目幂等键、Manifest 哈希和
+  `schema_version=1` 检查约束。
+* 新增 `ApprovalDecision`、审批请求/结果和 `RunManifestResult` 契约。公开审批请求只允许
+  `APPROVED/REJECTED`，可选理由会去除首尾空白，纯空白归一为 null。
+* 新增 `PlanApprovalService` 和最小 Owner API：
+  `POST /api/v1/projects/{project_id}/plan-checks/{plan_check_id}/decision`。
+* 审批事务同时写入最终 ApprovalRecord、PlanCheck 状态、AuditLog 和 IdempotencyRecord；
+  已决定记录不能反转，拒绝不会伪造 `approved_by/approved_at`。
+* 实现 MCP `run_manifest_create`。调用者身份来自服务端 MCP Token，不接受 actor/requester
+  参数；新 MCP Token 增加 `manifest:create`，新 Owner API Token 增加 `plan:approve`。
+* 新增纯确定性 Manifest 构建器。dataset、protocol、seed、checkpoint、Git、命令、环境和
+  证据只从 Plan Check 历史快照提取，当前 Context 或 Intent 漂移不会改变历史运行凭据。
+* 配置同时保存原始文档/解析值、规范化配置哈希和原始文档哈希；Manifest 哈希使用排序
+  JSON、紧凑分隔符、`allow_nan=False` 和 SHA-256，可在服务重建后重复计算。
+* seed 优先使用配置顶层严格整数，否则只接受 Context 中唯一的严格整数 default seed；
+  布尔、字符串、多默认值均拒绝。环境中的 N/A/unavailable 归一为 null。
+* Plan Check、审批和 Manifest 共用有界 CockroachDB 40001 重试辅助函数；所有外部调用均
+  位于数据库事务之外，本轮没有引入 S3、Bedrock 或工作流执行。
+
+### 修复的问题
+
+* `NEEDS_APPROVAL` 不再停留在无法推进的 PENDING 状态，Owner 可以作出一次性批准或拒绝。
+* `PASS`、`BLOCKED`、已批准和已拒绝记录不能错误进入审批。
+* Manifest 不会读取当前 Context 为旧 Plan Check 补值，消除多版本对象的时间不一致。
+* PENDING、REJECTED、BLOCKED、缺失完整 R7.1 快照或缺少匹配审批记录均不能生成 Manifest。
+* 同一 Plan Check 使用不同 Idempotency-Key 不再静默返回旧 Manifest，而是返回 409 冲突。
+* 相同 key 的异体审批或 Manifest 请求不会覆盖原结果；事务并发由幂等记录和数据库唯一
+  约束共同兜底。
+
+### 验证结果
+
+* 常规套件共收集 75 项测试，74 项默认执行并全部通过，1 项真实 CockroachDB 测试
+  继续显式 opt-in。
+* 新增审批权限/状态/审计/幂等、批准与拒绝、PASS 直建、历史快照抗漂移、Manifest
+  唯一性、服务重建重放、seed 边界、API 和 MCP 身份边界测试。
+* SQLite migration 完成 `20260721_03 -> 20260721_04 -> 20260721_03` 往返，并验证唯一与
+  schema version 约束。
+* 真实 CockroachDB 隔离库完成 revision 04 降级/升级、NEEDS_APPROVAL、Owner APPROVED、
+  Manifest 创建、幂等事务和最终 downgrade/base 清理。
+* Ruff、Ruff format、mypy 和 `git diff --check` 通过。
+
+### 已知遗留项
+
+* `submission_prepare`、S3 上传槽位和 artifact 草稿尚未实现，收敛到 R9。
+* `submission_finalize`、S3 对象复核、分析工作流、Bedrock、正式实验确认和 Web 页面继续
+  保持未实现，不在 R8 扩大范围。
 
 ## 新日志模板
 

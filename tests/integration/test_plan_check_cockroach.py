@@ -1,0 +1,258 @@
+"""CockroachDB 上的 Plan Check 迁移与事务链路验收。"""
+
+import hashlib
+import os
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from uuid import UUID, uuid4
+
+import pytest
+from sqlalchemy import create_engine, func, inspect, select
+from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session, sessionmaker
+
+from experiment_guardian.application.errors import ConflictError, InputValidationError
+from experiment_guardian.application.identity import RequestIdentity
+from experiment_guardian.application.services import (
+    GuardianApplication,
+    PlanApprovalService,
+    ProjectAdministrationService,
+)
+from experiment_guardian.core.config import get_settings
+from experiment_guardian.domain.administration import (
+    PlanCheckDecisionRequest,
+    ProjectInitializeRequest,
+)
+from experiment_guardian.domain.contracts import (
+    ConfigurationDocument,
+    ExperimentCheckPlanCommand,
+    FieldEvidence,
+    LocalAttestation,
+    LocalEnvironment,
+)
+from experiment_guardian.domain.enums import (
+    ApprovalDecision,
+    ConfigFormat,
+    EvidenceType,
+    TeamRole,
+)
+from experiment_guardian.infrastructure.models import (
+    ApprovalRecord,
+    PlanCheck,
+    RunManifest,
+    Team,
+    TeamMember,
+    User,
+)
+from experiment_guardian.infrastructure.repositories import (
+    SqlAlchemyGovernanceRepository,
+    SqlAlchemyPlanCheckRepository,
+    SqlAlchemyProjectRepository,
+)
+
+RUN_COCKROACH_INTEGRATION = os.getenv("RUN_COCKROACH_INTEGRATION") == "1"
+COLLECTED_AT = datetime(2026, 7, 21, tzinfo=UTC)
+GIT_COMMIT = "a1b2c3d4"
+RUN_COMMAND = "python train.py --config config.yaml"
+
+
+def _run_alembic(database_url: str, *arguments: str) -> None:
+    subprocess.run(
+        [sys.executable, "-m", "alembic", *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "DATABASE_URL": database_url},
+    )
+
+
+def _evidence(value: object, source: str) -> FieldEvidence:
+    return FieldEvidence(
+        value=value,
+        evidence_type=EvidenceType.LOCAL_ATTESTED,
+        source=source,
+        collected_at=COLLECTED_AT,
+        collection_tool="cockroach-integration-test/0.1",
+    )
+
+
+def _command(project_id: UUID, intent_id: UUID, content: str) -> ExperimentCheckPlanCommand:
+    return ExperimentCheckPlanCommand(
+        project_id=project_id,
+        experiment_intent_id=intent_id,
+        idempotency_key=uuid4(),
+        configuration=ConfigurationDocument(format=ConfigFormat.YAML, content=content),
+        command=RUN_COMMAND,
+        git_commit=GIT_COMMIT,
+        local_attestation=LocalAttestation(
+            working_tree_clean=_evidence(True, "git status --porcelain"),
+            git_branch=_evidence("main", "git branch --show-current"),
+            git_commit=_evidence(GIT_COMMIT, "git rev-parse HEAD"),
+            run_command=_evidence(RUN_COMMAND, "local run plan"),
+            output_directory_exists=_evidence(False, "local filesystem"),
+            checkpoint_exists=_evidence(True, "local filesystem"),
+            checkpoint_path=_evidence("checkpoints/baseline.pt", "local run plan"),
+            config_sha256=_evidence(
+                hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "sha256sum config.yaml",
+            ),
+            git_diff_sha256=_evidence("b" * 64, "git diff"),
+            environment=LocalEnvironment(
+                python=_evidence("3.12.13", "python --version"),
+                cuda=_evidence("12.4", "nvidia-smi"),
+                pytorch=_evidence("2.7.0", "python import torch"),
+            ),
+        ),
+    )
+
+
+@pytest.mark.skipif(
+    not RUN_COCKROACH_INTEGRATION,
+    reason="set RUN_COCKROACH_INTEGRATION=1 to run the isolated CockroachDB test",
+)
+def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
+    base_url = make_url(get_settings().database_url)
+    assert base_url.get_backend_name() == "cockroachdb"
+    database_name = f"eg_plan_it_{uuid4().hex}"
+    test_url = base_url.set(database=database_name)
+    rendered_test_url = test_url.render_as_string(hide_password=False)
+    admin_engine = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    test_engine = None
+
+    try:
+        with admin_engine.connect() as connection:
+            connection.exec_driver_sql(f'CREATE DATABASE "{database_name}"')
+        _run_alembic(rendered_test_url, "upgrade", "head")
+
+        test_engine = create_engine(test_url)
+        assert {"approval_records", "run_manifests"} <= set(inspect(test_engine).get_table_names())
+        test_engine.dispose()
+        test_engine = None
+        _run_alembic(rendered_test_url, "downgrade", "20260721_03")
+        downgrade_engine = create_engine(test_url)
+        try:
+            assert not (
+                {"approval_records", "run_manifests"}
+                & set(inspect(downgrade_engine).get_table_names())
+            )
+        finally:
+            downgrade_engine.dispose()
+        _run_alembic(rendered_test_url, "upgrade", "head")
+
+        test_engine = create_engine(test_url)
+        factory = sessionmaker(
+            bind=test_engine,
+            expire_on_commit=False,
+            autoflush=False,
+            class_=Session,
+        )
+        user_id, team_id = uuid4(), uuid4()
+        with factory() as session, session.begin():
+            session.add(User(id=user_id, name="Owner", email=f"{user_id}@example.invalid"))
+            session.flush()
+            session.add(Team(id=team_id, name="Cockroach Integration", owner_id=user_id))
+            session.flush()
+            session.add(TeamMember(team_id=team_id, user_id=user_id, role=TeamRole.OWNER))
+
+        owner = RequestIdentity(
+            user_id=user_id,
+            team_id=team_id,
+            token_id=uuid4(),
+            scopes=frozenset({"project:initialize"}),
+        )
+        projects = SqlAlchemyProjectRepository()
+        governance = SqlAlchemyGovernanceRepository()
+        administration = ProjectAdministrationService(factory, projects)
+        guardian = GuardianApplication(
+            factory,
+            projects,
+            SqlAlchemyPlanCheckRepository(),
+            governance,
+        )
+        approvals = PlanApprovalService(factory, projects, governance)
+        initialize_request = ProjectInitializeRequest.model_validate_json(
+            Path("examples/project-initialize.json").read_text(encoding="utf-8")
+        )
+        initialized = administration.initialize_project(
+            identity=owner,
+            idempotency_key=uuid4(),
+            request=initialize_request,
+        )
+        intent = initialized.context_bundle.active_intent
+        assert intent is not None
+        identity = RequestIdentity(
+            user_id=user_id,
+            team_id=team_id,
+            token_id=uuid4(),
+            project_id=initialized.project_id,
+            scopes=frozenset({"experiment:check", "manifest:create"}),
+        )
+
+        content = "dataset:\n  protocol: 40/20\nmodel:\n  backbone: shift-gcn\n  fusion: 0.3\n"
+        request = _command(initialized.project_id, intent.intent_id, content)
+        first = guardian.experiment_check_plan(request, identity)
+        replay = guardian.experiment_check_plan(request, identity)
+        assert replay.plan_check_id == first.plan_check_id
+
+        changed = request.model_copy(deep=True)
+        changed.configuration.content = content.replace("0.3", "0.4")
+        with pytest.raises(ConflictError, match="Idempotency-Key"):
+            guardian.experiment_check_plan(changed, identity)
+
+        invalid = _command(
+            initialized.project_id,
+            intent.intent_id,
+            content + "  fusion: 0.4\n",
+        )
+        with pytest.raises(InputValidationError, match="重复字段"):
+            guardian.experiment_check_plan(invalid, identity)
+
+        with factory() as session:
+            assert session.scalar(select(func.count()).select_from(PlanCheck)) == 1
+            persisted = session.get(PlanCheck, first.plan_check_id)
+            assert persisted is not None
+            assert persisted.context_snapshot["payload"]["protocol"] == "40/20"
+            assert persisted.input_document_hash == first.document_sha256
+
+        approval_content = content.replace("backbone: shift-gcn", "backbone: transformer")
+        pending = guardian.experiment_check_plan(
+            _command(initialized.project_id, intent.intent_id, approval_content), identity
+        )
+        decision = approvals.decide(
+            identity=RequestIdentity(
+                user_id=user_id,
+                team_id=team_id,
+                token_id=uuid4(),
+                scopes=frozenset({"plan:approve"}),
+            ),
+            project_id=initialized.project_id,
+            plan_check_id=pending.plan_check_id,
+            idempotency_key=uuid4(),
+            request=PlanCheckDecisionRequest(decision=ApprovalDecision.APPROVED),
+        )
+        manifest = guardian.run_manifest_create(
+            plan_check_id=pending.plan_check_id,
+            identity=identity,
+            idempotency_key=uuid4(),
+        )
+        assert manifest.approval_record_id == decision.approval_record_id
+        with factory() as session:
+            assert session.scalar(select(func.count()).select_from(ApprovalRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(RunManifest)) == 1
+
+        test_engine.dispose()
+        test_engine = None
+        _run_alembic(rendered_test_url, "downgrade", "base")
+        empty_engine = create_engine(test_url)
+        try:
+            assert set(inspect(empty_engine).get_table_names()) <= {"alembic_version"}
+        finally:
+            empty_engine.dispose()
+    finally:
+        if test_engine is not None:
+            test_engine.dispose()
+        with admin_engine.connect() as connection:
+            connection.exec_driver_sql(f'DROP DATABASE IF EXISTS "{database_name}" CASCADE')
+        admin_engine.dispose()

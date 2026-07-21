@@ -25,6 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from experiment_guardian.domain.enums import (
+    ApprovalDecision,
     ApprovalStatus,
     ApprovalTargetType,
     ArtifactType,
@@ -293,7 +294,13 @@ class PlanCheck(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     input_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_document_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration_document: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
     parsed_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    context_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    intent_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     git_commit: Mapped[str] = mapped_column(String(64), nullable=False)
     command: Mapped[str] = mapped_column(Text, nullable=False)
     local_attestation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
@@ -315,7 +322,13 @@ class PlanCheck(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
 class ApprovalRecord(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "approval_records"
-    __table_args__ = (Index("ix_approval_target", "target_type", "target_id"),)
+    __table_args__ = (
+        UniqueConstraint("target_type", "target_id", name="uq_approval_records_target"),
+        CheckConstraint(
+            "status IN ('APPROVED', 'REJECTED')",
+            name="approval_record_final_status",
+        ),
+    )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     target_type: Mapped[ApprovalTargetType] = mapped_column(
@@ -324,23 +337,28 @@ class ApprovalRecord(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # 多态目标不建立数据库外键；应用服务必须验证 target 与 project_id 一致。
     target_id: Mapped[UUID] = mapped_column(nullable=False)
     approval_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    status: Mapped[ApprovalStatus] = mapped_column(
-        enum_column(ApprovalStatus, "record_approval_status"), nullable=False
+    status: Mapped[ApprovalDecision] = mapped_column(
+        enum_column(ApprovalDecision, "approval_decision"), nullable=False
     )
     requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
-    decided_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    decided_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     request_reason: Mapped[str] = mapped_column(Text, nullable=False)
     decision_reason: Mapped[str | None] = mapped_column(Text)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class RunManifest(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "run_manifests"
     __table_args__ = (
-        UniqueConstraint("project_id", "idempotency_key"),
-        UniqueConstraint("project_id", "manifest_hash"),
+        UniqueConstraint("plan_check_id", name="uq_run_manifests_plan_check"),
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_run_manifests_project_idempotency"
+        ),
+        UniqueConstraint("project_id", "manifest_hash", name="uq_run_manifests_project_hash"),
+        CheckConstraint("schema_version = 1", name="run_manifest_schema_version_one"),
     )
 
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     intent_id: Mapped[UUID] = mapped_column(ForeignKey("experiment_intents.id"), nullable=False)
     plan_check_id: Mapped[UUID] = mapped_column(ForeignKey("plan_checks.id"), nullable=False)
@@ -352,9 +370,9 @@ class RunManifest(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         enum_column(ExperimentMode, "manifest_experiment_mode"), nullable=False
     )
     idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
-    config_s3_key: Mapped[str | None] = mapped_column(String(1500))
     config_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_document_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     git_branch: Mapped[str] = mapped_column(String(500), nullable=False)
     git_commit: Mapped[str] = mapped_column(String(64), nullable=False)
     git_diff_hash: Mapped[str | None] = mapped_column(String(64))

@@ -7,7 +7,12 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, inspect
 
-from migrations.scope import FOUNDATION_TABLES, MIGRATED_TABLES
+from migrations.scope import (
+    FOUNDATION_TABLES,
+    GOVERNANCE_TABLES,
+    MIGRATED_TABLES,
+    PLAN_CHECK_TABLES,
+)
 
 
 def test_foundation_and_plan_check_migrations_are_independently_reversible(
@@ -31,13 +36,53 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     assert set(inspect(engine).get_table_names()) == FOUNDATION_TABLES | {"alembic_version"}
     engine.dispose()
 
+    run_alembic("upgrade", "20260721_02")
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    assert set(inspector.get_table_names()) == (
+        FOUNDATION_TABLES | PLAN_CHECK_TABLES | {"alembic_version"}
+    )
+    check_names = {item["name"] for item in inspector.get_check_constraints("plan_checks")}
+    assert "ck_plan_checks_result_approval_consistent" in check_names
+    assert "ck_plan_checks_approved_requires_actor" in check_names
+    columns_at_r7_start = {item["name"] for item in inspector.get_columns("plan_checks")}
+    assert "context_snapshot" not in columns_at_r7_start
+    engine.dispose()
+
     run_alembic("upgrade", "head")
     engine = create_engine(database_url)
     inspector = inspect(engine)
     assert set(inspector.get_table_names()) == MIGRATED_TABLES | {"alembic_version"}
-    check_names = {item["name"] for item in inspector.get_check_constraints("plan_checks")}
-    assert "ck_plan_checks_result_approval_consistent" in check_names
-    assert "ck_plan_checks_approved_requires_actor" in check_names
+    columns_at_head = {item["name"] for item in inspector.get_columns("plan_checks")}
+    assert {
+        "input_document_hash",
+        "configuration_document",
+        "context_snapshot",
+        "intent_snapshot",
+    } <= columns_at_head
+    assert {
+        "uq_run_manifests_plan_check",
+        "uq_run_manifests_project_idempotency",
+        "uq_run_manifests_project_hash",
+    } <= {item["name"] for item in inspector.get_unique_constraints("run_manifests")}
+    assert "uq_approval_records_target" in {
+        item["name"] for item in inspector.get_unique_constraints("approval_records")
+    }
+    engine.dispose()
+
+    run_alembic("downgrade", "20260721_03")
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    assert not (set(inspector.get_table_names()) & GOVERNANCE_TABLES)
+    assert "context_snapshot" in {item["name"] for item in inspector.get_columns("plan_checks")}
+    engine.dispose()
+
+    run_alembic("downgrade", "20260721_02")
+    engine = create_engine(database_url)
+    columns_after_snapshot_downgrade = {
+        item["name"] for item in inspect(engine).get_columns("plan_checks")
+    }
+    assert "context_snapshot" not in columns_after_snapshot_downgrade
     engine.dispose()
 
     run_alembic("downgrade", "20260721_01")

@@ -1,17 +1,20 @@
 """训练前检查持久化切片的纵向验收测试。"""
 
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
 from experiment_guardian.application.errors import (
     AuthorizationError,
     ConflictError,
     InputValidationError,
+    ServiceUnavailableError,
 )
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.services import (
@@ -66,7 +69,7 @@ def evidence(value: object, source: str) -> FieldEvidence:
     )
 
 
-def complete_attestation() -> LocalAttestation:
+def complete_attestation(config_content: str) -> LocalAttestation:
     return LocalAttestation(
         working_tree_clean=evidence(True, "git status --porcelain"),
         git_branch=evidence("main", "git branch --show-current"),
@@ -75,7 +78,10 @@ def complete_attestation() -> LocalAttestation:
         output_directory_exists=evidence(False, "local filesystem"),
         checkpoint_exists=evidence(True, "local filesystem"),
         checkpoint_path=evidence("checkpoints/baseline.pt", "local run plan"),
-        config_sha256=evidence("a" * 64, "sha256sum config.yaml"),
+        config_sha256=evidence(
+            hashlib.sha256(config_content.encode("utf-8")).hexdigest(),
+            "sha256sum config.yaml",
+        ),
         git_diff_sha256=evidence("b" * 64, "git diff"),
         environment=LocalEnvironment(
             python=evidence("3.12.13", "python --version"),
@@ -98,17 +104,18 @@ def command(
     content: str | None = None,
     idempotency_key: UUID | None = None,
 ) -> ExperimentCheckPlanCommand:
+    config_content = content or config_yaml()
     return ExperimentCheckPlanCommand(
         project_id=project_id,
         experiment_intent_id=intent_id,
         idempotency_key=idempotency_key or uuid4(),
         configuration=ConfigurationDocument(
             format=ConfigFormat.YAML,
-            content=content or config_yaml(),
+            content=config_content,
         ),
         command=RUN_COMMAND,
         git_commit=GIT_COMMIT,
-        local_attestation=complete_attestation(),
+        local_attestation=complete_attestation(config_content),
     )
 
 
@@ -187,7 +194,18 @@ def test_pass_is_persisted_and_replayed_without_re_evaluation(
         context = session.get(ProjectContext, first.context_id)
         assert record is not None and context is not None
         assert record.report["plan_check_id"] == str(first.plan_check_id)
+        assert "approval_status" not in record.report
+        assert "can_create_manifest" not in record.report
         assert record.input_config_hash == first.config_hash
+        assert record.input_document_hash == first.document_sha256
+        assert record.configuration_document == request.configuration.model_dump(mode="json")
+        assert record.context_snapshot["reference"]["version"] == 1
+        assert record.context_snapshot["payload"]["active_config"] == {
+            "dataset": {"protocol": "40/20"},
+            "model": {"backbone": "shift-gcn", "fusion": 0.2},
+        }
+        assert record.intent_snapshot["reference"]["version"] == 1
+        assert record.intent_snapshot["payload"]["allowed_variables"] == ["model.fusion"]
         assert record.local_attestation["git_commit"]["evidence_type"] == "LOCAL_ATTESTED"
         assert len(record.constraint_snapshot) == 3
         context.active_config = {
@@ -205,6 +223,16 @@ def test_pass_is_persisted_and_replayed_without_re_evaluation(
         restarted.experiment_check_plan(changed, identity)
     with plan_check_session_factory() as session:
         assert session.scalar(select(func.count()).select_from(PlanCheck)) == 1
+        record = session.get(PlanCheck, first.plan_check_id)
+        assert record is not None
+        assert record.context_snapshot["payload"]["active_config"]["dataset"]["protocol"] == "40/20"
+
+    with plan_check_session_factory() as session, session.begin():
+        record = session.get(PlanCheck, first.plan_check_id)
+        assert record is not None
+        record.context_snapshot = {}
+    with pytest.raises(ConflictError, match="完整策略快照"):
+        restarted.experiment_check_plan(request, identity)
 
 
 def test_locked_and_approval_required_changes_persist_distinct_states(
@@ -226,20 +254,28 @@ def test_locked_and_approval_required_changes_persist_distinct_states(
     assert blocked.can_create_manifest is False
     assert "LOCKED_PARAMETER_CHANGED" in {item.code for item in blocked.risks}
 
-    approval = guardian.experiment_check_plan(
-        command(
-            project_id=project_id,
-            intent_id=intent_id,
-            content=config_yaml(backbone="transformer"),
-        ),
-        identity,
+    approval_request = command(
+        project_id=project_id,
+        intent_id=intent_id,
+        content=config_yaml(backbone="transformer"),
     )
+    approval = guardian.experiment_check_plan(approval_request, identity)
     assert approval.check_result is CheckResult.NEEDS_APPROVAL
     assert approval.approval_status is ApprovalStatus.PENDING
     assert approval.risk_level is RiskSeverity.HIGH
     assert approval.can_create_manifest is False
-    with plan_check_session_factory() as session:
+    with plan_check_session_factory() as session, session.begin():
         assert session.scalar(select(func.count()).select_from(PlanCheck)) == 2
+        record = session.get(PlanCheck, approval.plan_check_id)
+        assert record is not None
+        assert "approval_status" not in record.report
+        record.approval_status = ApprovalStatus.APPROVED
+        record.approved_by = identity.user_id
+        record.approved_at = datetime.now(UTC)
+
+    replay = guardian.experiment_check_plan(approval_request, identity)
+    assert replay.approval_status is ApprovalStatus.APPROVED
+    assert replay.can_create_manifest is True
 
 
 def test_pending_constraint_is_snapshotted_but_cannot_block(
@@ -390,3 +426,71 @@ def test_invalid_config_is_atomic_and_drifted_baseline_is_blocked(
     )
     assert drifted.check_result is CheckResult.BLOCKED
     assert "FORMAL_BASELINE_CONSTRAINT_MISMATCH" in {item.code for item in drifted.risks}
+
+
+def test_intent_cannot_allow_a_confirmed_locked_parameter(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    identity, project_id, intent_id, guardian = initialize_policy(plan_check_session_factory)
+    with plan_check_session_factory() as session, session.begin():
+        intent = session.get(ExperimentIntent, intent_id)
+        assert intent is not None
+        intent.allowed_variables = [*intent.allowed_variables, "dataset.protocol"]
+
+    with pytest.raises(ConflictError, match="LOCKED"):
+        guardian.experiment_check_plan(
+            command(project_id=project_id, intent_id=intent_id),
+            identity,
+        )
+    with plan_check_session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(PlanCheck)) == 0
+
+
+def test_cockroach_serialization_conflicts_are_retried_server_side(
+    plan_check_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity, project_id, intent_id, guardian = initialize_policy(plan_check_session_factory)
+    request = command(project_id=project_id, intent_id=intent_id)
+    original = guardian._experiment_check_plan_once
+    attempts = 0
+
+    class SerializationFailure(Exception):
+        sqlstate = "40001"
+
+    def flaky_once(
+        current_command: ExperimentCheckPlanCommand, current_identity: RequestIdentity
+    ) -> object:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise DBAPIError("INSERT", {}, SerializationFailure(), False)
+        return original(current_command, current_identity)
+
+    monkeypatch.setattr(guardian, "_experiment_check_plan_once", flaky_once)
+    result = guardian.experiment_check_plan(request, identity)
+
+    assert result.check_result is CheckResult.PASS
+    assert attempts == 3
+    with plan_check_session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(PlanCheck)) == 1
+
+
+def test_cockroach_serialization_retry_is_bounded(
+    plan_check_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity, project_id, intent_id, guardian = initialize_policy(plan_check_session_factory)
+    request = command(project_id=project_id, intent_id=intent_id)
+    attempts = 0
+
+    class SerializationFailure(Exception):
+        sqlstate = "40001"
+
+    def always_conflicts(_: ExperimentCheckPlanCommand, __: RequestIdentity) -> object:
+        nonlocal attempts
+        attempts += 1
+        raise DBAPIError("INSERT", {}, SerializationFailure(), False)
+
+    monkeypatch.setattr(guardian, "_experiment_check_plan_once", always_conflicts)
+    with pytest.raises(ServiceUnavailableError, match="Idempotency-Key"):
+        guardian.experiment_check_plan(request, identity)
+    assert attempts == 3

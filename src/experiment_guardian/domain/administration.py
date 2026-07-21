@@ -1,12 +1,13 @@
 """首版项目初始化的管理端契约。"""
 
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from experiment_guardian.domain.contracts import ContractModel, ProjectContextBundle
-from experiment_guardian.domain.enums import ProtectionLevel
+from experiment_guardian.domain.enums import ApprovalDecision, ProtectionLevel
 
 
 class InitialProjectInput(ContractModel):
@@ -100,3 +101,36 @@ class ProjectInitializeRequest(ContractModel):
 class ProjectInitializeResponse(ContractModel):
     project_id: UUID
     context_bundle: ProjectContextBundle
+
+
+class PlanCheckDecisionRequest(ContractModel):
+    """Owner 对一个待审批 Plan Check 作出的不可逆最终决策。"""
+
+    decision: ApprovalDecision
+    decision_reason: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("decision_reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class PlanCheckDecisionResult(ContractModel):
+    approval_record_id: UUID
+    project_id: UUID
+    plan_check_id: UUID
+    decision: ApprovalDecision
+    requested_by: UUID
+    decided_by: UUID
+    decided_at: datetime
+    decision_reason: str | None = None
+    can_create_manifest: bool
+
+    @model_validator(mode="after")
+    def validate_manifest_eligibility(self) -> "PlanCheckDecisionResult":
+        if self.can_create_manifest is not (self.decision is ApprovalDecision.APPROVED):
+            raise ValueError("can_create_manifest 必须与审批决定一致")
+        return self

@@ -4,6 +4,7 @@
 外部输入转换成这里的对象，核心规则因此可以独立测试，也便于未来复用于异步工作流。
 """
 
+import re
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -25,6 +26,11 @@ from experiment_guardian.domain.enums import (
     VerificationStatus,
 )
 
+MAX_CONFIGURATION_BYTES = 1024 * 1024
+MAX_RUN_COMMAND_LENGTH = 8192
+SHA256_PATTERN = r"^[0-9a-fA-F]{64}$"
+GIT_COMMIT_PATTERN = r"^[0-9a-fA-F]{7,64}$"
+
 
 class ContractModel(BaseModel):
     """所有外部契约的共同基类：拒绝未声明字段，尽早暴露客户端拼写错误。"""
@@ -36,7 +42,13 @@ class ConfigurationDocument(ContractModel):
     """待检查的原始配置文件。云端会自行解析并重新计算哈希。"""
 
     format: ConfigFormat
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=MAX_CONFIGURATION_BYTES)
+
+    @model_validator(mode="after")
+    def limit_encoded_size(self) -> "ConfigurationDocument":
+        if len(self.content.encode("utf-8")) > MAX_CONFIGURATION_BYTES:
+            raise ValueError("配置文档的 UTF-8 字节数不能超过 1 MiB")
+        return self
 
 
 class FieldEvidence(ContractModel):
@@ -48,9 +60,9 @@ class FieldEvidence(ContractModel):
 
     value: Any = None
     evidence_type: EvidenceType
-    source: str = Field(min_length=1)
+    source: str = Field(min_length=1, max_length=500)
     collected_at: datetime
-    collection_tool: str = Field(min_length=1)
+    collection_tool: str = Field(min_length=1, max_length=200)
     applicability: EvidenceApplicability = EvidenceApplicability.APPLICABLE
     not_applicable_reason: str | None = None
 
@@ -167,6 +179,67 @@ class LocalAttestation(ContractModel):
             and checkpoint_exists.applicability is not checkpoint_path.applicability
         ):
             raise ValueError("checkpoint_exists 与 checkpoint_path 必须使用相同的适用状态")
+
+        applicable_values = {
+            path: item.value
+            for path, item in fields.items()
+            if item is not None and item.applicability is EvidenceApplicability.APPLICABLE
+        }
+        boolean_paths = {
+            "working_tree_clean",
+            "output_directory_exists",
+            "checkpoint_exists",
+        }
+        invalid_booleans = [
+            path
+            for path in sorted(boolean_paths)
+            if path in applicable_values and type(applicable_values[path]) is not bool
+        ]
+        if invalid_booleans:
+            raise ValueError("以下本地证据必须是布尔值: " + ", ".join(invalid_booleans))
+
+        string_limits = {
+            "git_branch": 500,
+            "git_commit": 64,
+            "run_command": MAX_RUN_COMMAND_LENGTH,
+            "checkpoint_path": 1500,
+            "environment.python": 200,
+            "environment.cuda": 200,
+            "environment.pytorch": 200,
+        }
+        invalid_strings = [
+            path
+            for path, limit in string_limits.items()
+            if path in applicable_values
+            and (
+                not isinstance(applicable_values[path], str)
+                or not applicable_values[path].strip()
+                or len(applicable_values[path]) > limit
+            )
+        ]
+        if invalid_strings:
+            raise ValueError(
+                "以下本地证据必须是非空且长度合法的字符串: " + ", ".join(invalid_strings)
+            )
+
+        hash_paths = {"config_sha256", "git_diff_sha256"}
+        invalid_hashes = [
+            path
+            for path in sorted(hash_paths)
+            if path in applicable_values
+            and (
+                not isinstance(applicable_values[path], str)
+                or re.fullmatch(SHA256_PATTERN, applicable_values[path]) is None
+            )
+        ]
+        if invalid_hashes:
+            raise ValueError(
+                "以下本地证据必须是 64 位十六进制 SHA-256: " + ", ".join(invalid_hashes)
+            )
+
+        git_commit = applicable_values.get("git_commit")
+        if isinstance(git_commit, str) and re.fullmatch(GIT_COMMIT_PATTERN, git_commit) is None:
+            raise ValueError("git_commit 本地证据必须是 7 到 64 位十六进制值")
         return self
 
 
@@ -266,6 +339,7 @@ class PlanEvaluationResult(ContractModel):
     check_result: CheckResult
     approval_status: ApprovalStatus
     config_hash: str
+    document_sha256: str
     parsed_config: dict[str, Any]
     changes: list[ParameterChange]
     risks: list[RiskItem]
@@ -278,8 +352,8 @@ class ExperimentCheckPlanCommand(ContractModel):
     experiment_intent_id: UUID
     idempotency_key: UUID
     configuration: ConfigurationDocument
-    command: str = Field(min_length=1)
-    git_commit: str = Field(min_length=7, max_length=64)
+    command: str = Field(min_length=1, max_length=MAX_RUN_COMMAND_LENGTH)
+    git_commit: str = Field(pattern=GIT_COMMIT_PATTERN)
     local_attestation: LocalAttestation
 
 
@@ -302,9 +376,49 @@ class ExperimentCheckPlanResult(PlanEvaluationResult):
         eligible = (
             self.check_result is CheckResult.PASS
             and self.approval_status is ApprovalStatus.NOT_REQUIRED
+        ) or (
+            self.check_result is CheckResult.NEEDS_APPROVAL
+            and self.approval_status is ApprovalStatus.APPROVED
         )
         if self.can_create_manifest is not eligible:
             raise ValueError("can_create_manifest 与检查和审批状态不一致")
+        return self
+
+
+class RunManifestResult(ContractModel):
+    """由历史 Plan Check 快照生成的不可变运行凭据。"""
+
+    schema_version: Literal[1] = 1
+    manifest_id: UUID
+    project_id: UUID
+    plan_check_id: UUID
+    approval_record_id: UUID | None = None
+    context_id: UUID
+    context_version: int = Field(gt=0)
+    experiment_intent_id: UUID
+    intent_version: int = Field(gt=0)
+    experiment_mode: ExperimentMode
+    config_snapshot: dict[str, Any]
+    config_hash: str = Field(pattern=SHA256_PATTERN)
+    config_document_hash: str = Field(pattern=SHA256_PATTERN)
+    git_branch: str = Field(min_length=1, max_length=500)
+    git_commit: str = Field(pattern=GIT_COMMIT_PATTERN)
+    git_diff_hash: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    dataset: str = Field(min_length=1, max_length=200)
+    protocol: str = Field(min_length=1, max_length=200)
+    seed: int = Field(strict=True)
+    checkpoint: str | None = Field(default=None, max_length=1500)
+    command: str = Field(min_length=1, max_length=MAX_RUN_COMMAND_LENGTH)
+    environment: dict[str, Any]
+    evidence_snapshot: dict[str, Any]
+    manifest_hash: str = Field(pattern=SHA256_PATTERN)
+    created_by: UUID
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def reject_boolean_seed(self) -> "RunManifestResult":
+        if type(self.seed) is not int:
+            raise ValueError("Manifest seed 必须是整数且不能是布尔值")
         return self
 
 

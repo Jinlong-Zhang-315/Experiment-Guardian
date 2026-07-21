@@ -1,7 +1,7 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-21  
-对应数据库 revision：`20260721_02`
+对应数据库 revision：`20260721_04`
 
 本文档维护当前仓库的实际框架。状态标记：
 
@@ -35,11 +35,13 @@
            |                                                           v
            |        Browser / API Client                    +------------------------+
            |                 |                              | GuardianApplication    |
-           |                 v                              | [PARTIAL: 2/6]         |
+           |                 v                              | [PARTIAL: 3/6]         |
            |      +------------------------+                | project_get_context    |
            |      | FastAPI                |                | experiment_check_plan  |
            |      | /health [DONE]         |                |   [DONE]               |
-           |      | /capabilities [DONE]   |                | other 4 [SCAFFOLD]     |
+           |      | /capabilities [DONE]   |                | run_manifest_create    |
+           |      | /plan-check decision  |                |   [DONE]               |
+           |      | [DONE]                 |                | other 3 [SCAFFOLD]     |
            |      | /projects/initialize   |                +-----------+------------+
            |      | [DONE]                 |                            |
            |      +-----------+------------+                            |
@@ -57,6 +59,8 @@
                   | - Owner role check            |
                   | - atomic initialization       |
                   | - plan evaluation/idempotency |
+                  | - Owner final decision        |
+                  | - immutable Manifest          |
                   | - stable application errors   |
                   +---------------+---------------+
                                   |
@@ -67,7 +71,9 @@
                   | - active Context              |
                   | - active confirmed Intent     |
                   | - confirmed/pending rules     |
+                  | - policy consistency guard   |
                   | - Plan Check replay           |
+                  | - approval/manifest locks     |
                   +---------------+---------------+
                                   |
                                   v
@@ -77,6 +83,7 @@
                   | project_contexts, experiment_intents          |
                   | protected_parameters, access_tokens           |
                   | audit_logs, idempotency_records, plan_checks  |
+                  | approval_records, run_manifests               |
                   +-----------------------------------------------+
 ```
 
@@ -87,7 +94,7 @@
 | Interface Layer                                                          |
 |                                                                          |
 |  FastAPI routes                 MCP tools                 Admin CLI       |
-|  [DONE partial API]             [DONE 2/6 use cases]      [DONE]          |
+|  [DONE partial API]             [DONE 3/6 use cases]      [DONE]          |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -103,15 +110,15 @@
 |  enums.py           contracts.py         administration.py               |
 |  state vocabulary   evidence/contracts   initialization request          |
 |                                                                          |
-|  plan_check.py [DONE pure engine]                                        |
-|  parse -> canonical hash -> diff -> deterministic risks -> result         |
+|  plan_check.py [DONE pure engine]   run_manifest.py [DONE builder]       |
+|  parse/hash/diff/risk result         snapshot extraction/canonical hash   |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
 | Infrastructure Layer                                                     |
 |                                                                          |
 |  database.py      models/         repositories/        security.py       |
-|  SQLAlchemy       ORM schema      project/plan checks  token hashing      |
+|  SQLAlchemy       ORM schema      project/plan/governance repositories   |
 |                                                                          |
 |  S3 [PLANNED]     Bedrock [PLANNED]     CloudWatch [PLANNED]              |
 +--------------------------------------------------------------------------+
@@ -146,7 +153,12 @@ User
   |                                  |          |
   |                                  |          +---- context_id/version
   |                                  |          +---- intent_id/version
-  |                                  |          +---- config/constraint/evidence snapshots
+  |                                  |          +---- Context/baseline + Intent snapshots
+  |                                  |          +---- raw/parsed config + constraint/evidence snapshots
+  |                                  |          +----0..1 ApprovalRecord (final decision)
+  |                                  |          +----0..1 RunManifest
+  |                                  |                   +---- config/document/manifest hashes
+  |                                  |                   +---- Git/command/environment evidence
   |                                  |
   |                                  +----< AuditLog
   |
@@ -161,8 +173,8 @@ User
 以下对象已有 ORM 模型但尚未进入迁移，状态为 `[SCAFFOLD]`：
 
 ```text
-ApprovalRecord -> RunManifest -> ExperimentSubmission
-    -> Artifact / SubmissionRisk -> Experiment -> ExperimentMetric -> Memory
+ExperimentSubmission -> Artifact / SubmissionRisk
+    -> Experiment -> ExperimentMetric -> Memory
 ```
 
 这一区分是刻意的：没有业务服务和验收测试的表不提前加入 Alembic revision。
@@ -191,15 +203,25 @@ ApprovalRecord -> RunManifest -> ExperimentSubmission
 5. Local Agent calls experiment_check_plan(...)
    -> MCP Token project/team/member/scope validation
    -> current Context + Active Intent + confirmed/pending constraints
-   -> deterministic parse/hash/diff/risk evaluation
-   -> idempotent PlanCheck + version/evidence snapshots
+   -> policy conflict guard + deterministic parse/hash/diff/risk evaluation
+   -> idempotent PlanCheck + complete historical policy/evidence snapshots
+   -> current approval status merged into immutable evaluation report
    -> PASS / NEEDS_APPROVAL / BLOCKED receipt
+
+6. Owner calls POST /projects/{project_id}/plan-checks/{plan_check_id}/decision
+   -> API Token + plan:approve + Owner role
+   -> one final ApprovalRecord + PlanCheck transition + AuditLog + IdempotencyRecord
+
+7. Local Agent calls run_manifest_create(plan_check_id, idempotency_key)
+   -> MCP Token project/team/member/manifest:create validation
+   -> PASS/NOT_REQUIRED or NEEDS_APPROVAL/APPROVED eligibility gate
+   -> build only from historical PlanCheck snapshots
+   -> immutable RunManifest + canonical manifest_hash + audit/idempotency
 ```
 
 ## 已有但尚未接通的框架
 
 ```text
-run_manifest_create         [SCAFFOLD: contract/model only]
 submission_prepare          [SCAFFOLD: contract/model only, no S3]
 submission_finalize         [SCAFFOLD: contract/model/workflow topology only]
 experiments_query           [SCAFFOLD: query contract/model only]

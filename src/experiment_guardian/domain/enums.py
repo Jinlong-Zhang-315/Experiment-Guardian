@@ -72,6 +72,13 @@ class ApprovalStatus(StrEnum):
     REJECTED = "REJECTED"
 
 
+class ApprovalDecision(StrEnum):
+    """管理端可提交的最终决策，不暴露中间审批状态。"""
+
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
 class ApprovalTargetType(StrEnum):
     PLAN_CHECK = "PLAN_CHECK"
     EXPERIMENT_SUBMISSION = "EXPERIMENT_SUBMISSION"

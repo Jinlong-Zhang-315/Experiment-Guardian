@@ -1,12 +1,14 @@
 """训练前确定性规则和证据边界的核心验收测试。"""
 
+import hashlib
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
 from experiment_guardian.domain.contracts import (
     ConfigurationDocument,
+    ExperimentCheckPlanCommand,
     FieldEvidence,
     LocalAttestation,
     LocalEnvironment,
@@ -120,13 +122,17 @@ def evaluate(
     local_attestation: LocalAttestation | None = None,
     checkpoint: str | None = CHECKPOINT_PATH,
 ):
+    attestation = (local_attestation or complete_attestation()).model_copy(deep=True)
+    attestation.config_sha256 = evidence(
+        hashlib.sha256(content.encode("utf-8")).hexdigest(), "sha256sum config.yaml"
+    )
     return evaluate_plan(
         PlanEvaluationInput(
             baseline_config=BASELINE,
             candidate=ConfigurationDocument(format=ConfigFormat.YAML, content=content),
             constraints=constraints,
             allowed_variable_paths={"model.fusion"},
-            local_attestation=local_attestation or complete_attestation(),
+            local_attestation=attestation,
             git_commit=GIT_COMMIT,
             run_command=RUN_COMMAND,
             checkpoint=checkpoint,
@@ -265,7 +271,7 @@ model:
   fusion: 0.2
 """,
         [],
-        local_attestation=complete_attestation(git_commit="different-commit"),
+        local_attestation=complete_attestation(git_commit="deadbeef"),
     )
 
     assert result.check_result is CheckResult.NEEDS_APPROVAL
@@ -372,20 +378,24 @@ model:
 
 
 def test_rule_engine_defends_against_mutated_core_not_applicable_evidence() -> None:
+    config_content = """
+dataset:
+  protocol: 40/20
+model:
+  backbone: shift-gcn
+  fusion: 0.2
+"""
     attestation = complete_attestation()
+    attestation.config_sha256 = evidence(
+        hashlib.sha256(config_content.encode("utf-8")).hexdigest(), "sha256sum config.yaml"
+    )
     attestation.run_command = not_applicable("对象构建后被错误修改")
     # 模拟内部代码使用 model_construct 绕过 Pydantic 校验；规则引擎仍不得返回 PASS。
     evaluation_input = PlanEvaluationInput.model_construct(
         baseline_config=BASELINE,
         candidate=ConfigurationDocument(
             format=ConfigFormat.YAML,
-            content="""
-dataset:
-  protocol: 40/20
-model:
-  backbone: shift-gcn
-  fusion: 0.2
-""",
+            content=config_content,
         ),
         constraints=[],
         allowed_variable_paths={"model.fusion"},
@@ -462,6 +472,107 @@ model:
     assert result.check_result is CheckResult.NEEDS_APPROVAL
     risk = next(item for item in result.risks if item.code == "CONFLICTING_PENDING_CONSTRAINTS")
     assert [item["expected_value"] for item in risk.constraint_candidates] == [0.25, 0.3]
+
+
+def test_config_comparison_distinguishes_boolean_integer_and_float_types() -> None:
+    content = "flag: 1\nratio: 1.0\n"
+    attestation = complete_attestation()
+    attestation.config_sha256 = evidence(
+        hashlib.sha256(content.encode("utf-8")).hexdigest(), "sha256sum config.yaml"
+    )
+    result = evaluate_plan(
+        PlanEvaluationInput(
+            baseline_config={"flag": True, "ratio": 1},
+            candidate=ConfigurationDocument(format=ConfigFormat.YAML, content=content),
+            constraints=[],
+            allowed_variable_paths={"flag", "ratio"},
+            local_attestation=attestation,
+            git_commit=GIT_COMMIT,
+            run_command=RUN_COMMAND,
+            checkpoint=CHECKPOINT_PATH,
+        )
+    )
+
+    assert result.check_result is CheckResult.PASS
+    assert [item.parameter_path for item in result.changes] == ["flag", "ratio"]
+
+
+def test_expected_value_and_allowed_values_use_strict_types() -> None:
+    content = "flag: true\n"
+    attestation = complete_attestation()
+    attestation.config_sha256 = evidence(
+        hashlib.sha256(content.encode("utf-8")).hexdigest(), "sha256sum config.yaml"
+    )
+    strict_constraint = constraint(
+        "flag",
+        ProtectionLevel.EXPERIMENT_VARIABLE,
+        expected_value=False,
+        allowed_values=[1],
+    )
+    result = evaluate_plan(
+        PlanEvaluationInput(
+            baseline_config={"flag": False},
+            candidate=ConfigurationDocument(format=ConfigFormat.YAML, content=content),
+            constraints=[strict_constraint],
+            allowed_variable_paths={"flag"},
+            local_attestation=attestation,
+            git_commit=GIT_COMMIT,
+            run_command=RUN_COMMAND,
+            checkpoint=CHECKPOINT_PATH,
+        )
+    )
+
+    assert result.check_result is CheckResult.BLOCKED
+    assert any(risk.code == "EXPERIMENT_VARIABLE_OUT_OF_RANGE" for risk in result.risks)
+
+
+def test_local_config_hash_must_match_received_document_bytes() -> None:
+    content = "dataset:\n  protocol: 40/20\n"
+    result = evaluate_plan(
+        PlanEvaluationInput(
+            baseline_config={"dataset": {"protocol": "40/20"}},
+            candidate=ConfigurationDocument(format=ConfigFormat.YAML, content=content),
+            constraints=[],
+            local_attestation=complete_attestation(),
+            git_commit=GIT_COMMIT,
+            run_command=RUN_COMMAND,
+            checkpoint=CHECKPOINT_PATH,
+        )
+    )
+
+    assert result.check_result is CheckResult.BLOCKED
+    risk = next(item for item in result.risks if item.code == "CONFIG_DOCUMENT_SHA256_MISMATCH")
+    assert risk.blocking is True
+    assert risk.evidence_type is EvidenceType.CLOUD_VERIFIED
+    assert result.document_sha256 == hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def test_plan_input_size_git_command_and_hash_formats_are_bounded() -> None:
+    with pytest.raises(ValueError, match="1 MiB"):
+        ConfigurationDocument(format=ConfigFormat.YAML, content="测" * 600_000)
+
+    attestation = complete_attestation()
+    invalid_attestation = attestation.model_dump()
+    invalid_attestation["config_sha256"]["value"] = "not-a-sha256"
+    with pytest.raises(ValueError, match="64 位十六进制"):
+        LocalAttestation.model_validate(invalid_attestation)
+
+    command_values = {
+        "project_id": uuid4(),
+        "experiment_intent_id": uuid4(),
+        "idempotency_key": uuid4(),
+        "configuration": {"format": "yaml", "content": "value: 1\n"},
+        "command": RUN_COMMAND,
+        "git_commit": "not-a-git-sha",
+        "local_attestation": attestation,
+    }
+    with pytest.raises(ValueError, match="git_commit"):
+        ExperimentCheckPlanCommand.model_validate(command_values)
+
+    command_values["git_commit"] = GIT_COMMIT
+    command_values["command"] = "x" * 8193
+    with pytest.raises(ValueError, match="command"):
+        ExperimentCheckPlanCommand.model_validate(command_values)
 
 
 def test_yaml_and_json_have_same_canonical_hash() -> None:

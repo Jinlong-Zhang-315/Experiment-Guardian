@@ -218,7 +218,9 @@ def test_issue_mcp_token_cli_grants_plan_check_scope(
         str(result["access_token"]), audience=TokenAudience.MCP
     )
     assert authenticated.project_id == initialized.project_id
-    assert authenticated.scopes == frozenset({"project:read", "experiment:check"})
+    assert authenticated.scopes == frozenset(
+        {"project:read", "experiment:check", "manifest:create"}
+    )
 
 
 def test_project_initialization_is_atomic_idempotent_and_readable(

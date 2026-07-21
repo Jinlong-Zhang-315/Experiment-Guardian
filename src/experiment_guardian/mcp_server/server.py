@@ -83,10 +83,10 @@ def run_manifest_create(plan_check_id: str, idempotency_key: str) -> dict[str, A
     identity = get_identity_provider().current_identity()
     result = get_guardian_use_cases().run_manifest_create(
         plan_check_id=UUID(plan_check_id),
-        actor_id=identity.user_id,
+        identity=identity,
         idempotency_key=UUID(idempotency_key),
     )
-    return dict(result)
+    return result.model_dump(mode="json")
 
 
 @mcp.tool()

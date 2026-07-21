@@ -62,7 +62,7 @@ def _bootstrap_owner(args: argparse.Namespace) -> dict[str, Any]:
             project_id=None,
             audience=TokenAudience.API,
             name=args.token_name,
-            scopes={"project:initialize"},
+            scopes={"plan:approve", "project:initialize"},
             lifetime_days=args.ttl_days,
             created_by=user.id,
         )
@@ -92,7 +92,7 @@ def _issue_mcp_token(args: argparse.Namespace) -> dict[str, Any]:
             project_id=project.id,
             audience=TokenAudience.MCP,
             name=args.token_name,
-            scopes={"experiment:check", "project:read"},
+            scopes={"experiment:check", "manifest:create", "project:read"},
             lifetime_days=args.ttl_days,
             created_by=user.id,
         )

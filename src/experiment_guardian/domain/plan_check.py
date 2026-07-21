@@ -202,8 +202,27 @@ def flatten_configuration(value: Mapping[str, Any], prefix: tuple[str, ...] = ()
 _flatten = flatten_configuration
 
 
+def _strict_json_equal(left: Any, right: Any) -> bool:
+    """按 JSON 类型和值递归比较，避免 Python 将 ``True``、``1`` 和 ``1.0`` 视为相等。"""
+
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _strict_json_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _strict_json_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    return bool(left == right)
+
+
 def _is_allowed(value: Any, constraint: ParameterConstraint) -> bool:
-    if constraint.allowed_values is not None and value not in constraint.allowed_values:
+    if constraint.allowed_values is not None and not any(
+        _strict_json_equal(value, allowed) for allowed in constraint.allowed_values
+    ):
         return False
     if constraint.minimum is None and constraint.maximum is None:
         return True
@@ -250,6 +269,7 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
 
     candidate = parse_configuration(data.candidate)
     config_hash = canonical_config_hash(candidate)
+    document_sha256 = hashlib.sha256(data.candidate.content.encode("utf-8")).hexdigest()
     baseline_flat = flatten_configuration(data.baseline_config)
     candidate_flat = flatten_configuration(candidate)
     confirmed_groups: dict[str, list[ParameterConstraint]] = {}
@@ -323,7 +343,9 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
         if path in duplicate_confirmed_paths:
             continue
         baseline_value = baseline_flat.get(path, _MISSING)
-        if baseline_value is _MISSING or baseline_value != confirmed_constraint.expected_value:
+        if baseline_value is _MISSING or not _strict_json_equal(
+            baseline_value, confirmed_constraint.expected_value
+        ):
             blocked = True
             risks.append(
                 RiskItem(
@@ -346,7 +368,11 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
     for path in paths:
         previous = baseline_flat.get(path, _MISSING)
         current = candidate_flat.get(path, _MISSING)
-        if previous == current:
+        if (
+            previous is not _MISSING
+            and current is not _MISSING
+            and _strict_json_equal(previous, current)
+        ):
             continue
 
         constraint = confirmed_constraints.get(path)
@@ -483,8 +509,7 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
                 )
             )
 
-    # 本地文件哈希属于声明信息。原始文件 SHA-256 与云端规范化配置哈希语义不同，不能
-    # 直接比较；artifact 上传后，云端再对收到的原始字节执行 CLOUD_VERIFIED 校验。
+    # 规范化配置哈希用于语义比较；原始文档哈希用于核对本地 Agent 声明的文件字节。
     if data.local_attestation is None:
         needs_approval = True
         risks.append(
@@ -499,6 +524,27 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
         )
     else:
         local = data.local_attestation
+        config_hash_evidence = local.config_sha256
+        if _is_applicable(config_hash_evidence) and (
+            not isinstance(config_hash_evidence.value, str)
+            or config_hash_evidence.value.lower() != document_sha256
+        ):
+            blocked = True
+            risks.append(
+                RiskItem(
+                    code="CONFIG_DOCUMENT_SHA256_MISMATCH",
+                    severity=RiskSeverity.CRITICAL,
+                    message="本地 Agent 声明的配置文件 SHA-256 与云端收到的内容不一致",
+                    field_path="config_sha256",
+                    current_value=config_hash_evidence.value,
+                    expected_value=document_sha256,
+                    impact="无法确认被检查内容与本地文件是同一份配置。",
+                    blocking=True,
+                    evidence_type=EvidenceType.CLOUD_VERIFIED,
+                    evidence_source="experiment_check_plan request content",
+                    recommendation="重新计算本地配置文件 SHA-256 并提交一致内容。",
+                )
+            )
         core_evidence = {
             "working_tree_clean": local.working_tree_clean,
             "git_branch": local.git_branch,
@@ -569,7 +615,11 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
             ("checkpoint_path", data.checkpoint, local.checkpoint_path),
         )
         for field_path, expected, evidence in consistency_checks:
-            if expected is not None and _is_applicable(evidence) and evidence.value != expected:
+            if (
+                expected is not None
+                and _is_applicable(evidence)
+                and not _strict_json_equal(evidence.value, expected)
+            ):
                 needs_approval = True
                 risks.append(
                     _risk_from_local_evidence(
@@ -654,6 +704,7 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
         check_result=result,
         approval_status=approval,
         config_hash=config_hash,
+        document_sha256=document_sha256,
         parsed_config=candidate,
         changes=changes,
         risks=risks,

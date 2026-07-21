@@ -22,6 +22,7 @@ from experiment_guardian.domain.contracts import (
 from experiment_guardian.domain.enums import (
     ContextStatus,
     IntentStatus,
+    ProtectionLevel,
     TeamRole,
     VerificationStatus,
 )
@@ -91,6 +92,9 @@ class SqlAlchemyProjectRepository:
             ).order_by(ProtectedParameter.parameter_path)
         ).all()
 
+        constraint_contracts = [self._constraint_contract(item) for item in constraints]
+        self._validate_policy_consistency(intent, constraint_contracts)
+
         return ProjectContextBundle(
             context=ProjectContextReference(
                 context_id=context.id,
@@ -108,7 +112,7 @@ class SqlAlchemyProjectRepository:
                 status=intent.status,
                 mode=intent.experiment_mode,
             ),
-            constraints=[self._constraint_contract(item) for item in constraints],
+            constraints=constraint_contracts,
             context_payload=ProjectContextPayload(
                 project_id=project.id,
                 project_name=project.name,
@@ -139,6 +143,25 @@ class SqlAlchemyProjectRepository:
                 intent_receipt=intent.intent_receipt,
             ),
         )
+
+    @staticmethod
+    def _validate_policy_consistency(
+        intent: ExperimentIntent, constraints: list[ParameterConstraint]
+    ) -> None:
+        locked_allowed_paths = sorted(
+            set(intent.allowed_variables)
+            & {
+                item.parameter_path
+                for item in constraints
+                if item.protection_level is ProtectionLevel.LOCKED
+                and item.verification_status is VerificationStatus.CONFIRMED
+            }
+        )
+        if locked_allowed_paths:
+            raise ConflictError(
+                "Active Intent 将已确认 LOCKED 参数声明为允许变量: "
+                + ", ".join(locked_allowed_paths)
+            )
 
     @staticmethod
     def _load_active_policy(

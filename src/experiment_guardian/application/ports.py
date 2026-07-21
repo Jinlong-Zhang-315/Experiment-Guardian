@@ -15,6 +15,7 @@ from experiment_guardian.domain.contracts import (
     ExperimentQueryCommand,
     ExperimentQueryResult,
     ProjectContextBundle,
+    RunManifestResult,
 )
 
 
@@ -33,9 +34,9 @@ class GuardianUseCases(Protocol):
         self,
         *,
         plan_check_id: UUID,
-        actor_id: UUID,
+        identity: RequestIdentity,
         idempotency_key: UUID,
-    ) -> Mapping[str, Any]: ...
+    ) -> RunManifestResult: ...
 
     def submission_prepare(
         self,

@@ -6,11 +6,13 @@ from experiment_guardian.application.identity import IdentityProvider
 from experiment_guardian.application.ports import GuardianUseCases
 from experiment_guardian.application.services import (
     GuardianApplication,
+    PlanApprovalService,
     ProjectAdministrationService,
 )
 from experiment_guardian.core.config import get_settings
 from experiment_guardian.infrastructure.database import get_session_factory
 from experiment_guardian.infrastructure.repositories import (
+    SqlAlchemyGovernanceRepository,
     SqlAlchemyPlanCheckRepository,
     SqlAlchemyProjectRepository,
 )
@@ -31,6 +33,11 @@ def get_plan_check_repository() -> SqlAlchemyPlanCheckRepository:
 
 
 @lru_cache(maxsize=1)
+def get_governance_repository() -> SqlAlchemyGovernanceRepository:
+    return SqlAlchemyGovernanceRepository()
+
+
+@lru_cache(maxsize=1)
 def get_token_service() -> SqlAlchemyTokenService:
     return SqlAlchemyTokenService(get_session_factory())
 
@@ -41,6 +48,7 @@ def get_guardian_use_cases() -> GuardianUseCases:
         get_session_factory(),
         get_project_repository(),
         get_plan_check_repository(),
+        get_governance_repository(),
     )
 
 
@@ -52,3 +60,12 @@ def get_identity_provider() -> IdentityProvider:
 @lru_cache(maxsize=1)
 def get_project_administration_service() -> ProjectAdministrationService:
     return ProjectAdministrationService(get_session_factory(), get_project_repository())
+
+
+@lru_cache(maxsize=1)
+def get_plan_approval_service() -> PlanApprovalService:
+    return PlanApprovalService(
+        get_session_factory(),
+        get_project_repository(),
+        get_governance_repository(),
+    )
