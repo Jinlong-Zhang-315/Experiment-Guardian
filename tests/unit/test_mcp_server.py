@@ -18,3 +18,8 @@ async def test_mcp_exposes_only_the_six_p0_tools() -> None:
         "submission_finalize",
         "experiments_query",
     }
+
+    for tool in tools:
+        properties = tool.inputSchema.get("properties", {})
+        assert "actor_id" not in properties
+        assert "requester_id" not in properties

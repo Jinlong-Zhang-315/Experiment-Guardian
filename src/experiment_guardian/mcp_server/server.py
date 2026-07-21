@@ -9,7 +9,10 @@ from uuid import UUID
 
 from mcp.server.fastmcp import FastMCP
 
-from experiment_guardian.application.container import get_guardian_use_cases
+from experiment_guardian.application.container import (
+    get_guardian_use_cases,
+    get_identity_provider,
+)
 from experiment_guardian.core.config import get_settings
 from experiment_guardian.domain.contracts import (
     ConfigurationDocument,
@@ -34,11 +37,12 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def project_get_context(project_id: str, actor_id: str) -> dict[str, Any]:
+def project_get_context(project_id: str) -> dict[str, Any]:
     """读取当前正式上下文、Active 意图、已确认约束及其不可省略的版本信息。"""
 
+    identity = get_identity_provider().current_identity()
     result = get_guardian_use_cases().project_get_context(
-        project_id=UUID(project_id), actor_id=UUID(actor_id)
+        project_id=UUID(project_id), actor_id=identity.user_id
     )
     return result.model_dump(mode="json")
 
@@ -47,7 +51,6 @@ def project_get_context(project_id: str, actor_id: str) -> dict[str, Any]:
 def experiment_check_plan(
     project_id: str,
     experiment_intent_id: str,
-    requester_id: str,
     idempotency_key: str,
     config_format: str,
     config_content: str,
@@ -57,10 +60,11 @@ def experiment_check_plan(
 ) -> dict[str, Any]:
     """检查配置与正式意图的一致性；该结果不等于真实训练行为已验证正确。"""
 
+    identity = get_identity_provider().current_identity()
     payload = ExperimentCheckPlanCommand(
         project_id=UUID(project_id),
         experiment_intent_id=UUID(experiment_intent_id),
-        requester_id=UUID(requester_id),
+        requester_id=identity.user_id,
         idempotency_key=UUID(idempotency_key),
         configuration=ConfigurationDocument(
             format=ConfigFormat(config_format.lower()), content=config_content
@@ -74,12 +78,13 @@ def experiment_check_plan(
 
 
 @mcp.tool()
-def run_manifest_create(plan_check_id: str, actor_id: str, idempotency_key: str) -> dict[str, Any]:
+def run_manifest_create(plan_check_id: str, idempotency_key: str) -> dict[str, Any]:
     """根据 PASS 或已经由 Owner 批准的 plan check 创建不可变 Manifest。"""
 
+    identity = get_identity_provider().current_identity()
     result = get_guardian_use_cases().run_manifest_create(
         plan_check_id=UUID(plan_check_id),
-        actor_id=UUID(actor_id),
+        actor_id=identity.user_id,
         idempotency_key=UUID(idempotency_key),
     )
     return dict(result)
@@ -89,16 +94,16 @@ def run_manifest_create(plan_check_id: str, actor_id: str, idempotency_key: str)
 def submission_prepare(
     project_id: str,
     run_manifest_id: str,
-    actor_id: str,
     idempotency_key: str,
     files: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """创建实验草稿并为白名单文件返回 S3 预签名上传地址。"""
 
+    identity = get_identity_provider().current_identity()
     result = get_guardian_use_cases().submission_prepare(
         project_id=UUID(project_id),
         run_manifest_id=UUID(run_manifest_id),
-        actor_id=UUID(actor_id),
+        actor_id=identity.user_id,
         idempotency_key=UUID(idempotency_key),
         files=files,
     )
@@ -108,15 +113,15 @@ def submission_prepare(
 @mcp.tool()
 def submission_finalize(
     submission_id: str,
-    actor_id: str,
     idempotency_key: str,
     uploaded_files: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """确认文件上传完成并启动可恢复的提交分析工作流。"""
 
+    identity = get_identity_provider().current_identity()
     result = get_guardian_use_cases().submission_finalize(
         submission_id=UUID(submission_id),
-        actor_id=UUID(actor_id),
+        actor_id=identity.user_id,
         idempotency_key=UUID(idempotency_key),
         uploaded_files=uploaded_files,
     )
@@ -126,7 +131,6 @@ def submission_finalize(
 @mcp.tool()
 def experiments_query(
     project_id: str,
-    actor_id: str,
     query: str,
     protocol: str,
     model_name: str | None = None,
@@ -140,9 +144,10 @@ def experiments_query(
     statuses = {ExperimentStatus.COMPLETED, ExperimentStatus.FAILED}
     if include_historical:
         statuses.update({ExperimentStatus.DEPRECATED, ExperimentStatus.SUPERSEDED})
+    identity = get_identity_provider().current_identity()
     command = ExperimentQueryCommand(
         project_id=UUID(project_id),
-        actor_id=UUID(actor_id),
+        actor_id=identity.user_id,
         query=query,
         protocol=protocol,
         model_name=model_name,

@@ -15,6 +15,7 @@ from experiment_guardian.domain.enums import (
     CheckResult,
     ConfigFormat,
     ConstraintSource,
+    EvidenceApplicability,
     EvidenceType,
     ExperimentMode,
     ExperimentStatus,
@@ -45,11 +46,29 @@ class FieldEvidence(ContractModel):
     工具采集。风险报告必须原样保留这些信息，不能把 LOCAL_ATTESTED 改写为云端事实。
     """
 
-    value: Any
+    value: Any = None
     evidence_type: EvidenceType
     source: str = Field(min_length=1)
     collected_at: datetime
     collection_tool: str = Field(min_length=1)
+    applicability: EvidenceApplicability = EvidenceApplicability.APPLICABLE
+    not_applicable_reason: str | None = None
+
+    @model_validator(mode="after")
+    def require_not_applicable_reason(self) -> "FieldEvidence":
+        """显式区分“不适用”和“未采集”，并为审计保存判断依据。"""
+
+        if (
+            self.applicability is EvidenceApplicability.NOT_APPLICABLE
+            and not self.not_applicable_reason
+        ):
+            raise ValueError("NOT_APPLICABLE 证据必须说明不适用原因")
+        if (
+            self.applicability is EvidenceApplicability.APPLICABLE
+            and self.not_applicable_reason is not None
+        ):
+            raise ValueError("APPLICABLE 证据不能填写不适用原因")
+        return self
 
 
 class LocalEnvironment(ContractModel):
@@ -105,9 +124,10 @@ class LocalAttestation(ContractModel):
 class ParameterConstraint(ContractModel):
     """一个规范化参数路径上的候选或正式约束。
 
-    P0 使用 ``a.b.c`` 形式访问 YAML/JSON 对象。数组和通配符路径暂不支持，避免首版
-    约束引擎演变成通用查询语言。只有 ``verification_status=CONFIRMED`` 的约束能够产生
-    强制 BLOCKED；模型推断或尚待用户确认的约束只能产生提醒或 NEEDS_APPROVAL。
+    P0 使用 ``a.b.c`` 形式访问 YAML/JSON 对象，键名中的点和反斜杠使用反斜杠转义。
+    数组和通配符路径暂不支持，避免首版约束引擎演变成通用查询语言。只有
+    ``verification_status=CONFIRMED`` 的约束能够产生强制 BLOCKED；模型推断或尚待用户
+    确认的约束只能产生提醒或 NEEDS_APPROVAL。
     """
 
     parameter_path: str = Field(min_length=1)
@@ -171,6 +191,7 @@ class RiskItem(ContractModel):
     constraint_status: VerificationStatus | None = None
     inference_basis: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+    constraint_candidates: list[dict[str, Any]] = Field(default_factory=list)
     recommendation: str | None = None
 
 

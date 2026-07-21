@@ -530,6 +530,9 @@ NEEDS_REVIEW → REJECTED
 
 CockroachDB Cloud Managed MCP Server 用于满足比赛工具要求，并支持云端 Agent 受控访问 CockroachDB。
 
+MCP 工具参数不得接受 `actor_id`、`requester_id` 等调用者身份字段。用户身份必须由
+服务端从已经校验的 MCP Token 或 Session 中读取，再传入应用层执行权限检查和审计。
+
 ---
 
 ## 7.1 `project_get_context`
@@ -1526,7 +1529,11 @@ MVP 至少需要以下表。
 * 训练前检查工作流；
 * 提交分析工作流；
 * 实验查询工作流；
-* 人工确认中断与恢复。
+* 提交分析步骤的 checkpoint 与失败恢复。
+
+P0 中 `NEEDS_REVIEW` 是提交分析图的终态交接，不使用 LangGraph 原生 `interrupt()`。
+用户确认由独立、幂等的 CockroachDB 事务完成；“待确认任务可以继续”指草稿状态持久化后
+仍可执行该确认事务，不表示从原图中的人工中断节点恢复。
 
 ### CockroachDB
 
@@ -1677,6 +1684,8 @@ Token 必须支持撤销。
 
 Git 状态、输出目录、checkpoint、运行命令和本地环境默认属于 `LOCAL_ATTESTED`。本地
 声明缺失或互相冲突时必须提高风险并要求确认，风险报告不得将其描述为云端事实。
+字段确实不适用于本次实验时，必须显式标记 `NOT_APPLICABLE` 并保存原因；这与字段缺失
+不同。例如从头训练可以将 checkpoint 标为不适用，CPU 任务可以将 CUDA 标为不适用。
 
 ## 18.5 日志安全
 
@@ -1698,8 +1707,8 @@ AWS 后端服务重启后：
 
 * 项目数据不得丢失；
 * 实验草稿不得丢失；
-* LangGraph 工作流可以恢复；
-* 待确认任务可以继续。
+* 提交分析工作流可以从最后成功的处理步骤恢复；
+* 待确认草稿持久化后，可以继续执行独立的用户确认事务。
 
 ## NFR-002 幂等性
 

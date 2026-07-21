@@ -9,7 +9,7 @@ FastAPI/MCP 入口和可恢复工作流拓扑。它不保证实验一定正确�
 
 * `PASS / NEEDS_APPROVAL / BLOCKED` 训练前检查状态；
 * `NOT_REQUIRED / PENDING / APPROVED / REJECTED` 审批状态；
-* YAML/JSON 安全解析、规范化配置哈希和点分参数 diff；
+* YAML/JSON 重复键拒绝、规范化配置哈希和无碰撞点分参数 diff；
 * LOCKED、APPROVAL_REQUIRED、EXPERIMENT_VARIABLE 确定性判定；
 * 从项目上下文到正式实验、artifact、向量记忆和审计的 SQLAlchemy 模型；
 * FastAPI `/api/v1/health` 与 `/api/v1/capabilities`；
@@ -24,11 +24,16 @@ FastAPI/MCP 入口和可恢复工作流拓扑。它不保证实验一定正确�
 * 本地 Agent 只读取已确认事实并提交草稿，不能修改正式上下文或确认正式实验；
 * `CLOUD_VERIFIED`、`LOCAL_ATTESTED`、`USER_PROVIDED` 始终随字段保存和展示；
 * 配置一致性检查不等于实验正确性保证，本地 Git、环境和路径信息仅作为声明处理；
+* 本地证据明确区分“未采集”和带原因的 `NOT_APPLICABLE`，避免 CPU、从头训练等场景误报；
 * 正式与探索实验使用不同模式，探索结果不得成为正式 baseline；
 * 向量相似度只生成候选证据，执行前必须按项目、确认状态、实验状态和协议过滤。
 
-数据库仓储、鉴权、S3 预签名、Bedrock、CockroachDB checkpoint 和四个 Web 页面尚未实现。
+MCP 工具不接受客户端提交的用户 UUID，调用者必须来自服务端 Token/Session 身份提供器。
+数据库仓储、Token 验证适配器、S3 预签名、Bedrock、CockroachDB checkpoint 和四个 Web 页面尚未实现。
 当前 MCP 业务调用会明确返回“业务适配器尚未装配”，不会伪造上下文或实验数据。
+
+提交分析图可从最后成功的分析步骤恢复；`NEEDS_REVIEW` 是分析图的终态交接，并非
+LangGraph 原生 `interrupt()`。用户确认由独立、幂等的数据库事务完成。
 
 ## 本地环境
 

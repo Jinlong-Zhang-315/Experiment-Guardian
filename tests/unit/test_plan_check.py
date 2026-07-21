@@ -18,12 +18,14 @@ from experiment_guardian.domain.enums import (
     CheckResult,
     ConfigFormat,
     ConstraintSource,
+    EvidenceApplicability,
     EvidenceType,
     ProtectionLevel,
     VerificationStatus,
 )
 from experiment_guardian.domain.plan_check import (
     ConfigurationError,
+    _flatten,
     canonical_config_hash,
     evaluate_plan,
     parse_configuration,
@@ -38,6 +40,11 @@ COLLECTED_AT = datetime(2026, 7, 21, tzinfo=UTC)
 GIT_COMMIT = "a1b2c3d4"
 RUN_COMMAND = "python train.py --config config.yaml"
 CHECKPOINT_PATH = "checkpoints/baseline.pt"
+EXPECTED_VALUES = {
+    "dataset.protocol": "40/20",
+    "model.backbone": "shift-gcn",
+    "model.fusion": 0.2,
+}
 
 
 def evidence(value: object, source: str) -> FieldEvidence:
@@ -47,6 +54,17 @@ def evidence(value: object, source: str) -> FieldEvidence:
         source=source,
         collected_at=COLLECTED_AT,
         collection_tool="experiment-guardian-local-preflight/0.1",
+    )
+
+
+def not_applicable(reason: str) -> FieldEvidence:
+    return FieldEvidence(
+        evidence_type=EvidenceType.LOCAL_ATTESTED,
+        source="local run plan",
+        collected_at=COLLECTED_AT,
+        collection_tool="experiment-guardian-local-preflight/0.1",
+        applicability=EvidenceApplicability.NOT_APPLICABLE,
+        not_applicable_reason=reason,
     )
 
 
@@ -82,7 +100,7 @@ def constraint(
     values: dict[str, object] = dict(
         parameter_path=path,
         protection_level=level,
-        expected_value=None,
+        expected_value=EXPECTED_VALUES.get(path),
         source_type=source_type,
         verification_status=verification_status,
         original_message=f"约束 {path}",
@@ -255,6 +273,101 @@ model:
     assert risk.evidence_type is EvidenceType.LOCAL_ATTESTED
 
 
+def test_not_applicable_local_evidence_is_not_treated_as_missing() -> None:
+    attestation = complete_attestation()
+    attestation.checkpoint_exists = not_applicable("本次实验从头训练")
+    attestation.checkpoint_path = not_applicable("本次实验不加载 checkpoint")
+    attestation.environment.cuda = not_applicable("本次任务只使用 CPU")
+    attestation.environment.pytorch = not_applicable("本次任务不依赖 PyTorch")
+
+    result = evaluate(
+        """
+dataset:
+  protocol: 40/20
+model:
+  backbone: shift-gcn
+  fusion: 0.2
+""",
+        [],
+        local_attestation=attestation,
+    )
+
+    assert result.check_result is CheckResult.PASS
+    assert not result.risks
+
+
+def test_not_applicable_evidence_requires_reason() -> None:
+    with pytest.raises(ValueError, match="必须说明不适用原因"):
+        FieldEvidence(
+            evidence_type=EvidenceType.LOCAL_ATTESTED,
+            source="local run plan",
+            collected_at=COLLECTED_AT,
+            collection_tool="experiment-guardian-local-preflight/0.1",
+            applicability=EvidenceApplicability.NOT_APPLICABLE,
+        )
+
+
+def test_formal_baseline_must_match_confirmed_expected_value() -> None:
+    drifted_baseline = {
+        "dataset": {"protocol": "48/12"},
+        "model": {"backbone": "shift-gcn", "fusion": 0.2},
+    }
+    result = evaluate_plan(
+        PlanEvaluationInput(
+            baseline_config=drifted_baseline,
+            candidate=ConfigurationDocument(
+                format=ConfigFormat.YAML,
+                content="""
+dataset:
+  protocol: 48/12
+model:
+  backbone: shift-gcn
+  fusion: 0.2
+""",
+            ),
+            constraints=[constraint("dataset.protocol", ProtectionLevel.LOCKED)],
+            local_attestation=complete_attestation(),
+            git_commit=GIT_COMMIT,
+            run_command=RUN_COMMAND,
+            checkpoint=CHECKPOINT_PATH,
+        )
+    )
+
+    assert result.check_result is CheckResult.BLOCKED
+    assert any(risk.code == "FORMAL_BASELINE_CONSTRAINT_MISMATCH" for risk in result.risks)
+
+
+def test_same_path_pending_constraints_are_all_reported() -> None:
+    result = evaluate(
+        """
+dataset:
+  protocol: 40/20
+model:
+  backbone: shift-gcn
+  fusion: 0.3
+""",
+        [
+            constraint(
+                "model.fusion",
+                ProtectionLevel.EXPERIMENT_VARIABLE,
+                verification_status=VerificationStatus.PENDING,
+                expected_value=0.25,
+            ),
+            constraint(
+                "model.fusion",
+                ProtectionLevel.EXPERIMENT_VARIABLE,
+                source_type=ConstraintSource.INFERRED,
+                verification_status=VerificationStatus.PENDING,
+                expected_value=0.3,
+            ),
+        ],
+    )
+
+    assert result.check_result is CheckResult.NEEDS_APPROVAL
+    risk = next(item for item in result.risks if item.code == "CONFLICTING_PENDING_CONSTRAINTS")
+    assert [item["expected_value"] for item in risk.constraint_candidates] == [0.25, 0.3]
+
+
 def test_yaml_and_json_have_same_canonical_hash() -> None:
     yaml_config = parse_configuration(
         ConfigurationDocument(format=ConfigFormat.YAML, content="a: 1\nb: 2\n")
@@ -269,3 +382,26 @@ def test_yaml_and_json_have_same_canonical_hash() -> None:
 def test_non_object_config_is_rejected() -> None:
     with pytest.raises(ConfigurationError, match="根节点"):
         parse_configuration(ConfigurationDocument(format=ConfigFormat.YAML, content="- a\n- b\n"))
+
+
+@pytest.mark.parametrize(
+    ("config_format", "content"),
+    [
+        (ConfigFormat.YAML, "dataset:\n  split: 40/20\n  split: 48/12\n"),
+        (ConfigFormat.JSON, '{"dataset": {"split": "40/20", "split": "48/12"}}'),
+    ],
+)
+def test_duplicate_config_fields_are_rejected(config_format: ConfigFormat, content: str) -> None:
+    with pytest.raises(ConfigurationError, match="重复字段"):
+        parse_configuration(ConfigurationDocument(format=config_format, content=content))
+
+
+def test_yaml_non_string_key_is_rejected() -> None:
+    with pytest.raises(ConfigurationError, match="不是字符串"):
+        parse_configuration(ConfigurationDocument(format=ConfigFormat.YAML, content="1: value\n"))
+
+
+def test_flatten_escapes_literal_dot_and_backslash_keys() -> None:
+    flattened = _flatten({"a.b": 1, "a": {"b": 2}, r"a\b": 3, "": 4})
+
+    assert flattened == {r"a\.b": 1, "a.b": 2, r"a\\b": 3, r"\0": 4}

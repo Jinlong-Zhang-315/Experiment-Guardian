@@ -5,6 +5,7 @@
 """
 
 from collections.abc import Callable, Mapping
+from itertools import pairwise
 from typing import Any, TypedDict
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -68,7 +69,9 @@ def build_submission_workflow(
         graph.add_node(step.value, handlers[step])  # type: ignore[call-overload]
 
     graph.add_edge(START, WORKFLOW_ORDER[0].value)
-    for current, following in zip(WORKFLOW_ORDER, WORKFLOW_ORDER[1:], strict=True):
+    for current, following in pairwise(WORKFLOW_ORDER):
         graph.add_edge(current.value, following.value)
+    # NEEDS_REVIEW 是分析工作流的终态交接：数据库状态进入待审核后图结束。人工确认属于
+    # 独立、幂等的数据库事务，不是本 P0 图中的 LangGraph interrupt/resume 节点。
     graph.add_edge(WORKFLOW_ORDER[-1].value, END)
     return graph.compile(checkpointer=checkpointer)

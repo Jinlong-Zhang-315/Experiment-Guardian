@@ -7,9 +7,12 @@
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TypeGuard
 
 import yaml
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
+from yaml.resolver import BaseResolver
 
 from experiment_guardian.domain.contracts import (
     ConfigurationDocument,
@@ -25,6 +28,7 @@ from experiment_guardian.domain.enums import (
     CheckResult,
     ConfigFormat,
     ConstraintSource,
+    EvidenceApplicability,
     EvidenceType,
     ProtectionLevel,
     RiskSeverity,
@@ -38,19 +42,76 @@ class ConfigurationError(ValueError):
     """配置不是合法 YAML/JSON 对象时抛出的领域异常。"""
 
 
+class UniqueKeySafeLoader(yaml.SafeLoader):
+    """保留 SafeLoader 能力，同时拒绝同一映射中的重复键。"""
+
+
+def _construct_unique_mapping(
+    loader: UniqueKeySafeLoader, node: MappingNode, deep: bool = False
+) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise ConstructorError(
+                "构建配置映射时",
+                node.start_mark,
+                "配置键必须是可哈希标量",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise ConstructorError(
+                "构建配置映射时",
+                node.start_mark,
+                f"发现重复字段 {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeySafeLoader.add_constructor(BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
+
+
+def _construct_unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    mapping: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in mapping:
+            raise ConfigurationError(f"发现重复字段 {key!r}")
+        mapping[key] = value
+    return mapping
+
+
+def _validate_string_keys(value: Any, path: str = "$") -> None:
+    """拒绝 YAML 数字/布尔键，避免不同键在路径规范化时发生碰撞。"""
+
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ConfigurationError(f"配置字段 {path} 下的键 {key!r} 不是字符串")
+            _validate_string_keys(child, f"{path}/{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_string_keys(child, f"{path}/{index}")
+
+
 def parse_configuration(document: ConfigurationDocument) -> dict[str, Any]:
     """解析配置，并拒绝列表、标量等非对象根节点。"""
 
     try:
         if document.format is ConfigFormat.JSON:
-            parsed = json.loads(document.content)
+            parsed = json.loads(document.content, object_pairs_hook=_construct_unique_json_object)
         else:
-            parsed = yaml.safe_load(document.content)
+            parsed = yaml.load(document.content, Loader=UniqueKeySafeLoader)
     except (json.JSONDecodeError, yaml.YAMLError) as exc:
         raise ConfigurationError(f"配置无法解析: {exc}") from exc
 
     if not isinstance(parsed, dict):
         raise ConfigurationError("配置根节点必须是 YAML/JSON 对象")
+    _validate_string_keys(parsed)
     return parsed
 
 
@@ -74,16 +135,27 @@ def canonical_config_hash(config: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _flatten(value: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
-    """将嵌套对象展开为点分路径；P0 将数组作为一个不可再拆分的整体值。"""
+def _escape_path_segment(segment: str) -> str:
+    """对点分路径的单个键做可逆转义。"""
+
+    if segment == "":
+        return r"\0"
+    return segment.replace("\\", "\\\\").replace(".", r"\.")
+
+
+def _flatten(value: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> dict[str, Any]:
+    """将嵌套对象展开为无碰撞点分路径；P0 将数组视为一个整体值。"""
 
     flattened: dict[str, Any] = {}
     for key, child in value.items():
-        path = f"{prefix}.{key}" if prefix else str(key)
+        # parse_configuration 已保证 key 是字符串；保留防御检查方便纯函数直接调用。
+        if not isinstance(key, str):
+            raise ConfigurationError(f"配置键 {key!r} 不是字符串")
+        segments = (*prefix, _escape_path_segment(key))
         if isinstance(child, Mapping):
-            flattened.update(_flatten(child, path))
+            flattened.update(_flatten(child, segments))
         else:
-            flattened[path] = child
+            flattened[".".join(segments)] = child
     return flattened
 
 
@@ -126,6 +198,10 @@ def _risk_from_local_evidence(
     )
 
 
+def _is_applicable(evidence: FieldEvidence | None) -> TypeGuard[FieldEvidence]:
+    return evidence is not None and evidence.applicability is EvidenceApplicability.APPLICABLE
+
+
 def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
     """比较候选配置与正式 baseline，并返回唯一、确定性的检查结论。"""
 
@@ -133,17 +209,19 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
     config_hash = canonical_config_hash(candidate)
     baseline_flat = _flatten(data.baseline_config)
     candidate_flat = _flatten(candidate)
-    confirmed_constraints: dict[str, ParameterConstraint] = {}
-    pending_constraints: dict[str, ParameterConstraint] = {}
-    duplicate_confirmed_paths: set[str] = set()
+    confirmed_groups: dict[str, list[ParameterConstraint]] = {}
+    pending_groups: dict[str, list[ParameterConstraint]] = {}
     for item in data.constraints:
         if item.verification_status is VerificationStatus.CONFIRMED:
-            if item.parameter_path in confirmed_constraints:
-                duplicate_confirmed_paths.add(item.parameter_path)
-            confirmed_constraints[item.parameter_path] = item
+            confirmed_groups.setdefault(item.parameter_path, []).append(item)
         elif item.verification_status is VerificationStatus.PENDING:
-            pending_constraints[item.parameter_path] = item
+            pending_groups.setdefault(item.parameter_path, []).append(item)
         # REJECTED 与 SUPERSEDED 只为审计保留，不能影响新的 Plan Check。
+
+    confirmed_constraints = {path: items[0] for path, items in confirmed_groups.items()}
+    pending_constraints = {path: items[0] for path, items in pending_groups.items()}
+    duplicate_confirmed_paths = {path for path, items in confirmed_groups.items() if len(items) > 1}
+    duplicate_pending_paths = {path for path, items in pending_groups.items() if len(items) > 1}
 
     paths = sorted(
         set(baseline_flat)
@@ -168,6 +246,59 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
                 recommendation="由 Owner 修正约束版本后重新检查。",
             )
         )
+
+    for path in sorted(duplicate_pending_paths):
+        needs_approval = True
+        candidates = pending_groups[path]
+        risks.append(
+            RiskItem(
+                code="CONFLICTING_PENDING_CONSTRAINTS",
+                severity=RiskSeverity.MEDIUM,
+                message=f"参数 {path} 同时存在多个待确认候选约束",
+                field_path=path,
+                impact="候选解释存在歧义，不能只展示或采用最后一个推断结果。",
+                evidence_type=EvidenceType.USER_PROVIDED,
+                evidence_source="intent_interpretation",
+                constraint_status=VerificationStatus.PENDING,
+                constraint_candidates=[
+                    {
+                        "source_type": item.source_type.value,
+                        "expected_value": item.expected_value,
+                        "original_message": item.original_message,
+                        "inference_basis": item.inference_basis,
+                        "confidence": item.confidence,
+                    }
+                    for item in candidates
+                ],
+                recommendation="在意图回执中展示全部候选，并由用户确认唯一版本。",
+            )
+        )
+
+    # 正式基线本身也必须符合已确认约束。否则即使候选配置没有继续变化，也不能把已经
+    # 漂移的 baseline 判为 PASS。重复正式约束已在上方作为独立 Critical 风险处理。
+    for path, confirmed_constraint in confirmed_constraints.items():
+        if path in duplicate_confirmed_paths:
+            continue
+        baseline_value = baseline_flat.get(path, _MISSING)
+        if baseline_value is _MISSING or baseline_value != confirmed_constraint.expected_value:
+            blocked = True
+            risks.append(
+                RiskItem(
+                    code="FORMAL_BASELINE_CONSTRAINT_MISMATCH",
+                    severity=RiskSeverity.CRITICAL,
+                    message=f"正式 baseline 中的 {path} 与已确认约束不一致",
+                    field_path=path,
+                    current_value=None if baseline_value is _MISSING else baseline_value,
+                    expected_value=confirmed_constraint.expected_value,
+                    impact="所有基于该 baseline 的配置检查都可能继承错误正式事实。",
+                    blocking=True,
+                    constraint_source=confirmed_constraint.source_type,
+                    constraint_status=confirmed_constraint.verification_status,
+                    inference_basis=confirmed_constraint.inference_basis,
+                    confidence=confirmed_constraint.confidence,
+                    recommendation="由 Owner 修正并发布新的 context/constraint 版本。",
+                )
+            )
 
     for path in paths:
         previous = baseline_flat.get(path, _MISSING)
@@ -359,7 +490,7 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
             ("checkpoint_path", data.checkpoint, local.checkpoint_path),
         )
         for field_path, expected, evidence in consistency_checks:
-            if expected is not None and evidence is not None and evidence.value != expected:
+            if expected is not None and _is_applicable(evidence) and evidence.value != expected:
                 needs_approval = True
                 risks.append(
                     _risk_from_local_evidence(
@@ -374,7 +505,7 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
                 )
 
         working_tree = local.working_tree_clean
-        if working_tree is not None and working_tree.value is not True:
+        if _is_applicable(working_tree) and working_tree.value is not True:
             needs_approval = True
             risks.append(
                 _risk_from_local_evidence(
@@ -401,7 +532,7 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
                 )
 
         output_directory = local.output_directory_exists
-        if output_directory is not None and output_directory.value is not False:
+        if _is_applicable(output_directory) and output_directory.value is not False:
             needs_approval = True
             risks.append(
                 _risk_from_local_evidence(
@@ -416,7 +547,7 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
             )
 
         checkpoint = local.checkpoint_exists
-        if checkpoint is not None and checkpoint.value is not True:
+        if _is_applicable(checkpoint) and checkpoint.value is not True:
             needs_approval = True
             risks.append(
                 _risk_from_local_evidence(

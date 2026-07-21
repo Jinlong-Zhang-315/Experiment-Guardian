@@ -7,6 +7,7 @@
 from functools import lru_cache
 from typing import Never
 
+from experiment_guardian.application.identity import IdentityProvider
 from experiment_guardian.application.ports import GuardianUseCases
 
 
@@ -44,7 +45,21 @@ class UnwiredGuardianUseCases:
         self._raise()
 
 
+class UnwiredIdentityProvider:
+    """认证尚未接入时拒绝业务调用，避免回退到客户端提交的用户 ID。"""
+
+    def current_identity(self) -> Never:
+        raise ApplicationNotWiredError("MCP Token/Session 身份适配器尚未装配，不能确定当前调用者")
+
+
 @lru_cache(maxsize=1)
 def get_guardian_use_cases() -> GuardianUseCases:
     # 类型忽略只存在于临时失败即停实现；真实应用服务会完整实现 Protocol。
     return UnwiredGuardianUseCases()  # type: ignore[return-value]
+
+
+@lru_cache(maxsize=1)
+def get_identity_provider() -> IdentityProvider:
+    """返回服务端身份提供器；不得用 MCP 工具参数构造身份。"""
+
+    return UnwiredIdentityProvider()

@@ -415,6 +415,7 @@ class SubmissionRisk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     inference_basis: Mapped[str | None] = mapped_column(Text)
     confidence: Mapped[float | None] = mapped_column(Float)
+    constraint_candidates: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
     recommendation: Mapped[str | None] = mapped_column(Text)
     blocking: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

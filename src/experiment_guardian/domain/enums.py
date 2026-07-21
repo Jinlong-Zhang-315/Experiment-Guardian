@@ -85,6 +85,13 @@ class EvidenceType(StrEnum):
     USER_PROVIDED = "USER_PROVIDED"
 
 
+class EvidenceApplicability(StrEnum):
+    """证据字段适用于本次实验，或已明确说明不适用。"""
+
+    APPLICABLE = "APPLICABLE"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
 class SubmissionStatus(StrEnum):
     RECEIVED = "RECEIVED"
     PROCESSING = "PROCESSING"
