@@ -1,8 +1,8 @@
 # Experiment Guardian
 
 Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的治理系统。本仓库当前
-已完成 P0 基础骨架和第一个已认证读取切片，重点固定领域状态、追溯数据模型、训练前
-确定性规则、正式上下文初始化和 MCP 读取边界。它不保证实验一定正确，也不声称能够
+已完成 P0 基础骨架、已认证的正式上下文读取，以及可持久化的训练前确定性配置检查。
+它不保证实验一定正确，也不声称能够
 完整验证真实训练行为。
 
 ## 当前已经具备
@@ -15,7 +15,8 @@ Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的
 * FastAPI 健康/能力接口和 Owner 原子项目初始化接口；
 * 六个 P0 MCP 工具的正式接口名称；
 * 基于哈希 Token、scope、角色与项目绑定的 `project_get_context`；
-* 首个阶段性 Alembic 迁移和可信本地管理 CLI；
+* 数据库驱动的 `experiment_check_plan`，保存版本、快照、证据和幂等回执；
+* 两个收敛的 Alembic 迁移和可信本地管理 CLI；
 * 提交分析 LangGraph 的固定节点顺序；
 * Alembic、pytest、Ruff 和 mypy 基础配置。
 
@@ -31,8 +32,9 @@ Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的
 * 正式与探索实验使用不同模式，探索结果不得成为正式 baseline；
 * 向量相似度只生成候选证据，执行前必须按项目、确认状态、实验状态和协议过滤。
 
-MCP 工具不接受客户端提交的用户 UUID，调用者来自服务端验证的项目绑定 Token。当前仅
-`project_get_context` 已接入 CockroachDB；其他五个工具会明确返回尚未实现，不会伪造数据。
+MCP 工具不接受客户端提交的用户 UUID，调用者来自服务端验证的项目绑定 Token。当前
+`project_get_context` 和 `experiment_check_plan` 已接入 CockroachDB；其他四个工具
+会明确返回尚未实现，不会伪造数据。
 S3、Bedrock、CockroachDB checkpoint 和四个 Web 页面尚未实现。
 
 提交分析图可从最后成功的分析步骤恢复；`NEEDS_REVIEW` 是分析图的终态交接，并非
@@ -54,16 +56,16 @@ cp .env.example .env
 docker compose --env-file .env.cockroach up -d cockroachdb
 ```
 
-应用首个基础迁移：
+应用当前增量迁移：
 
 ```bash
 alembic upgrade head
 ```
 
-该迁移只创建身份、项目、正式上下文、Intent、约束、幂等和审计表。后续表按开发阶段
-通过新的 revision 添加，不在当前阶段提前冻结。
+`20260721_01` 创建 10 张基础表，`20260721_02` 只增加 `plan_checks`。后续表按开发
+阶段通过新 revision 添加，不提前冻结。
 
-## 初始化读取链路
+## 初始化与检查链路
 
 创建或复用首个 Owner/团队并轮换本地管理 Token：
 
@@ -92,8 +94,9 @@ experiment-guardian-admin issue-mcp-token \
   --project-id "$PROJECT_ID"
 ```
 
-stdio MCP Server 从 `MCP_ACCESS_TOKEN` 环境变量读取凭据。原始 Token 只在签发时显示一次，
-数据库只保存 SHA-256，日志和审计记录不得包含原始值。
+stdio MCP Server 从 `MCP_ACCESS_TOKEN` 环境变量读取凭据。新签发的 MCP Token 同时具备
+`project:read` 和 `experiment:check` scope；旧 Token 需要重新签发后才能调用训练前检查。
+原始 Token 只在签发时显示一次，数据库只保存 SHA-256，日志和审计记录不得包含原始值。
 
 ## 启动入口
 
@@ -133,11 +136,11 @@ src/experiment_guardian/
 
 ```bash
 pytest
-ruff check src tests
+ruff check src tests migrations
 ```
 
 ## 下一开发步
 
-1. 将 `experiment_check_plan` 接入当前正式上下文仓储并持久化幂等结果；
-2. 实现计划审批，再创建不可变 Run Manifest；
-3. 后续再接 S3 提交和 LangGraph 分析节点，保持每个切片可独立验收。
+1. 实现 Owner 对 `NEEDS_APPROVAL` Plan Check 的批准和拒绝，并保存不可修改审批记录；
+2. 仅为符合状态条件的 Plan Check 创建幂等、不可变 Run Manifest；
+3. S3、Submission 和 LangGraph 仍保持在后续轮次。

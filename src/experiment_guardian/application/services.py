@@ -25,33 +25,56 @@ from experiment_guardian.domain.administration import (
 )
 from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanCommand,
+    ExperimentCheckPlanResult,
     ExperimentQueryCommand,
     ExperimentQueryResult,
-    PlanEvaluationResult,
+    PlanEvaluationInput,
     ProjectContextBundle,
 )
 from experiment_guardian.domain.enums import (
+    CheckResult,
     ConstraintSource,
     ContextStatus,
     ExperimentMode,
     IdempotencyOperationStatus,
     IntentStatus,
     ProtectionLevel,
+    RiskSeverity,
     TeamRole,
     VerificationStatus,
 )
-from experiment_guardian.domain.plan_check import flatten_configuration
+from experiment_guardian.domain.plan_check import (
+    ConfigurationError,
+    evaluate_plan,
+    flatten_configuration,
+)
 from experiment_guardian.infrastructure.models import (
     AuditLog,
     ExperimentIntent,
     IdempotencyRecord,
+    PlanCheck,
     Project,
     ProjectContext,
     ProtectedParameter,
 )
-from experiment_guardian.infrastructure.repositories import SqlAlchemyProjectRepository
+from experiment_guardian.infrastructure.repositories import (
+    SqlAlchemyPlanCheckRepository,
+    SqlAlchemyProjectRepository,
+)
 
 INITIALIZE_OPERATION = "project.initialize"
+RISK_PRIORITY = {
+    RiskSeverity.LOW: 0,
+    RiskSeverity.MEDIUM: 1,
+    RiskSeverity.HIGH: 2,
+    RiskSeverity.CRITICAL: 3,
+}
+MISSING_INFORMATION_CODES = {
+    "LOCAL_ATTESTATION_MISSING",
+    "CORE_LOCAL_ATTESTATION_REQUIRED",
+    "LOCAL_ATTESTATION_FIELD_MISSING",
+    "GIT_DIFF_ATTESTATION_MISSING",
+}
 
 
 def _canonical_hash(value: Any) -> str:
@@ -66,15 +89,17 @@ def _same_json_value(left: Any, right: Any) -> bool:
 
 
 class GuardianApplication:
-    """只启用本阶段已完成的读取用例，其他工具继续明确失败。"""
+    """当前已经接通正式上下文读取和训练前检查，后续工具继续明确失败。"""
 
     def __init__(
         self,
         session_factory: sessionmaker[Session],
         project_repository: SqlAlchemyProjectRepository,
+        plan_check_repository: SqlAlchemyPlanCheckRepository,
     ) -> None:
         self._session_factory = session_factory
         self._projects = project_repository
+        self._plan_checks = plan_check_repository
 
     def project_get_context(
         self, *, project_id: UUID, identity: RequestIdentity
@@ -85,12 +110,156 @@ class GuardianApplication:
             raise AuthorizationError("MCP Token 未绑定当前项目")
         with self._session_factory() as session:
             return self._projects.load_context_bundle(
-                session, project_id=project_id, user_id=identity.user_id
+                session,
+                project_id=project_id,
+                user_id=identity.user_id,
+                team_id=identity.team_id,
             )
 
-    @staticmethod
-    def experiment_check_plan(_: ExperimentCheckPlanCommand) -> PlanEvaluationResult:
-        raise FeatureUnavailableError("experiment_check_plan 将在下一开发切片接入数据库")
+    def experiment_check_plan(
+        self, command: ExperimentCheckPlanCommand, identity: RequestIdentity
+    ) -> ExperimentCheckPlanResult:
+        if "experiment:check" not in identity.scopes:
+            raise AuthorizationError("Token 缺少 experiment:check scope")
+        if identity.project_id != command.project_id:
+            raise AuthorizationError("MCP Token 未绑定当前项目")
+
+        request_hash = _canonical_hash(command.model_dump(mode="json", exclude={"idempotency_key"}))
+        try:
+            with self._session_factory() as session, session.begin():
+                self._projects.require_project_member(
+                    session,
+                    project_id=command.project_id,
+                    user_id=identity.user_id,
+                    team_id=identity.team_id,
+                )
+                existing = self._plan_checks.find_by_idempotency(
+                    session,
+                    requester_id=identity.user_id,
+                    idempotency_key=command.idempotency_key,
+                )
+                if existing is not None:
+                    return self._plan_checks.replay(existing, request_hash=request_hash)
+
+                bundle = self._projects.load_context_bundle(
+                    session,
+                    project_id=command.project_id,
+                    user_id=identity.user_id,
+                    team_id=identity.team_id,
+                )
+                intent = bundle.active_intent
+                intent_payload = bundle.intent_payload
+                if intent is None or intent_payload is None:
+                    raise ConflictError("项目没有可用于配置检查的 Active Intent")
+                if intent.intent_id != command.experiment_intent_id:
+                    raise ConflictError("请求的 Experiment Intent 不是当前 Active 版本")
+
+                pending_constraints = self._projects.load_pending_constraints(
+                    session,
+                    project_id=command.project_id,
+                    context_id=bundle.context.context_id,
+                    context_version=bundle.context.version,
+                    intent_id=intent.intent_id,
+                    intent_version=intent.version,
+                )
+                constraints = [*bundle.constraints, *pending_constraints]
+                evaluation = evaluate_plan(
+                    PlanEvaluationInput(
+                        baseline_config=bundle.context_payload.active_config,
+                        candidate=command.configuration,
+                        constraints=constraints,
+                        allowed_variable_paths=set(intent_payload.allowed_variables),
+                        local_attestation=command.local_attestation,
+                        experiment_mode=intent.mode,
+                        git_commit=command.git_commit,
+                        run_command=command.command,
+                    )
+                )
+                risk_level = max(
+                    (item.severity for item in evaluation.risks),
+                    key=RISK_PRIORITY.__getitem__,
+                    default=RiskSeverity.LOW,
+                )
+                missing_information = sorted(
+                    {
+                        item.field_path or "local_attestation"
+                        for item in evaluation.risks
+                        if item.code in MISSING_INFORMATION_CODES
+                    }
+                )
+
+                record = PlanCheck(
+                    project_id=command.project_id,
+                    intent_id=intent.intent_id,
+                    context_id=bundle.context.context_id,
+                    context_version=bundle.context.version,
+                    intent_version=intent.version,
+                    experiment_mode=intent.mode,
+                    requester_id=identity.user_id,
+                    idempotency_key=command.idempotency_key,
+                    request_hash=request_hash,
+                    input_config_hash=evaluation.config_hash,
+                    parsed_config=evaluation.parsed_config,
+                    git_commit=command.git_commit,
+                    command=command.command,
+                    local_attestation=command.local_attestation.model_dump(mode="json"),
+                    constraint_snapshot=[item.model_dump(mode="json") for item in constraints],
+                    planned_changes=[item.model_dump(mode="json") for item in evaluation.changes],
+                    check_result=evaluation.check_result,
+                    approval_status=evaluation.approval_status,
+                    risk_level=risk_level,
+                    report={},
+                )
+                session.add(record)
+                session.flush()
+
+                result = ExperimentCheckPlanResult(
+                    plan_check_id=record.id,
+                    project_id=command.project_id,
+                    context_id=bundle.context.context_id,
+                    context_version=bundle.context.version,
+                    experiment_intent_id=intent.intent_id,
+                    intent_version=intent.version,
+                    experiment_mode=intent.mode,
+                    risk_level=risk_level,
+                    missing_information=missing_information,
+                    can_create_manifest=(evaluation.check_result is CheckResult.PASS),
+                    **evaluation.model_dump(),
+                )
+                record.report = result.model_dump(mode="json")
+                session.flush()
+                return result
+        except ConfigurationError as exc:
+            raise InputValidationError(str(exc)) from exc
+        except IntegrityError as exc:
+            replay = self._replay_plan_after_integrity_conflict(
+                requester_id=identity.user_id,
+                idempotency_key=command.idempotency_key,
+                request_hash=request_hash,
+            )
+            if replay is not None:
+                return replay
+            raise ConflictError("Plan Check 与现有数据冲突") from exc
+        except DBAPIError as exc:
+            sqlstate = getattr(exc.orig, "sqlstate", None)
+            if sqlstate == "40001":
+                raise ServiceUnavailableError(
+                    "CockroachDB 事务发生并发冲突，请使用相同 Idempotency-Key 重试"
+                ) from exc
+            raise ServiceUnavailableError("数据库暂时不可用") from exc
+
+    def _replay_plan_after_integrity_conflict(
+        self, *, requester_id: UUID, idempotency_key: UUID, request_hash: str
+    ) -> ExperimentCheckPlanResult | None:
+        with self._session_factory() as session:
+            existing = self._plan_checks.find_by_idempotency(
+                session,
+                requester_id=requester_id,
+                idempotency_key=idempotency_key,
+            )
+            if existing is None:
+                return None
+            return self._plan_checks.replay(existing, request_hash=request_hash)
 
     @staticmethod
     def run_manifest_create(
@@ -365,6 +534,9 @@ class ProjectAdministrationService:
         )
         session.flush()
         bundle = self._projects.load_context_bundle(
-            session, project_id=project.id, user_id=identity.user_id
+            session,
+            project_id=project.id,
+            user_id=identity.user_id,
+            team_id=identity.team_id,
         )
         return ProjectInitializeResponse(project_id=project.id, context_bundle=bundle)

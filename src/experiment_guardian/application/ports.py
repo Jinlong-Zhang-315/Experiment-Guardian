@@ -11,9 +11,9 @@ from uuid import UUID
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanCommand,
+    ExperimentCheckPlanResult,
     ExperimentQueryCommand,
     ExperimentQueryResult,
-    PlanEvaluationResult,
     ProjectContextBundle,
 )
 
@@ -26,8 +26,8 @@ class GuardianUseCases(Protocol):
     ) -> ProjectContextBundle: ...
 
     def experiment_check_plan(
-        self, command: ExperimentCheckPlanCommand
-    ) -> PlanEvaluationResult: ...
+        self, command: ExperimentCheckPlanCommand, identity: RequestIdentity
+    ) -> ExperimentCheckPlanResult: ...
 
     def run_manifest_create(
         self,

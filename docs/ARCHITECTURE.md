@@ -1,7 +1,7 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-21  
-对应数据库 revision：`20260721_01`
+对应数据库 revision：`20260721_02`
 
 本文档维护当前仓库的实际框架。状态标记：
 
@@ -35,11 +35,11 @@
            |                                                           v
            |        Browser / API Client                    +------------------------+
            |                 |                              | GuardianApplication    |
-           |                 v                              | [PARTIAL]              |
+           |                 v                              | [PARTIAL: 2/6]         |
            |      +------------------------+                | project_get_context    |
-           |      | FastAPI                |                |   [DONE]               |
-           |      | /health [DONE]         |                | other 5 tools          |
-           |      | /capabilities [DONE]   |                |   [SCAFFOLD/501]       |
+           |      | FastAPI                |                | experiment_check_plan  |
+           |      | /health [DONE]         |                |   [DONE]               |
+           |      | /capabilities [DONE]   |                | other 4 [SCAFFOLD]     |
            |      | /projects/initialize   |                +-----------+------------+
            |      | [DONE]                 |                            |
            |      +-----------+------------+                            |
@@ -56,27 +56,27 @@
                   | Application Services [DONE]   |
                   | - Owner role check            |
                   | - atomic initialization       |
-                  | - idempotency                 |
+                  | - plan evaluation/idempotency |
                   | - stable application errors   |
                   +---------------+---------------+
                                   |
                                   v
                   +-------------------------------+
-                  | Project Repository [DONE]     |
+                  | Repositories [DONE]            |
                   | - membership                  |
                   | - active Context              |
                   | - active confirmed Intent     |
-                  | - confirmed constraints       |
-                  | - provenance preservation     |
+                  | - confirmed/pending rules     |
+                  | - Plan Check replay           |
                   +---------------+---------------+
                                   |
                                   v
                   +-----------------------------------------------+
-                  | CockroachDB [DONE foundation schema]          |
+                  | CockroachDB [DONE current schema]             |
                   | users, teams, team_members, projects          |
                   | project_contexts, experiment_intents          |
                   | protected_parameters, access_tokens           |
-                  | audit_logs, idempotency_records               |
+                  | audit_logs, idempotency_records, plan_checks  |
                   +-----------------------------------------------+
 ```
 
@@ -87,7 +87,7 @@
 | Interface Layer                                                          |
 |                                                                          |
 |  FastAPI routes                 MCP tools                 Admin CLI       |
-|  [DONE partial API]             [DONE 1/6 use cases]      [DONE]          |
+|  [DONE partial API]             [DONE 2/6 use cases]      [DONE]          |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -111,7 +111,7 @@
 | Infrastructure Layer                                                     |
 |                                                                          |
 |  database.py      models/         repositories/        security.py       |
-|  SQLAlchemy       ORM schema      project context      token hashing      |
+|  SQLAlchemy       ORM schema      project/plan checks  token hashing      |
 |                                                                          |
 |  S3 [PLANNED]     Bedrock [PLANNED]     CloudWatch [PLANNED]              |
 +--------------------------------------------------------------------------+
@@ -142,6 +142,12 @@ User
   |                                  |          +---- context_id/version
   |                                  |          +---- optional intent_id/version
   |                                  |
+  |                                  +----< PlanCheck
+  |                                  |          |
+  |                                  |          +---- context_id/version
+  |                                  |          +---- intent_id/version
+  |                                  |          +---- config/constraint/evidence snapshots
+  |                                  |
   |                                  +----< AuditLog
   |
   +----< AccessToken
@@ -155,7 +161,7 @@ User
 以下对象已有 ORM 模型但尚未进入迁移，状态为 `[SCAFFOLD]`：
 
 ```text
-PlanCheck -> ApprovalRecord -> RunManifest -> ExperimentSubmission
+ApprovalRecord -> RunManifest -> ExperimentSubmission
     -> Artifact / SubmissionRisk -> Experiment -> ExperimentMetric -> Memory
 ```
 
@@ -181,12 +187,18 @@ PlanCheck -> ApprovalRecord -> RunManifest -> ExperimentSubmission
    -> MCP_ACCESS_TOKEN authentication
    -> project binding + membership
    -> active versioned Context + Intent + confirmed constraints
+
+5. Local Agent calls experiment_check_plan(...)
+   -> MCP Token project/team/member/scope validation
+   -> current Context + Active Intent + confirmed/pending constraints
+   -> deterministic parse/hash/diff/risk evaluation
+   -> idempotent PlanCheck + version/evidence snapshots
+   -> PASS / NEEDS_APPROVAL / BLOCKED receipt
 ```
 
 ## 已有但尚未接通的框架
 
 ```text
-experiment_check_plan       [SCAFFOLD: pure evaluator exists, DB use case absent]
 run_manifest_create         [SCAFFOLD: contract/model only]
 submission_prepare          [SCAFFOLD: contract/model only, no S3]
 submission_finalize         [SCAFFOLD: contract/model/workflow topology only]

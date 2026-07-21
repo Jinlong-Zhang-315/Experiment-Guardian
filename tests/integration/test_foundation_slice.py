@@ -1,6 +1,7 @@
 """认证、初始化事务和正式上下文读取的纵向验收测试。"""
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -8,6 +9,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from experiment_guardian import admin_cli
 from experiment_guardian.api.dependencies import require_api_identity
 from experiment_guardian.api.routes import projects as projects_route
 from experiment_guardian.application.errors import (
@@ -39,7 +41,10 @@ from experiment_guardian.infrastructure.models import (
     TeamMember,
     User,
 )
-from experiment_guardian.infrastructure.repositories import SqlAlchemyProjectRepository
+from experiment_guardian.infrastructure.repositories import (
+    SqlAlchemyPlanCheckRepository,
+    SqlAlchemyProjectRepository,
+)
 from experiment_guardian.infrastructure.security import SqlAlchemyTokenService, token_digest
 from experiment_guardian.main import create_app
 
@@ -124,7 +129,7 @@ def services(
     repository = SqlAlchemyProjectRepository()
     return (
         ProjectAdministrationService(factory, repository),
-        GuardianApplication(factory, repository),
+        GuardianApplication(factory, repository, SqlAlchemyPlanCheckRepository()),
     )
 
 
@@ -184,6 +189,36 @@ def test_token_hash_expiry_audience_and_revocation(
         token_service.revoke(session, rotated.token_id)
     with pytest.raises(AuthenticationError):
         token_service.authenticate(rotated.raw_token, audience=TokenAudience.API)
+
+
+def test_issue_mcp_token_cli_grants_plan_check_scope(
+    foundation_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = seed_owner(foundation_session_factory)
+    administration, _ = services(foundation_session_factory)
+    initialized = administration.initialize_project(
+        identity=identity,
+        idempotency_key=uuid4(),
+        request=initial_request(),
+    )
+    token_service = SqlAlchemyTokenService(foundation_session_factory)
+    monkeypatch.setattr(admin_cli, "get_session_factory", lambda: foundation_session_factory)
+    monkeypatch.setattr(admin_cli, "get_token_service", lambda: token_service)
+
+    result = admin_cli._issue_mcp_token(
+        SimpleNamespace(
+            owner_email="owner@example.com",
+            project_id=str(initialized.project_id),
+            token_name="plan-check-agent",
+            ttl_days=30,
+        )
+    )
+
+    authenticated = token_service.authenticate(
+        str(result["access_token"]), audience=TokenAudience.MCP
+    )
+    assert authenticated.project_id == initialized.project_id
+    assert authenticated.scopes == frozenset({"project:read", "experiment:check"})
 
 
 def test_project_initialization_is_atomic_idempotent_and_readable(

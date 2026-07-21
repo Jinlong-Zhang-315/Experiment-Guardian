@@ -276,12 +276,36 @@ class ExperimentCheckPlanCommand(ContractModel):
 
     project_id: UUID
     experiment_intent_id: UUID
-    requester_id: UUID
     idempotency_key: UUID
     configuration: ConfigurationDocument
     command: str = Field(min_length=1)
     git_commit: str = Field(min_length=7, max_length=64)
     local_attestation: LocalAttestation
+
+
+class ExperimentCheckPlanResult(PlanEvaluationResult):
+    """已经持久化、可以按 Idempotency-Key 稳定重放的训练前检查结果。"""
+
+    plan_check_id: UUID
+    project_id: UUID
+    context_id: UUID
+    context_version: int = Field(gt=0)
+    experiment_intent_id: UUID
+    intent_version: int = Field(gt=0)
+    experiment_mode: ExperimentMode
+    risk_level: RiskSeverity
+    missing_information: list[str] = Field(default_factory=list)
+    can_create_manifest: bool
+
+    @model_validator(mode="after")
+    def validate_manifest_eligibility(self) -> "ExperimentCheckPlanResult":
+        eligible = (
+            self.check_result is CheckResult.PASS
+            and self.approval_status is ApprovalStatus.NOT_REQUIRED
+        )
+        if self.can_create_manifest is not eligible:
+            raise ValueError("can_create_manifest 与检查和审批状态不一致")
+        return self
 
 
 class IntentInterpretation(ContractModel):

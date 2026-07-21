@@ -267,6 +267,18 @@ class PlanCheck(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __table_args__ = (
         UniqueConstraint("requester_id", "idempotency_key"),
         Index("ix_plan_check_project_created", "project_id", "created_at"),
+        CheckConstraint(
+            "(check_result = 'PASS' AND approval_status = 'NOT_REQUIRED') OR "
+            "(check_result = 'BLOCKED' AND approval_status = 'NOT_REQUIRED') OR "
+            "(check_result = 'NEEDS_APPROVAL' AND "
+            "approval_status IN ('PENDING', 'APPROVED', 'REJECTED'))",
+            name="result_approval_consistent",
+        ),
+        CheckConstraint(
+            "approval_status != 'APPROVED' OR "
+            "(approved_by IS NOT NULL AND approved_at IS NOT NULL)",
+            name="approved_requires_actor",
+        ),
     )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)

@@ -19,9 +19,10 @@
 | 2026-07-21 | R2 | `e519cd5` | 第一阶段代码框架 |
 | 2026-07-21 | R3 | `43eacd8` | 治理语义、证据和追溯修正 |
 | 2026-07-21 | R4 | `ccc5d7b` | 配置检查与工作流运行级修复 |
-| 2026-07-21 | R5 | `working tree` | NOT_APPLICABLE 和 YAML 隐式类型修复 |
-| 2026-07-21 | R6 | `working tree` | 基础迁移、认证、项目初始化和上下文读取 |
-| 2026-07-21 | DOC-1 | `working tree` | 建立持续维护的开发文档体系 |
+| 2026-07-21 | R5 | `7bfe457` | NOT_APPLICABLE 和 YAML 隐式类型修复 |
+| 2026-07-21 | R6 | `7bfe457` | 基础迁移、认证、项目初始化和上下文读取 |
+| 2026-07-21 | DOC-1 | `7bfe457` | 建立持续维护的开发文档体系 |
+| 2026-07-21 | R7 | `working tree` | 已认证、幂等、可追溯的训练前检查 |
 
 ## R0：需求分析与 MVP 收敛
 
@@ -141,7 +142,7 @@
 
 ## R5：NOT_APPLICABLE 和 YAML 隐式类型修复
 
-版本：`working tree`。
+版本：`7bfe457`。
 
 ### 更新内容和修复
 
@@ -159,7 +160,7 @@
 
 ## R6：基础迁移、认证、项目初始化和上下文读取
 
-版本：`working tree`，当前实现轮次。
+版本：`7bfe457`。
 
 ### 更新内容
 
@@ -205,7 +206,7 @@
 
 ## DOC-1：建立持续维护的开发文档体系
 
-版本：`working tree`。
+版本：`7bfe457`。
 
 ### 更新内容
 
@@ -222,6 +223,45 @@
 ### 功能影响
 
 * 本次只增加项目维护文档，没有改变运行时代码或数据库 Schema。
+
+## R7：已认证、幂等、可追溯的训练前检查
+
+版本：`working tree`，当前实现轮次。
+
+### 更新内容
+
+* 新增 Alembic revision `20260721_02`，只将 `plan_checks` 加入正式数据库。
+* 实现 Plan Check 仓储，支持按 `(requester_id, idempotency_key)` 查找和稳定重放。
+* `experiment_check_plan` 现在从数据库读取当前 Context、Active Intent、已确认约束
+  和当前版本的 Pending 候选约束，再调用纯确定性规则引擎。
+* 持久化配置解析快照和规范化哈希、Context/Intent ID 与版本、约束快照、
+  参数变化、Git commit、运行命令、本地证据、风险和完整回执。
+* MCP 命令不再包含 `requester_id`；请求者仅来自服务端验证的 Token 身份。
+* MCP Token 默认签发 `project:read` 和 `experiment:check` 两个 scope。
+* 数据库检查约束固定了 `check_result` 与 `approval_status` 的合法组合，并要求
+  `APPROVED` 状态必须有审批人和审批时间。
+
+### 修复的问题
+
+* 防止客户端伪造 Plan Check 请求者，并同时校验 Token 项目、Token 团队和项目成员资格。
+* 防止请求使用过期的 Intent，或将新 Context 静默套用到旧检查。
+* 相同幂等 key 且相同请求直接返回原 `plan_check_id`；请求体不同时返回冲突。
+* 幂等重放在 Context 后续变更后仍返回原回执，不重新解释历史请求。
+* 确保 Pending 推断约束只能导致 `NEEDS_APPROVAL`，不能产生强制 `BLOCKED`。
+
+### 验证结果
+
+* 53 项 pytest 测试全部通过，新增 PASS、NEEDS_APPROVAL、BLOCKED、baseline 漂移、
+  Pending 约束、版本绑定、scope、Token 签发、项目/团队边界、幂等重放和服务重建测试。
+* MCP 边界测试确认应用用例收到的是服务端身份，而非客户端参数。
+* Ruff、Ruff format、mypy 和 `git diff --check` 通过。
+* CockroachDB 实际连接成功升级到 `20260721_02 (head)`。
+
+### 已知遗留项
+
+* `approval_records` 和 `run_manifests` 仍只有 ORM 骨架，未进入迁移。
+* `NEEDS_APPROVAL` 尚无 Owner 决策入口，因此当前不能转为 `APPROVED`。
+* `run_manifest_create`、S3、Submission、Bedrock、正式实验确认和 Web 页面仍未实现。
 
 ## 新日志模板
 

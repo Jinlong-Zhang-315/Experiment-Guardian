@@ -64,7 +64,6 @@ def experiment_check_plan(
     payload = ExperimentCheckPlanCommand(
         project_id=UUID(project_id),
         experiment_intent_id=UUID(experiment_intent_id),
-        requester_id=identity.user_id,
         idempotency_key=UUID(idempotency_key),
         configuration=ConfigurationDocument(
             format=ConfigFormat(config_format.lower()), content=config_content
@@ -73,7 +72,7 @@ def experiment_check_plan(
         git_commit=git_commit,
         local_attestation=LocalAttestation.model_validate(local_attestation),
     )
-    result = get_guardian_use_cases().experiment_check_plan(payload)
+    result = get_guardian_use_cases().experiment_check_plan(payload, identity)
     return result.model_dump(mode="json")
 
 

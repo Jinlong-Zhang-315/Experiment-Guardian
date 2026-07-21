@@ -7,7 +7,7 @@ from sqlalchemy import engine_from_config, pool
 
 from experiment_guardian.core.config import get_settings
 from experiment_guardian.infrastructure.models import Base
-from migrations.scope import include_foundation_object
+from migrations.scope import include_migrated_object
 
 config = context.config
 if config.config_file_name is not None:
@@ -24,7 +24,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
-        include_object=include_foundation_object,
+        include_object=include_migrated_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -41,7 +41,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
-            include_object=include_foundation_object,
+            include_object=include_migrated_object,
         )
         with context.begin_transaction():
             context.run_migrations()

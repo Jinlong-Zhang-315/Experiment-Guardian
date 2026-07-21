@@ -50,6 +50,14 @@ def test_version_and_evidence_snapshots_are_persisted() -> None:
     )
 
 
+def test_plan_check_result_and_approval_status_are_database_constrained() -> None:
+    plan_check = Base.metadata.tables["plan_checks"]
+    check_names = {constraint.name for constraint in plan_check.constraints}
+
+    assert "ck_plan_checks_result_approval_consistent" in check_names
+    assert "ck_plan_checks_approved_requires_actor" in check_names
+
+
 def test_memory_has_structured_vector_filters() -> None:
     memory = Base.metadata.tables["memories"]
 

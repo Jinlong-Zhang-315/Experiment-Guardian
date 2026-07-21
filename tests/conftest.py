@@ -8,11 +8,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from experiment_guardian.infrastructure.models import Base
-from migrations.scope import FOUNDATION_TABLES
+from migrations.scope import FOUNDATION_TABLES, MIGRATED_TABLES
 
 
-@pytest.fixture
-def foundation_session_factory() -> Iterator[sessionmaker[Session]]:
+def session_factory_for_tables(
+    table_names: frozenset[str],
+) -> Iterator[sessionmaker[Session]]:
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -25,9 +26,19 @@ def foundation_session_factory() -> Iterator[sessionmaker[Session]]:
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    tables = [Base.metadata.tables[name] for name in FOUNDATION_TABLES]
+    tables = [Base.metadata.tables[name] for name in table_names]
     Base.metadata.create_all(engine, tables=tables)
     factory = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
     yield factory
     Base.metadata.drop_all(engine, tables=tables)
     engine.dispose()
+
+
+@pytest.fixture
+def foundation_session_factory() -> Iterator[sessionmaker[Session]]:
+    yield from session_factory_for_tables(FOUNDATION_TABLES)
+
+
+@pytest.fixture
+def plan_check_session_factory() -> Iterator[sessionmaker[Session]]:
+    yield from session_factory_for_tables(MIGRATED_TABLES)
