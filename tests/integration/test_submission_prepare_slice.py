@@ -1,5 +1,7 @@
 """Run Manifest 到 S3 上传草稿的纵向验收测试。"""
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -36,7 +38,22 @@ from experiment_guardian.infrastructure.repositories import (
     SqlAlchemySubmissionRepository,
 )
 from tests.integration.test_governance_slice import manifest_identity
-from tests.integration.test_plan_check_slice import command, initialize_policy
+from tests.integration.test_plan_check_slice import command, config_yaml, initialize_policy
+
+CONFIG_PAYLOAD = config_yaml().encode("utf-8")
+RESULT_PAYLOAD = json.dumps(
+    {
+        "schema_version": 1,
+        "status": "COMPLETED",
+        "metrics": {"top1": 0.83},
+        "failure_reason": None,
+    },
+    separators=(",", ":"),
+).encode("utf-8")
+PAYLOAD_BY_SHA256 = {
+    hashlib.sha256(CONFIG_PAYLOAD).hexdigest(): CONFIG_PAYLOAD,
+    hashlib.sha256(RESULT_PAYLOAD).hexdigest(): RESULT_PAYLOAD,
+}
 
 
 class FakeStorage:
@@ -44,7 +61,10 @@ class FakeStorage:
         self.calls: list[dict[str, object]] = []
         self.inspection_calls: list[str] = []
         self.objects: dict[str, StoredObjectMetadata] = {}
+        self.payloads: dict[tuple[str, str], bytes] = {}
         self.inspection_error: Exception | None = None
+        self.read_error: Exception | None = None
+        self.read_calls: list[tuple[str, str, int]] = []
         self.fail = False
 
     def create_upload_url(
@@ -78,6 +98,14 @@ class FakeStorage:
             raise self.inspection_error
         return self.objects.get(object_key)
 
+    def read_object_version(
+        self, *, object_key: str, version_id: str, max_bytes: int
+    ) -> bytes | None:
+        self.read_calls.append((object_key, version_id, max_bytes))
+        if self.read_error is not None:
+            raise self.read_error
+        return self.payloads.get((object_key, version_id))
+
     def accept_declared_uploads(self) -> None:
         for call in self.calls:
             object_key = str(call["object_key"])
@@ -92,6 +120,9 @@ class FakeStorage:
                 observed_at=datetime(2026, 7, 22, tzinfo=UTC),
                 evidence_source=f"s3://test-bucket/{object_key}",
             )
+            payload = PAYLOAD_BY_SHA256.get(str(call["sha256"]))
+            if payload is not None:
+                self.payloads[(object_key, "test-version")] = payload
 
 
 def build_submission_service(
@@ -125,15 +156,15 @@ def prepare_command(
                     "filename": "config.yaml",
                     "artifact_type": "CONFIG",
                     "mime_type": "application/yaml",
-                    "size_bytes": 128,
-                    "sha256": "a" * 64,
+                    "size_bytes": len(CONFIG_PAYLOAD),
+                    "sha256": hashlib.sha256(CONFIG_PAYLOAD).hexdigest(),
                 },
                 {
                     "filename": "result.json",
                     "artifact_type": "RESULT",
                     "mime_type": "application/json",
-                    "size_bytes": 256,
-                    "sha256": "b" * 64,
+                    "size_bytes": len(RESULT_PAYLOAD),
+                    "sha256": hashlib.sha256(RESULT_PAYLOAD).hexdigest(),
                 },
             ],
         }

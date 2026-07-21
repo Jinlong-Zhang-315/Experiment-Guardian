@@ -102,11 +102,11 @@ def test_failed_run_may_omit_metrics_and_optional_files() -> None:
 def test_total_file_size_and_optional_file_counts_are_limited() -> None:
     value = payload()
     value["files"] = [
-        artifact("config.json", "CONFIG", "application/json", size_bytes=20 * 1024 * 1024),
-        artifact("result.json", "RESULT", "application/json", size_bytes=20 * 1024 * 1024),
+        artifact("config.json", "CONFIG", "application/json", size_bytes=1024 * 1024),
+        artifact("result.json", "RESULT", "application/json", size_bytes=1024 * 1024),
         *[
             artifact(f"log-{index}.txt", "LOG", "text/plain", size_bytes=20 * 1024 * 1024)
-            for index in range(4)
+            for index in range(5)
         ],
     ]
     with pytest.raises(ValidationError, match="总大小"):
@@ -122,6 +122,11 @@ def test_total_file_size_and_optional_file_counts_are_limited() -> None:
     with pytest.raises(ValidationError, match="NOTE"):
         SubmissionPrepareCommand.model_validate(duplicate_note)
 
+    oversized_config = payload()
+    oversized_config["files"][0]["size_bytes"] = 1024 * 1024 + 1
+    with pytest.raises(ValidationError, match="1 MiB"):
+        SubmissionPrepareCommand.model_validate(oversized_config)
+
 
 def test_finalize_result_enforces_pass_and_retryable_failure_states() -> None:
     submission_id, project_id, artifact_id = uuid4(), uuid4(), uuid4()
@@ -132,6 +137,7 @@ def test_finalize_result_enforces_pass_and_retryable_failure_states() -> None:
         content_length=100,
         content_type="application/yaml",
         checksum_sha256="a" * 64,
+        version_id="version-1",
         verified_at=datetime(2026, 7, 22, tzinfo=UTC),
         evidence_source="s3://bucket/key",
     )
@@ -162,6 +168,7 @@ def test_finalize_result_enforces_pass_and_retryable_failure_states() -> None:
         status="RECEIVED",
         retryable=True,
         issues=[issue],
+        reupload_artifact_ids=[artifact_id],
     )
 
     assert passed.verified_at is not None

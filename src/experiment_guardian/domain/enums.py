@@ -114,6 +114,16 @@ class SubmissionStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class WorkflowStatus(StrEnum):
+    """Submission 分析游标的持久化状态，不依赖 LangGraph checkpoint。"""
+
+    NOT_STARTED = "NOT_STARTED"
+    RUNNING = "RUNNING"
+    RETRYABLE_FAILURE = "RETRYABLE_FAILURE"
+    TERMINAL_FAILURE = "TERMINAL_FAILURE"
+    AWAITING_ENRICHMENT = "AWAITING_ENRICHMENT"
+
+
 class WorkflowStep(StrEnum):
     UPLOAD_VERIFICATION = "UPLOAD_VERIFICATION"
     CONFIG_PARSE = "CONFIG_PARSE"
@@ -150,6 +160,7 @@ class ArtifactVerificationIssueCode(StrEnum):
     CONTENT_TYPE_MISMATCH = "CONTENT_TYPE_MISMATCH"
     CHECKSUM_SHA256_MISSING = "CHECKSUM_SHA256_MISSING"
     CHECKSUM_SHA256_MISMATCH = "CHECKSUM_SHA256_MISMATCH"
+    S3_VERSION_ID_MISSING = "S3_VERSION_ID_MISSING"
 
 
 class ArtifactType(StrEnum):

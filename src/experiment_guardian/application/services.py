@@ -22,6 +22,7 @@ from experiment_guardian.application.errors import (
 )
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.ports import ArtifactStorage
+from experiment_guardian.application.submission_analysis import SubmissionAnalysisService
 from experiment_guardian.application.transactions import run_with_serialization_retry
 from experiment_guardian.domain.administration import (
     PlanCheckDecisionRequest,
@@ -97,6 +98,7 @@ PLAN_DECISION_OPERATION = "plan_check.decision"
 RUN_MANIFEST_OPERATION = "run_manifest.create"
 SUBMISSION_PREPARE_OPERATION = "submission.prepare"
 SUBMISSION_FINALIZE_OPERATION = "submission.finalize"
+SUBMISSION_FINALIZE_FAILURE_ACTION = "submission.finalize.failed"
 RISK_PRIORITY = {
     RiskSeverity.LOW: 0,
     RiskSeverity.MEDIUM: 1,
@@ -155,7 +157,7 @@ class _FinalizeSnapshot:
 
 
 class GuardianApplication:
-    """已接通 Context、Plan Check、Manifest 和 Submission Prepare 四个用例。"""
+    """已接通 Context、Plan Check、Manifest、Submission Prepare/Finalize 五个用例。"""
 
     def __init__(
         self,
@@ -174,6 +176,11 @@ class GuardianApplication:
         self._submissions = submission_repository or SqlAlchemySubmissionRepository()
         self._artifact_storage = artifact_storage
         self._upload_url_ttl_seconds = upload_url_ttl_seconds
+        self._submission_analysis = (
+            SubmissionAnalysisService(session_factory, self._submissions, artifact_storage)
+            if artifact_storage is not None
+            else None
+        )
 
     def project_get_context(
         self, *, project_id: UUID, identity: RequestIdentity
@@ -623,6 +630,8 @@ class GuardianApplication:
                                 "run_manifest_id": str(manifest.id),
                                 "status": submission.status.value,
                                 "artifact_ids": [str(item.id) for item in artifacts],
+                                "token_id": str(identity.token_id),
+                                "source_agent": submission.source_agent,
                             },
                         ),
                         IdempotencyRecord(
@@ -721,12 +730,19 @@ class GuardianApplication:
     def _prepared_submission(
         submission: ExperimentSubmission, artifacts: Sequence[Artifact]
     ) -> _PreparedSubmission:
+        # Prepare 的幂等回执描述上传阶段。分析开始后仍应显示“上传已验证”，而不是重新
+        # 签发 URL，也不把后续 PROCESSING 状态塞进旧的上传契约。
+        upload_status = (
+            submission.status
+            if submission.status is SubmissionStatus.RECEIVED
+            else SubmissionStatus.UPLOAD_VERIFIED
+        )
         return _PreparedSubmission(
             id=submission.id,
             project_id=submission.project_id,
             run_manifest_id=submission.run_manifest_id,
             manifest_hash=submission.manifest_hash,
-            status=submission.status,
+            status=upload_status,
             experiment_status=submission.declared_experiment_status,
             metrics_summary={
                 str(name): float(value) for name, value in submission.declared_metrics.items()
@@ -811,7 +827,7 @@ class GuardianApplication:
             lambda: self._load_finalize_snapshot(command, identity, request_hash)
         )
         if isinstance(initial, SubmissionFinalizeResult):
-            return initial
+            return self._attach_submission_analysis(initial)
 
         result = self._inspect_submission_artifacts(initial)
         if result.verification_result is UploadVerificationResult.FAILED:
@@ -824,7 +840,7 @@ class GuardianApplication:
                     result=result,
                 )
             )
-        return run_with_serialization_retry(
+        verified = run_with_serialization_retry(
             lambda: self._commit_verified_finalization(
                 command=command,
                 identity=identity,
@@ -833,6 +849,20 @@ class GuardianApplication:
                 result=result,
             )
         )
+        return self._attach_submission_analysis(verified)
+
+    def _attach_submission_analysis(
+        self, result: SubmissionFinalizeResult
+    ) -> SubmissionFinalizeResult:
+        """保持上传幂等快照不变，并动态附加当前分析状态。"""
+
+        if (
+            result.verification_result is not UploadVerificationResult.PASS
+            or self._submission_analysis is None
+        ):
+            return result
+        analysis = self._submission_analysis.run(result.submission_id)
+        return result.model_copy(update={"analysis": analysis})
 
     def _load_finalize_snapshot(
         self,
@@ -901,6 +931,12 @@ class GuardianApplication:
             artifact_issues = self._compare_artifact_metadata(artifact, metadata)
             issues.extend(artifact_issues)
             if not artifact_issues:
+                version_id = metadata.version_id
+                if version_id is None or not version_id.strip():
+                    raise ConflictError("S3 版本校验结果与 Artifact 回执不一致")
+                version_id = version_id.strip()
+                if version_id.casefold() == "null":
+                    raise ConflictError("S3 版本校验结果与 Artifact 回执不一致")
                 receipts.append(
                     ArtifactVerificationReceipt(
                         artifact_id=artifact.id,
@@ -910,7 +946,7 @@ class GuardianApplication:
                         content_type=artifact.mime_type,
                         checksum_sha256=artifact.sha256,
                         etag=metadata.etag,
-                        version_id=metadata.version_id,
+                        version_id=version_id,
                         last_modified=metadata.last_modified,
                         verified_at=metadata.observed_at,
                         evidence_source=metadata.evidence_source,
@@ -925,6 +961,7 @@ class GuardianApplication:
                 status=SubmissionStatus.RECEIVED,
                 retryable=True,
                 issues=issues,
+                reupload_artifact_ids=sorted({issue.artifact_id for issue in issues}, key=str),
                 artifact_verifications=[],
                 verified_at=None,
             )
@@ -993,6 +1030,18 @@ class GuardianApplication:
                     message="S3 SHA-256 checksum 与 Artifact 声明不一致",
                 )
             )
+        version_id = metadata.version_id
+        if version_id is None or not version_id.strip() or version_id.strip().casefold() == "null":
+            issues.append(
+                ArtifactVerificationIssue(
+                    **common,
+                    code=ArtifactVerificationIssueCode.S3_VERSION_ID_MISSING,
+                    field="version_id",
+                    expected="NON_NULL_VERSION_ID",
+                    actual=metadata.version_id,
+                    message="S3 对象没有不可变 VersionId，请启用 Bucket Versioning 后重新上传",
+                )
+            )
         return issues
 
     def _persist_failed_finalization(
@@ -1011,7 +1060,7 @@ class GuardianApplication:
                 )
                 if submission is None:
                     raise ResourceNotFoundError("Submission 不存在")
-                self._authorize_finalize(session, submission, identity)
+                project = self._authorize_finalize(session, submission, identity)
                 existing = self._governance.find_idempotency(
                     session,
                     actor_id=identity.user_id,
@@ -1023,8 +1072,32 @@ class GuardianApplication:
                         raise ConflictError("相同 Idempotency-Key 已用于不同的 finalize 请求")
                     if existing.operation_status is IdempotencyOperationStatus.COMPLETED:
                         return self._replay_finalize(existing, request_hash)
-                self._require_unchanged_finalize_target(session, submission, snapshot)
-                response = result.model_dump(mode="json")
+                artifacts = self._require_unchanged_finalize_target(
+                    session, submission, snapshot, lock_artifacts=True
+                )
+                replacement_artifact_ids = {
+                    issue.artifact_id
+                    for issue in result.issues
+                    if issue.code is not ArtifactVerificationIssueCode.OBJECT_MISSING
+                }
+                replacement_keys: list[dict[str, str]] = []
+                for artifact in artifacts:
+                    if artifact.id not in replacement_artifact_ids:
+                        continue
+                    old_key = artifact.s3_key
+                    artifact.s3_key = self._replacement_object_key(
+                        project_id=submission.project_id,
+                        submission_id=submission.id,
+                        artifact_id=artifact.id,
+                    )
+                    replacement_keys.append(
+                        {
+                            "artifact_id": str(artifact.id),
+                            "previous_s3_key": old_key,
+                            "replacement_s3_key": artifact.s3_key,
+                        }
+                    )
+                response = result.model_dump(mode="json", exclude={"analysis"})
                 if existing is None:
                     session.add(
                         IdempotencyRecord(
@@ -1041,6 +1114,32 @@ class GuardianApplication:
                     existing.response_snapshot = response
                     existing.operation_status = IdempotencyOperationStatus.FAILED
                     existing.expires_at = datetime.now(UTC) + timedelta(days=7)
+                session.add(
+                    AuditLog(
+                        team_id=project.team_id,
+                        project_id=submission.project_id,
+                        actor_type="USER",
+                        actor_id=identity.user_id,
+                        action=SUBMISSION_FINALIZE_FAILURE_ACTION,
+                        target_type="EXPERIMENT_SUBMISSION",
+                        target_id=submission.id,
+                        before_value={
+                            "status": SubmissionStatus.RECEIVED.value,
+                            "declaration_hash": snapshot.declaration_hash,
+                        },
+                        after_value={
+                            "verification_result": result.verification_result.value,
+                            "issues": [issue.model_dump(mode="json") for issue in result.issues],
+                            "reupload_artifact_ids": [
+                                str(item) for item in result.reupload_artifact_ids
+                            ],
+                            "replacement_keys": replacement_keys,
+                            "token_id": str(identity.token_id),
+                            "source_agent": submission.source_agent,
+                            "finalizer_mode": self._finalizer_mode(submission, identity),
+                        },
+                    )
+                )
                 return result
         except IntegrityError as exc:
             replay = self._replay_finalize_after_integrity(
@@ -1098,7 +1197,7 @@ class GuardianApplication:
                 submission.status = SubmissionStatus.UPLOAD_VERIFIED
                 submission.upload_verified_at = result.verified_at
                 submission.upload_verified_by = identity.user_id
-                response = result.model_dump(mode="json")
+                response = result.model_dump(mode="json", exclude={"analysis"})
                 submission.upload_verification_snapshot = response
                 if existing is None:
                     session.add(
@@ -1132,6 +1231,9 @@ class GuardianApplication:
                             "verified_at": result.verified_at.isoformat()
                             if result.verified_at
                             else None,
+                            "token_id": str(identity.token_id),
+                            "source_agent": submission.source_agent,
+                            "finalizer_mode": self._finalizer_mode(submission, identity),
                         },
                     )
                 )
@@ -1158,9 +1260,29 @@ class GuardianApplication:
             user_id=identity.user_id,
             team_id=identity.team_id,
         )
-        if submission.submitted_by != identity.user_id:
-            raise AuthorizationError("只有 Submission 原提交者可以 finalize")
+        role = self._projects.require_member(
+            session,
+            user_id=identity.user_id,
+            team_id=project.team_id,
+        )
+        if submission.submitted_by != identity.user_id and role is not TeamRole.OWNER:
+            raise AuthorizationError("只有 Submission 原提交者或项目 Owner 可以 finalize")
         return project
+
+    @staticmethod
+    def _finalizer_mode(submission: ExperimentSubmission, identity: RequestIdentity) -> str:
+        return (
+            "ORIGINAL_SUBMITTER"
+            if submission.submitted_by == identity.user_id
+            else "OWNER_RECOVERY"
+        )
+
+    @staticmethod
+    def _replacement_object_key(*, project_id: UUID, submission_id: UUID, artifact_id: UUID) -> str:
+        return (
+            f"projects/{project_id}/submissions/{submission_id}/artifacts/{artifact_id}/"
+            f"attempts/{uuid4()}"
+        )
 
     def _require_unchanged_finalize_target(
         self,

@@ -8,7 +8,7 @@ from typing import Any
 import boto3  # type: ignore[import-untyped]
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
 
-from experiment_guardian.application.errors import ServiceUnavailableError
+from experiment_guardian.application.errors import InputValidationError, ServiceUnavailableError
 from experiment_guardian.domain.contracts import PresignedUpload, StoredObjectMetadata
 
 
@@ -95,6 +95,55 @@ class S3ArtifactStorage:
             evidence_source=f"s3://{self._bucket}/{object_key}",
         )
 
+    def read_object_version(
+        self, *, object_key: str, version_id: str, max_bytes: int
+    ) -> bytes | None:
+        """只读取上传验证时固定的 VersionId，并在内存分配前限制大小。"""
+
+        try:
+            response = self._get_client().get_object(
+                Bucket=self._bucket,
+                Key=object_key,
+                VersionId=version_id,
+            )
+        except ClientError as exc:
+            error = exc.response.get("Error", {})
+            code = str(error.get("Code", ""))
+            status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if status == 404 or code in {"404", "NoSuchKey", "NoSuchVersion", "NotFound"}:
+                return None
+            raise ServiceUnavailableError("S3 对象版本读取服务暂时不可用") from exc
+        except BotoCoreError as exc:
+            raise ServiceUnavailableError("S3 对象版本读取服务暂时不可用") from exc
+
+        returned_version = response.get("VersionId")
+        if returned_version != version_id:
+            raise ServiceUnavailableError("S3 返回的对象版本与请求 VersionId 不一致")
+        content_length = response.get("ContentLength")
+        if type(content_length) is not int or content_length < 0:
+            raise ServiceUnavailableError("S3 返回了无效的对象大小")
+        if content_length > max_bytes:
+            raise InputValidationError(f"Artifact 内容超过分析上限 {max_bytes} 字节")
+
+        body = response.get("Body")
+        if body is None or not hasattr(body, "read"):
+            raise ServiceUnavailableError("S3 返回了无效的对象内容流")
+        try:
+            payload = body.read(max_bytes + 1)
+        except (BotoCoreError, OSError) as exc:
+            raise ServiceUnavailableError("S3 对象版本读取服务暂时不可用") from exc
+        finally:
+            close = getattr(body, "close", None)
+            if callable(close):
+                close()
+        if not isinstance(payload, bytes):
+            raise ServiceUnavailableError("S3 返回了非字节对象内容")
+        if len(payload) > max_bytes:
+            raise InputValidationError(f"Artifact 内容超过分析上限 {max_bytes} 字节")
+        if len(payload) != content_length:
+            raise ServiceUnavailableError("S3 对象读取长度与元数据不一致")
+        return payload
+
     @staticmethod
     def _decode_sha256(value: object) -> str | None:
         if not isinstance(value, str):
@@ -123,4 +172,10 @@ class UnconfiguredArtifactStorage:
 
     def inspect_object(self, *, object_key: str) -> StoredObjectMetadata | None:
         del object_key
+        raise ServiceUnavailableError("S3_BUCKET 尚未配置")
+
+    def read_object_version(
+        self, *, object_key: str, version_id: str, max_bytes: int
+    ) -> bytes | None:
+        del object_key, version_id, max_bytes
         raise ServiceUnavailableError("S3_BUCKET 尚未配置")

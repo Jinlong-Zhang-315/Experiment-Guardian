@@ -72,6 +72,10 @@ class ArtifactStorage(Protocol):
 
     def inspect_object(self, *, object_key: str) -> StoredObjectMetadata | None: ...
 
+    def read_object_version(
+        self, *, object_key: str, version_id: str, max_bytes: int
+    ) -> bytes | None: ...
+
 
 class SubmissionWorkflow(Protocol):
     """提交分析工作流调度端口，LangGraph 是计划中的首个实现。"""

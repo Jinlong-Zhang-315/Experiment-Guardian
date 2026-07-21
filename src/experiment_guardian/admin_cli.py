@@ -19,13 +19,25 @@ from experiment_guardian.infrastructure.database import get_session_factory
 from experiment_guardian.infrastructure.models import Project, Team, TeamMember, User
 from experiment_guardian.infrastructure.security import IssuedToken
 
+OWNER_API_SCOPES = frozenset({"plan:approve", "project:initialize"})
+OWNER_MCP_SCOPES = frozenset(
+    {
+        "experiment:check",
+        "manifest:create",
+        "project:read",
+        "submission:create",
+        "submission:finalize",
+    }
+)
 
-def _token_output(kind: str, issued: IssuedToken) -> dict[str, Any]:
+
+def _token_output(kind: str, issued: IssuedToken, *, scopes: frozenset[str]) -> dict[str, Any]:
     return {
         "kind": kind,
         "token_id": str(issued.token_id),
         "access_token": issued.raw_token,
         "token_prefix": issued.token_prefix,
+        "scopes": sorted(scopes),
         "expires_at": issued.expires_at.isoformat(),
         "warning": "原始 Token 仅展示本次；数据库只保存哈希。",
     }
@@ -62,14 +74,14 @@ def _bootstrap_owner(args: argparse.Namespace) -> dict[str, Any]:
             project_id=None,
             audience=TokenAudience.API,
             name=args.token_name,
-            scopes={"plan:approve", "project:initialize"},
+            scopes=set(OWNER_API_SCOPES),
             lifetime_days=args.ttl_days,
             created_by=user.id,
         )
         return {
             "user_id": str(user.id),
             "team_id": str(team.id),
-            **_token_output("API", issued),
+            **_token_output("API", issued, scopes=OWNER_API_SCOPES),
         }
 
 
@@ -92,17 +104,14 @@ def _issue_mcp_token(args: argparse.Namespace) -> dict[str, Any]:
             project_id=project.id,
             audience=TokenAudience.MCP,
             name=args.token_name,
-            scopes={
-                "experiment:check",
-                "manifest:create",
-                "project:read",
-                "submission:create",
-                "submission:finalize",
-            },
+            scopes=set(OWNER_MCP_SCOPES),
             lifetime_days=args.ttl_days,
             created_by=user.id,
         )
-        return {"project_id": str(project.id), **_token_output("MCP", issued)}
+        return {
+            "project_id": str(project.id),
+            **_token_output("MCP", issued, scopes=OWNER_MCP_SCOPES),
+        }
 
 
 def _revoke_token(args: argparse.Namespace) -> dict[str, Any]:

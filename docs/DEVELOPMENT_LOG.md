@@ -27,6 +27,7 @@
 | 2026-07-21 | R8 | `2937a0b` | Owner 计划审批和不可变 Run Manifest |
 | 2026-07-21 | R9 | `5ace7c3` | S3 实验草稿上传准备 |
 | 2026-07-22 | R10 | `working tree` | 上传完成确认与 S3 对象复核 |
+| 2026-07-22 | R10.1 | `working tree` | 上传恢复、不可变版本和审计加固 |
 
 ## R0：需求分析与 MVP 收敛
 
@@ -478,6 +479,130 @@
 * R10 仅校验 S3 对象元数据与声明一致，不下载/解析配置或结果，不保证真实训练行为正确。
 * LangGraph 持久化分析、重复检查、风险/摘要、Bedrock、embedding、人工审核确认、正式
   实验查询和 Web 均未在本轮实现。
+
+## R10.1：上传恢复、不可变版本和审计加固
+
+版本：`working tree`，当前修复轮次。
+
+### 更新内容
+
+* 核对官方 CLI 后确认权限并未缺失，而是按用途拆分：Owner API Token 包含
+  `project:initialize/plan:approve`，项目绑定 MCP Token 包含读取、检查、Manifest、
+  prepare 和 finalize scopes。CLI 输出会显式返回排序后的 scopes，并新增两类 Token
+  的签发/认证回归测试。
+* 保留 `If-None-Match: *` 禁止覆盖。已存在但大小、MIME、checksum 或 VersionId 不合格
+  的对象验证失败时，只为受影响 Artifact 原子生成新的随机 object key；缺失对象继续
+  使用尚未占用的原 key。
+* FAILED 回执增加 `reupload_artifact_ids`。调用者使用原 prepare 请求获取新 URL，只上传
+  指定 Artifact；旧错误对象不再被数据库引用，也不会被静默覆盖。
+* finalize 要求 S3 返回非空且非 `null` 的 VersionId。未开启 Versioning 的对象不能进入
+  `UPLOAD_VERIFIED`，未来下载和分析必须使用已保存的具体版本。
+* 每次确定性验证失败都新增不可变 `submission.finalize.failed` AuditLog。同一幂等键连续
+  失败会有多条审计，但仍只有一个当前 IdempotencyRecord；后续成功不会抹掉历史失败。
+* prepare、finalize 成功和 finalize 失败审计均记录 Token ID 与 Submission 的
+  `source_agent`；finalize 额外记录 `ORIGINAL_SUBMITTER/OWNER_RECOVERY`。
+* 项目 Owner 可以代替不可用的原提交者完成 finalize，其他 Researcher 仍不能操作他人
+  Submission。
+* 真实 AWS S3 opt-in 测试要求 Bucket Versioning=Enabled，并验证 checksum、Content-Type、
+  VersionId、预签名必需 Header 和第二次 PUT 返回 412；测试清理所有生成版本。
+
+### 修复的问题
+
+* 错误对象不再因固定 key 与禁止覆盖组合而永久卡住 Submission。
+* 数据库中的验证证据现在绑定具体 S3 VersionId，不能仅凭可变 object key 表示不可变性。
+* revision 06 downgrade 先清除全部 R10 `cloud_hash_verified=true`，再把 Submission 退回
+  `RECEIVED`，避免重新升级后出现无法继续的半验证状态。
+* 原 Token 被撤销或原用户无法继续操作时，Owner 有明确恢复入口和可区分审计。
+* 失败回执被同一幂等记录更新时，历史失败事实仍由独立 AuditLog 完整保存。
+
+### 验证结果
+
+* 全量收集 106 项测试，104 项默认执行全部通过；CockroachDB 和真实 AWS S3 两项外部
+  测试默认跳过。
+* 真实 CockroachDB 隔离库显式执行通过，验证 finalize 数据降到 revision 05 后状态为
+  `RECEIVED` 且所有 Artifact `cloud_hash_verified=false`，随后可重新升级并降到 base。
+* 新增 CLI scope 展示、错误 key 轮换、同 key 多次失败审计、无 VersionId 阻断、Owner
+  恢复 finalize 及 Token/Agent 审计测试。
+* Ruff format、Ruff check、mypy、`git diff --check` 和全量 pytest 均通过。
+
+### 已知遗留项
+
+* 真实 AWS 测试仍需专用 Versioning Bucket 和凭据才能执行，本地环境未访问 AWS。
+* KMS key policy、Bucket lifecycle、跨账号权限和生产部署检查属于 R14 AWS 部署阶段。
+* R11 下载 Artifact 时必须带已保存的 VersionId；当前 R10 不下载或解析文件。
+
+## R11：可恢复的确定性提交分析前半程
+
+版本：`working tree`，当前实现轮次。
+
+### 更新内容
+
+* 新增 Alembic revision `20260722_07`。Submission 正式增加工作流状态、最后成功步骤、
+  结构化错误和有界分析快照；`submission_risks` 从 ORM 骨架进入正式迁移，并使用
+  `(submission_id, risk_fingerprint)` 防止恢复或并发产生重复风险。
+* 增加 `NOT_STARTED/RUNNING/RETRYABLE_FAILURE/TERMINAL_FAILURE/AWAITING_ENRICHMENT`
+  工作流状态。`processing_step` 只表示最后成功节点，不把失败节点误记为已完成。
+* LangGraph 构建器支持 `WORKFLOW_ORDER` 的非空连续前缀。生产只编译 R11 前五节点，完整
+  八节点拓扑仍保留给 R12；恢复真相源是 CockroachDB 业务表，不增加 checkpoint 表。
+* `submission_finalize` 保持原上传回执和幂等快照不变，同时动态附加 `analysis` 回执。
+  首次成功和同 key 重放都会启动或恢复分析，完成后为
+  `PROCESSING/AWAITING_ENRICHMENT/RISK_ANALYSIS`。
+* S3 端口与适配器增加精确 VersionId GET。读取前检查 ContentLength，流式读取最多
+  `max_bytes + 1`，核对返回 VersionId/长度并关闭 Body；NoSuchVersion 与服务故障分别
+  映射为终止问题和可重试问题。
+* CONFIG/RESULT 在 prepare 阶段即限制为各 1 MiB。分析下载后重新计算 SHA-256，不能只
+  信任 HEAD；CONFIG 复用严格 YAML/JSON 解析器，`result.json` 使用固定 schema。
+* 固定结果契约拒绝重复键、额外字段、非有限/布尔指标、超过 50 个指标、无时区时间、
+  完成时间早于开始时间，以及 COMPLETED 空指标或 FAILED 缺少失败原因。
+* Manifest 校验覆盖数据库追溯链、Manifest hash、配置文档 hash、规范化配置 hash、配置
+  快照、运行状态、指标声明和主指标。数据库追溯损坏直接终止；可解析内容不一致保存为
+  CRITICAL 阻断风险并继续完成风险节点，便于后续人工审核。
+* 查重先按 project、上传验证时间和状态过滤最近草稿。Manifest 与 CONFIG/RESULT hash
+  全相同记为非阻断 MEDIUM；运行条件相同记为非阻断 LOW；不调用向量相似度替代结构化
+  判断。
+* 风险明确保存证据边界：上传配置和指标内容仍是 `LOCAL_ATTESTED`，云端只把固定版本、
+  字节 hash、数据库状态和查重比较描述为可验证事实。
+
+### 修复的问题
+
+* 上传成功后不再依赖进程内 LangGraph 状态；后端重启或同 key 重放可根据最后成功步骤
+  继续，已经完成的 HEAD、VersionId GET、解析和风险节点不会重复。
+* S3 短暂失败不会把不可变 Artifact 错判为永久损坏；状态保存为可重试并保留此前游标。
+* 固定 VersionId 缺失、下载 hash 漂移、配置/结果无法解析时明确进入终止失败，避免在同
+  一 Submission 上覆盖已验证版本；调用者必须创建新 Submission。
+* 上传幂等 `response_snapshot` 不保存易变化的分析状态，避免未来审批/分析推进后同 key
+  返回过时回执；分析状态每次从 Submission 动态合成。
+* revision 07 downgrade 会把带上传证据的 R11 `PROCESSING/FAILED` 映射回
+  `UPLOAD_VERIFIED`，删除风险和分析列后仍可由 revision 06/05 继续安全降级。
+* `submission_prepare` 的历史幂等回执在分析开始后仍返回上传阶段的
+  `UPLOAD_VERIFIED`，不会错误重签 URL，也不会把 PROCESSING 塞进旧上传契约。
+
+### 验证结果
+
+* 全量收集 125 项测试，123 项默认执行全部通过；真实 CockroachDB 与 AWS S3 两项外部
+  验收默认跳过。
+* 新增固定 result.json、严格 CONFIG、精确 VersionId GET/限长/关闭流、五节点图前缀、
+  同 key 故障恢复、不可变内容终止失败、Manifest CRITICAL 风险、MEDIUM/LOW 查重和
+  revision 07 升降级测试。
+* 真实 CockroachDB 隔离库显式执行通过：完成 head 升级、完整 Plan/审批/Manifest/
+  prepare/finalize/R11 分析事务、含 PROCESSING 数据降至 revision 05 后再升 head，最终
+  降至 base。
+* 开发 CockroachDB 已从 `20260722_06` 升级至 `20260722_07 (head)`，更新后的 FastAPI
+  已在 `127.0.0.1:8790` 重启，health/capabilities 均返回 200。
+* 真实 AWS opt-in 测试已增加指定 VersionId GET 验收；当前未配置专用 Bucket/凭据，
+  本轮未实际访问 AWS。
+* Ruff check、mypy 和全量 pytest 通过。
+
+### 已知遗留项
+
+* R11 不生成摘要、embedding 或最终审核回执，成功状态刻意停在
+  `AWAITING_ENRICHMENT`；这些只在 R12 实现。
+* R11 查重只覆盖同项目的已验证 Submission，不查询正式 Experiment 或向量记忆；正式
+  结构化/向量查询属于 R13。
+* CockroachDB 的 `alembic check` 仍会把反射出的 JSONB/Text 类型和 `NULLS FIRST` 索引
+  表达误报为全库 metadata 差异；revision 07 的真实升降级由 SQLite 与隔离 CockroachDB
+  测试覆盖，本轮不扩展为跨历史 revision 的反射规范化重构。
+* 未增加 Web、自动训练、自动改代码、KMS/lifecycle 或生产 AWS 部署配置。
 
 ## 新日志模板
 

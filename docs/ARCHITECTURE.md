@@ -1,7 +1,7 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-22
-对应数据库 revision：`20260722_06`
+对应数据库 revision：`20260722_07`
 
 本文档维护当前仓库的实际框架。状态标记：
 
@@ -64,6 +64,9 @@
                   | - immutable Manifest          |
                   | - submission upload draft     |
                   | - S3 upload verification      |
+                  | - safe reupload key rotation  |
+                  | - Owner finalize recovery     |
+                  | - R11 analysis orchestration  |
                   | - stable application errors   |
                   +---------------+---------------+
                                   |
@@ -79,6 +82,7 @@
                   | - approval/manifest locks     |
                   | - submission/artifact replay  |
                   | - finalize row locks/evidence |
+                  | - analysis cursor/risk query  |
                   +---------------+---------------+
                                   |
                                   v
@@ -90,6 +94,7 @@
                   | audit_logs, idempotency_records, plan_checks  |
                   | approval_records, run_manifests               |
                   | experiment_submissions, artifacts             |
+                  | submission_risks                              |
                   +-----------------------------------------------+
 ```
 
@@ -108,6 +113,7 @@
 |                                                                          |
 |  container.py       identity.py       ports.py       services.py         |
 |  dependency wiring  trusted identity  use-case API   transactions/auth   |
+|  submission_analysis.py [DONE R11 five-node persisted analysis]          |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -116,8 +122,8 @@
 |  enums.py           contracts.py         administration.py               |
 |  state vocabulary   evidence/contracts   initialization request          |
 |                                                                          |
-|  plan_check.py [DONE pure engine]   run_manifest.py [DONE builder]       |
-|  parse/hash/diff/risk result         snapshot extraction/canonical hash   |
+|  plan_check.py [DONE]   run_manifest.py [DONE]   submission_analysis.py  |
+|  strict config rules   canonical Manifest         strict result parser    |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -126,7 +132,7 @@
 |  database.py      models/         repositories/        security.py       |
 |  SQLAlchemy       ORM schema      project/plan/governance repositories   |
 |                                                                          |
-|  S3 presign [DONE]  S3 HEAD verify [DONE]  Bedrock/CloudWatch [PLANNED]    |
+|  S3 PUT/HEAD [DONE]  exact VersionId GET [DONE]  Bedrock [PLANNED]         |
 +--------------------------------------------------------------------------+
 ```
 
@@ -171,9 +177,15 @@ User
   |                                  |          +---- run_manifest_id/hash
   |                                  |          +---- declared status/metrics/evidence
   |                                  |          +---- UPLOAD_VERIFIED audit snapshot
+  |                                  |          +---- workflow status/last completed step
+  |                                  |          +---- bounded analysis snapshot
+  |                                  |          +----< SubmissionRisk
+  |                                  |          |        +---- unique risk fingerprint
+  |                                  |          |        +---- severity/evidence/blocking
   |                                  |          +----< Artifact
   |                                  |                   +---- declared hash/size/S3 key
   |                                  |                   +---- cloud metadata/evidence/time
+  |                                  |                   +---- immutable S3 VersionId
   |                                  |
   |                                  +----< AuditLog
   |
@@ -188,7 +200,7 @@ User
 以下对象已有 ORM 模型但尚未进入迁移，状态为 `[SCAFFOLD]`：
 
 ```text
-SubmissionRisk -> Experiment -> ExperimentMetric -> Memory
+Experiment -> ExperimentMetric -> Memory
 ```
 
 这一区分是刻意的：没有业务服务和验收测试的表不提前加入 Alembic revision。
@@ -241,24 +253,42 @@ SubmissionRisk -> Experiment -> ExperimentMetric -> Memory
 
 9. Local Agent calls submission_finalize(submission_id, idempotency_key)
    -> MCP Token project/team/member/submission:finalize validation
-   -> only the original submitter may finalize a RECEIVED draft
+   -> original submitter, or Owner recovery for a RECEIVED draft
    -> outside transaction: S3 HEAD with ChecksumMode=ENABLED for every Artifact
-   -> missing/mismatch: retryable FAILED receipt, no partial Artifact verification
+   -> require non-null VersionId so later readers can address the verified object version
+   -> missing: retryable FAILED receipt and reuse the still-empty object key
+   -> mismatch/unversioned: rotate only affected Artifact to a fresh object key
+   -> client calls prepare again and uploads only reupload_artifact_ids
+   -> every failed attempt writes an immutable audit with Token ID and source Agent
    -> all match: one transaction writes all CLOUD_VERIFIED evidence,
       UPLOAD_VERIFIED Submission, AuditLog and completed IdempotencyRecord
-   -> successful replay never calls S3 again; prepare replay no longer issues PUT URLs
+   -> synchronously starts or resumes the R11 analysis prefix
+   -> exact VersionId GET outside database transactions; byte SHA-256 is recalculated
+   -> strict CONFIG YAML/JSON + fixed result.json parsing, each at most 1 MiB
+   -> each node commits analysis_snapshot + processing_step independently
+   -> deterministic Manifest findings become risks; exact duplicate MEDIUM,
+      same run conditions LOW; duplicate candidates are restricted to the same project
+   -> transient S3 failure: PROCESSING/RETRYABLE_FAILURE; same finalize key resumes
+   -> invalid immutable content: FAILED/TERMINAL_FAILURE; create a new Submission
+   -> completed prefix: PROCESSING/AWAITING_ENRICHMENT at RISK_ANALYSIS
+   -> successful replay skips completed HEAD, GET and analysis nodes
 ```
 
-## 已有但尚未接通的框架
+## 工作流实现边界
 
 ```text
 experiments_query           [SCAFFOLD: query contract/model only]
 
-Submission LangGraph:
+Submission LangGraph full topology:
+[DONE R11]
 UPLOAD_VERIFICATION -> CONFIG_PARSE -> MANIFEST_VALIDATION -> DUPLICATE_CHECK
--> RISK_ANALYSIS -> SUMMARY_GENERATION -> EMBEDDING_GENERATION -> NEEDS_REVIEW -> END
+-> RISK_ANALYSIS
 
-NEEDS_REVIEW is the planned persisted hand-off target, not a LangGraph interrupt.
+[PLANNED R12]
+-> SUMMARY_GENERATION -> EMBEDDING_GENERATION -> NEEDS_REVIEW -> END
+
+数据库业务表是恢复真相源，LangGraph 不保存 checkpoint。NEEDS_REVIEW 是计划中的持久化
+交接状态，不是 LangGraph interrupt；正式确认将使用独立幂等事务。
 ```
 
 ## 计划中的完整部署边界
@@ -273,7 +303,7 @@ Local Agent -> MCP Server -----+-> FastAPI/Application
              v                        v                        v
        CockroachDB               Amazon S3                Bedrock
        state/vector              artifacts                summary/risk
-       [PARTIAL]                 [PARTIAL: PUT/HEAD]      [PLANNED]
+       [PARTIAL]                 [PARTIAL: PUT/HEAD/GET]     [PLANNED]
              |
              v
        CloudWatch [PLANNED]

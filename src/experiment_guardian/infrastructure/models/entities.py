@@ -44,6 +44,8 @@ from experiment_guardian.domain.enums import (
     TeamRole,
     TokenAudience,
     VerificationStatus,
+    WorkflowStatus,
+    WorkflowStep,
 )
 from experiment_guardian.infrastructure.models.base import (
     Base,
@@ -426,6 +428,16 @@ class ExperimentSubmission(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     upload_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     upload_verified_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     upload_verification_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    workflow_status: Mapped[WorkflowStatus] = mapped_column(
+        enum_column(WorkflowStatus, "submission_workflow_status", length=32),
+        default=WorkflowStatus.NOT_STARTED,
+        nullable=False,
+    )
+    processing_step: Mapped[WorkflowStep | None] = mapped_column(
+        enum_column(WorkflowStep, "submission_processing_step", length=32)
+    )
+    processing_error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    analysis_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -462,10 +474,19 @@ class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
 class SubmissionRisk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "submission_risks"
+    __table_args__ = (
+        UniqueConstraint(
+            "submission_id",
+            "risk_fingerprint",
+            name="uq_submission_risks_submission_fingerprint",
+        ),
+        Index("ix_submission_risks_submission_severity", "submission_id", "severity"),
+    )
 
     submission_id: Mapped[UUID] = mapped_column(
-        ForeignKey("experiment_submissions.id"), nullable=False, index=True
+        ForeignKey("experiment_submissions.id"), nullable=False
     )
+    risk_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     risk_type: Mapped[str] = mapped_column(String(100), nullable=False)
     severity: Mapped[RiskSeverity] = mapped_column(
         enum_column(RiskSeverity, "risk_severity"), nullable=False

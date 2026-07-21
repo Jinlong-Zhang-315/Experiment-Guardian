@@ -27,6 +27,9 @@ def test_presigned_put_persists_declared_checksum_and_content_type() -> None:
     object_key = f"integration-tests/submission-prepare/{uuid4()}.json"
     storage = S3ArtifactStorage(bucket=settings.s3_bucket, region=settings.aws_region)
     client = boto3.client("s3", region_name=settings.aws_region)
+    assert client.get_bucket_versioning(Bucket=settings.s3_bucket).get("Status") == ("Enabled"), (
+        "R10 要求测试 Bucket 开启 Versioning"
+    )
 
     signed = storage.create_upload_url(
         object_key=object_key,
@@ -43,12 +46,42 @@ def test_presigned_put_persists_declared_checksum_and_content_type() -> None:
             timeout=30,
         )
         response.raise_for_status()
+        overwrite = httpx.put(
+            signed.upload_url,
+            content=payload,
+            headers=signed.required_headers,
+            timeout=30,
+        )
+        assert overwrite.status_code == 412
         metadata = storage.inspect_object(object_key=object_key)
         assert metadata is not None
         assert metadata.content_length == len(payload)
         assert metadata.content_type == "application/json"
         assert metadata.checksum_sha256 == digest
+        assert metadata.version_id not in {None, "", "null"}
         assert metadata.evidence_source == f"s3://{settings.s3_bucket}/{object_key}"
         assert metadata.observed_at is not None
+        assert (
+            storage.read_object_version(
+                object_key=object_key,
+                version_id=str(metadata.version_id),
+                max_bytes=1024,
+            )
+            == payload
+        )
     finally:
-        client.delete_object(Bucket=settings.s3_bucket, Key=object_key)
+        versions = client.list_object_versions(
+            Bucket=settings.s3_bucket,
+            Prefix=object_key,
+        )
+        objects = [
+            {"Key": item["Key"], "VersionId": item["VersionId"]}
+            for group in ("Versions", "DeleteMarkers")
+            for item in versions.get(group, [])
+            if item["Key"] == object_key
+        ]
+        if objects:
+            client.delete_objects(
+                Bucket=settings.s3_bucket,
+                Delete={"Objects": objects, "Quiet": True},
+            )

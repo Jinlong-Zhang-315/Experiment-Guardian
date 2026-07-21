@@ -80,9 +80,10 @@ def test_approval_and_manifest_are_immutable_by_schema() -> None:
     assert {"schema_version", "config_document_hash"} <= set(manifest.columns.keys())
 
 
-def test_submission_prepare_schema_keeps_upload_declarations_narrow() -> None:
+def test_submission_schema_keeps_r11_analysis_narrow() -> None:
     submission = Base.metadata.tables["experiment_submissions"]
     artifact = Base.metadata.tables["artifacts"]
+    risk = Base.metadata.tables["submission_risks"]
 
     assert {
         "declared_experiment_status",
@@ -92,8 +93,11 @@ def test_submission_prepare_schema_keeps_upload_declarations_narrow() -> None:
         "upload_verified_at",
         "upload_verified_by",
         "upload_verification_snapshot",
+        "workflow_status",
+        "processing_step",
+        "processing_error",
+        "analysis_snapshot",
     } <= set(submission.columns.keys())
-    assert "processing_step" not in submission.columns
     assert "generated_summary" not in submission.columns
     assert "fk_artifacts_experiment_id_experiments" not in {
         constraint.name for constraint in artifact.constraints
@@ -105,6 +109,10 @@ def test_submission_prepare_schema_keeps_upload_declarations_narrow() -> None:
         "ck_artifacts_artifact_sha256_length",
     } <= {constraint.name for constraint in artifact.constraints}
     assert {"verified_at", "verification_evidence", "s3_version_id"} <= set(artifact.columns.keys())
+    assert "risk_fingerprint" in risk.columns
+    assert "uq_submission_risks_submission_fingerprint" in {
+        constraint.name for constraint in risk.constraints
+    }
 
 
 def test_memory_has_structured_vector_filters() -> None:

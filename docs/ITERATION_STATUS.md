@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
 更新时间：2026-07-22
-当前完成轮次：R10
-下一轮：R11 可恢复的确定性提交分析前半程
+当前完成轮次：R11
+下一轮：R12 摘要、embedding 与审核回执
 
 本文档维护“每轮交付了什么”和“下一轮只做什么”。详细缺陷与修复过程见
 `docs/DEVELOPMENT_LOG.md`，当前代码结构见 `docs/ARCHITECTURE.md`。
@@ -22,8 +22,8 @@
 | R8 | 计划审批和 Run Manifest | 完成 | Owner 最终决策与不可变 Manifest |
 | R9 | S3 草稿提交 | 完成 | RECEIVED 草稿、artifact 声明与短期 PUT URL |
 | R10 | 上传确认与 S3 复核 | 完成 | UPLOAD_VERIFIED 与原子云端证据 |
-| R11 | 可恢复的确定性分析前半程 | 下一轮 | 解析、校验、查重和风险 |
-| R12 | 摘要、embedding 与审核回执 | 排队 | 不属于下一轮 |
+| R11 | 可恢复的确定性分析前半程 | 完成 | 解析、校验、查重和风险 |
+| R12 | 摘要、embedding 与审核回执 | 下一轮 | 不属于当前轮次 |
 | R13 | 正式实验确认、查询和向量候选 | 排队 | 不属于下一轮 |
 | R14 | Web 页面与 AWS 演示部署 | 排队 | 不属于下一轮 |
 
@@ -181,9 +181,11 @@ R9 没有实现 `submission_finalize`、S3 对象复核、提交分析、Bedrock
 * revision `20260722_06` 增加 Submission 上传复核人、时间、回执快照以及 Artifact
   复核时间、S3 version ID 和结构化证据；状态列扩至 `VARCHAR(32)`。
 * MCP `submission_finalize` 只接受 `submission_id` 和 `idempotency_key`，调用者身份来自
-  项目绑定 Token，并要求 `submission:finalize` scope 和原提交者身份。
+  项目绑定 Token，并要求 `submission:finalize` scope；原提交者或项目 Owner 可执行。
 * S3 适配器使用 `HEAD` 与 `ChecksumMode=ENABLED` 获取对象存在性、Content-Length、
   Content-Type、ChecksumSHA256、ETag、VersionId 和观测时间。
+* finalize 强制要求不可变 VersionId；错误或无版本对象使用新的随机 object key 重传，
+  保持 `If-None-Match: *` 防覆盖语义。
 * 对象缺失或声明不匹配返回完整的可重试 FAILED 回执，Submission 保持 `RECEIVED`，
   不写入任何部分 Artifact 验证结果。
 * 同一失败 key 可在修复对象后重新检查；相同 key 对不同 Submission 的异体请求冲突。
@@ -192,52 +194,82 @@ R9 没有实现 `submission_finalize`、S3 对象复核、提交分析、Bedrock
 * 成功幂等重放直接返回原回执，不再次访问 S3；prepare 重放也不再签发上传 URL。
 * S3 服务暂时不可用时不绑定失败幂等结果，不修改 Submission 或 Artifact，可用相同 key
   安全重试。
+* 每次确定性验证失败都写入独立 AuditLog；成功和失败记录均包含具体 Token ID、原始
+  `source_agent` 和 Owner 恢复模式，后续成功不会覆盖历史失败事实。
 * 迁移 downgrade 会先把新版 `UPLOAD_VERIFIED` 映射为 R9 可理解的 `RECEIVED`，再恢复
-  旧状态列长度，保证存在实际数据时也能回滚。
-* 103 项测试被收集，101 项默认执行全部通过；CockroachDB 隔离库验收已显式执行通过，
+  旧状态列长度，同时清除 R9 无法解释的 Artifact 云端验证标记，保证存在实际数据时
+  也能回滚。
+* 106 项测试被收集，104 项默认执行全部通过；CockroachDB 隔离库验收已显式执行通过，
   真实 AWS S3 PUT/HEAD 测试因未配置专用 Bucket 和凭据而默认跳过。
 
 R10 没有下载或解析 CONFIG/RESULT，不启动 LangGraph，不生成风险、摘要或 embedding，
 也不实现正式实验确认、查询和 Web。
 
-## 下一轮 R11：可恢复的确定性提交分析前半程
+### R11：可恢复的确定性提交分析前半程
+
+交付：
+
+* revision `20260722_07` 为 Submission 增加 `workflow_status`、`processing_step`、
+  `processing_error` 和有界 `analysis_snapshot`，并正式迁移 `submission_risks`。
+* `submission_finalize` 上传验证成功后同步启动分析；相同 key 重放动态合成当前分析状态，
+  上传幂等快照不会固化旧工作流状态。
+* LangGraph 生产图只编排前五个连续节点；数据库业务表游标是唯一恢复依据，不引入
+  PostgreSQL checkpointer。
+* CONFIG/RESULT 只按上传验证保存的 S3 VersionId 下载，限制为 1 MiB，下载后再次核对
+  SHA-256；真实 S3 opt-in 测试覆盖指定版本 GET。
+* CONFIG 复用重复键拒绝、JSON 标量语义和稳定规范化哈希；`result.json` 固定为
+  `schema_version/status/metrics/timestamps/failure_reason`，拒绝额外字段、布尔指标、NaN、
+  无时区时间和逆序时间。
+* Manifest 校验覆盖追溯链、Manifest hash、配置原始/规范化 hash、配置快照、结果状态、
+  指标声明和主指标。可解析的不一致形成阻断型 CRITICAL 风险，不由 LLM 降级。
+* 查重先按 project 和可用状态过滤；相同 Manifest + CONFIG/RESULT hash 为非阻断 MEDIUM，
+  同运行条件为非阻断 LOW，结果只作为候选证据。
+* 每个节点独立事务提交。S3 暂时不可用进入 `RETRYABLE_FAILURE` 并可用同 finalize key
+  恢复；不可变版本缺失、哈希变化或内容无效进入 `FAILED/TERMINAL_FAILURE`。
+* 完成 R11 后保持 `PROCESSING/AWAITING_ENRICHMENT` 和 `processing_step=RISK_ANALYSIS`，
+  没有提前伪装为 `NEEDS_REVIEW`。
+* 125 项测试被收集，123 项默认执行全部通过；CockroachDB 隔离库验收显式通过，真实
+  AWS S3 测试因未配置专用 Bucket/凭据默认跳过。
+
+R11 没有调用 Bedrock、生成 embedding/审核回执、确认正式实验、查询向量或开发 Web。
+
+## 下一轮 R12：摘要、embedding 与审核回执
 
 ### 单一目标
 
-只把 `UPLOAD_VERIFIED` Submission 推进到完成 `RISK_ANALYSIS` 的持久化中间状态。该轮
-聚焦分析状态、确定性校验和故障恢复，不生成最终审核回执。
+只将 `AWAITING_ENRICHMENT` Submission 推进至 `NEEDS_REVIEW`，形成可供 Web/API 后续
+读取的短审核回执。正式 Experiment 的创建与确认事务仍留给 R13。
 
 ### 本轮包含
 
-1. 为 Submission 增加 `processing_step`、`workflow_status`、`processing_error` 和有界的
-   中间结果字段；每一步完成后独立持久化。
-2. 只允许从 `UPLOAD_VERIFIED` 启动；重复启动复用同一工作流状态，失败后从最后成功步骤
-   继续，不重复 S3 上传复核。
-3. 接通 CONFIG/RESULT 下载、大小限制、严格 YAML/JSON 解析和 Manifest/配置哈希校验。
-4. 基于项目、协议、状态和哈希做结构化重复检查；不调用向量检索替代结构化结论。
-5. 生成确定性风险清单，明确区分 `CLOUD_VERIFIED`、`LOCAL_ATTESTED` 和
-   `USER_PROVIDED`，LLM 不参与降级或覆盖规则。
-6. 复用固定工作流的前五个节点；恢复依据来自数据库持久状态，后续节点由 R12 继续。
+1. 从 `RISK_ANALYSIS` 游标继续实现 `SUMMARY_GENERATION`、`EMBEDDING_GENERATION` 和
+   `NEEDS_REVIEW` 三步，每步继续独立事务和可恢复游标。
+2. 摘要输入只读取 R11 已固化的结构化快照与风险；Bedrock 失败可重试，模型输出不能
+   修改风险等级、Manifest 校验结论或正式记录。
+3. embedding 保存来源文本 hash、模型标识和维度；生成结果只为 R13 查询准备，不在 R12
+   暴露向量查询，也不替代结构化过滤。
+4. 生成短审核回执，只突出目标、允许变化、关键结果和最高风险；LOW/MEDIUM 详情默认可
+   折叠，HIGH/CRITICAL 必须展开，CRITICAL 明确不可确认。
+5. 完成后原子切换为 `NEEDS_REVIEW`，重复运行从持久化结果重放，不重复调用外部模型。
 
 ### 明确不包含
 
-* `SUMMARY_GENERATION`、`EMBEDDING_GENERATION` 和 `NEEDS_REVIEW` 审核回执。
-* Bedrock、向量 embedding、正式实验确认和 Experiment/Metric/Memory 正式迁移。
+* 正式实验确认、Experiment/Metric/Memory 完整事务和 `experiments_query`。
 * Web 页面、自动训练、自动改代码和 AWS 部署。
+* LLM 自动批准、降低风险、修改配置或覆盖 Context/Intent/Constraint。
 
 ### 验收条件
 
-* 进程在前五个节点任一步后重启可从最后完成步骤继续，已保存步骤不会重复执行。
-* 文件解析、Manifest 校验或重复检查失败时保存稳定错误，修复后可安全重试。
-* 完成后持久化结构化解析、重复候选和风险结果，但状态不得伪装成 `NEEDS_REVIEW`。
-* R10 finalize、幂等、迁移和云端证据链保持全量回归通过。
+* 外部模型/embedding 暂时失败时从最后成功步骤恢复，已完成调用不会重复。
+* 确定性 CRITICAL 风险在摘要和回执中保持 CRITICAL，不能被模型输出覆盖。
+* 成功状态严格为 `NEEDS_REVIEW`，审核回执足够短且证据类型措辞准确。
+* R10/R11 finalize、迁移、VersionId、游标、查重和风险测试保持全量回归通过。
 
 ## 后续队列
 
 后续轮次只表示顺序，不在 R11 同时开发：
 
 ```text
-R12 Summary/embedding generation + NEEDS_REVIEW receipt
 R13 Transactional experiment confirmation + structured/vector query
 R14 Four Web pages + AWS deployment + final demonstration
 ```

@@ -31,6 +31,8 @@ from experiment_guardian.domain.enums import (
     SubmittedRunStatus,
     UploadVerificationResult,
     VerificationStatus,
+    WorkflowStatus,
+    WorkflowStep,
 )
 
 MAX_CONFIGURATION_BYTES = 1024 * 1024
@@ -450,6 +452,11 @@ class SubmissionArtifactInput(ContractModel):
     @model_validator(mode="after")
     def validate_filename_and_media_type(self) -> "SubmissionArtifactInput":
         if (
+            self.artifact_type in {ArtifactType.CONFIG, ArtifactType.RESULT}
+            and self.size_bytes > MAX_CONFIGURATION_BYTES
+        ):
+            raise ValueError("CONFIG 和 RESULT 文件分别不能超过 1 MiB")
+        if (
             self.filename in {".", ".."}
             or "/" in self.filename
             or "\\" in self.filename
@@ -569,7 +576,7 @@ class StoredObjectMetadata(ContractModel):
     checksum_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
     checksum_type: str | None = None
     etag: str | None = None
-    version_id: str | None = None
+    version_id: str | None = Field(default=None, max_length=1024)
     last_modified: datetime | None = None
     observed_at: datetime
     evidence_source: str = Field(min_length=1, max_length=2000)
@@ -596,7 +603,7 @@ class ArtifactVerificationReceipt(ContractModel):
     content_type: str
     checksum_sha256: str = Field(pattern=SHA256_PATTERN)
     etag: str | None = None
-    version_id: str | None = None
+    version_id: str = Field(min_length=1, max_length=1024)
     last_modified: datetime | None = None
     verified_at: datetime
     evidence_type: Literal[EvidenceType.CLOUD_VERIFIED] = EvidenceType.CLOUD_VERIFIED
@@ -609,6 +616,38 @@ class SubmissionFinalizeCommand(ContractModel):
     idempotency_key: UUID
 
 
+class SubmissionAnalysisReceipt(ContractModel):
+    """当前持久化分析状态；幂等重放时从 Submission 动态读取。"""
+
+    submission_status: SubmissionStatus
+    workflow_status: WorkflowStatus
+    processing_step: WorkflowStep | None = None
+    retryable: bool = False
+    error: dict[str, Any] | None = None
+    duplicate_count: int = Field(default=0, ge=0)
+    risk_count: int = Field(default=0, ge=0)
+    highest_risk: RiskSeverity | None = None
+
+    @model_validator(mode="after")
+    def validate_analysis_state(self) -> "SubmissionAnalysisReceipt":
+        if self.workflow_status is WorkflowStatus.RETRYABLE_FAILURE and not self.retryable:
+            raise ValueError("RETRYABLE_FAILURE 分析回执必须允许重试")
+        if self.workflow_status is WorkflowStatus.TERMINAL_FAILURE and (
+            self.submission_status is not SubmissionStatus.FAILED or self.retryable
+        ):
+            raise ValueError("TERMINAL_FAILURE 必须对应不可重试的 FAILED Submission")
+        if (
+            self.workflow_status
+            in {
+                WorkflowStatus.RETRYABLE_FAILURE,
+                WorkflowStatus.TERMINAL_FAILURE,
+            }
+            and self.error is None
+        ):
+            raise ValueError("失败分析回执必须包含结构化错误")
+        return self
+
+
 class SubmissionFinalizeResult(ContractModel):
     submission_id: UUID
     project_id: UUID
@@ -616,8 +655,10 @@ class SubmissionFinalizeResult(ContractModel):
     status: Literal[SubmissionStatus.RECEIVED, SubmissionStatus.UPLOAD_VERIFIED]
     retryable: bool
     issues: list[ArtifactVerificationIssue] = Field(default_factory=list)
+    reupload_artifact_ids: list[UUID] = Field(default_factory=list)
     artifact_verifications: list[ArtifactVerificationReceipt] = Field(default_factory=list)
     verified_at: datetime | None = None
+    analysis: SubmissionAnalysisReceipt | None = None
 
     @model_validator(mode="after")
     def validate_verification_state(self) -> "SubmissionFinalizeResult":
@@ -626,6 +667,7 @@ class SubmissionFinalizeResult(ContractModel):
                 self.status is not SubmissionStatus.UPLOAD_VERIFIED
                 or self.retryable
                 or self.issues
+                or self.reupload_artifact_ids
                 or not self.artifact_verifications
                 or self.verified_at is None
             ):
@@ -634,10 +676,58 @@ class SubmissionFinalizeResult(ContractModel):
             self.status is not SubmissionStatus.RECEIVED
             or not self.retryable
             or not self.issues
+            or set(self.reupload_artifact_ids) != {issue.artifact_id for issue in self.issues}
             or self.artifact_verifications
             or self.verified_at is not None
         ):
             raise ValueError("FAILED 回执必须保持 RECEIVED 并提供可重试问题")
+        return self
+
+
+class SubmittedResultDocument(ContractModel):
+    """R11 固定的 ``result.json`` 格式，拒绝隐式类型和额外字段。"""
+
+    schema_version: Literal[1]
+    status: SubmittedRunStatus
+    metrics: dict[str, float]
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    failure_reason: str | None = Field(default=None, max_length=5000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_metric_types(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or not isinstance(value.get("metrics"), dict):
+            return value
+        metrics = value["metrics"]
+        if len(metrics) > 50:
+            raise ValueError("result.metrics 最多包含 50 个指标")
+        normalized: dict[str, float] = {}
+        for name, metric in metrics.items():
+            if not isinstance(name, str) or not name.strip() or len(name) > 100:
+                raise ValueError("result.metrics 指标名必须是 1 到 100 字符的非空字符串")
+            if type(metric) not in {int, float} or not math.isfinite(metric):
+                raise ValueError(f"result.metrics.{name} 必须是有限数值且不能是布尔值")
+            normalized[name] = float(metric)
+        return {**value, "metrics": normalized}
+
+    @model_validator(mode="after")
+    def validate_result_semantics(self) -> "SubmittedResultDocument":
+        for field_name, value in (
+            ("started_at", self.started_at),
+            ("completed_at", self.completed_at),
+        ):
+            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+                raise ValueError(f"{field_name} 必须包含时区")
+        if self.started_at and self.completed_at and self.completed_at < self.started_at:
+            raise ValueError("completed_at 不能早于 started_at")
+        if self.status is SubmittedRunStatus.COMPLETED:
+            if not self.metrics:
+                raise ValueError("COMPLETED 结果必须包含至少一个指标")
+            if self.failure_reason is not None:
+                raise ValueError("COMPLETED 结果不能包含 failure_reason")
+        elif not self.failure_reason:
+            raise ValueError("FAILED 结果必须说明 failure_reason")
         return self
 
 

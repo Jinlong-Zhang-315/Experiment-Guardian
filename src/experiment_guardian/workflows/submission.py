@@ -45,12 +45,14 @@ WORKFLOW_ORDER = (
     WorkflowStep.EMBEDDING_GENERATION,
     WorkflowStep.NEEDS_REVIEW,
 )
+R11_WORKFLOW_ORDER = WORKFLOW_ORDER[:5]
 
 
 def build_submission_workflow(
     handlers: Mapping[WorkflowStep, WorkflowHandler],
     *,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
+    steps: tuple[WorkflowStep, ...] = WORKFLOW_ORDER,
 ) -> Any:
     """构建并编译提交分析图。
 
@@ -58,20 +60,22 @@ def build_submission_workflow(
     ``submission_id`` 作为 LangGraph ``thread_id``，后端重启后即可从最近 checkpoint 恢复。
     """
 
-    missing = [step.value for step in WORKFLOW_ORDER if step not in handlers]
+    if not steps or steps != WORKFLOW_ORDER[: len(steps)]:
+        raise ValueError("工作流步骤必须是 WORKFLOW_ORDER 的非空连续前缀")
+    missing = [step.value for step in steps if step not in handlers]
     if missing:
         raise ValueError(f"缺少工作流节点实现: {', '.join(missing)}")
 
     graph = StateGraph(SubmissionWorkflowState)
-    for step in WORKFLOW_ORDER:
+    for step in steps:
         # LangGraph 1.2 的公开类型重载没有接受等价的 Callable 别名，但运行时接口支持
         # 该节点签名；这里将忽略严格限定在第三方类型声明边界，不扩散到业务代码。
         graph.add_node(step.value, handlers[step])  # type: ignore[call-overload]
 
-    graph.add_edge(START, WORKFLOW_ORDER[0].value)
-    for current, following in pairwise(WORKFLOW_ORDER):
+    graph.add_edge(START, steps[0].value)
+    for current, following in pairwise(steps):
         graph.add_edge(current.value, following.value)
     # NEEDS_REVIEW 是分析工作流的终态交接：数据库状态进入待审核后图结束。人工确认属于
     # 独立、幂等的数据库事务，不是本 P0 图中的 LangGraph interrupt/resume 节点。
-    graph.add_edge(WORKFLOW_ORDER[-1].value, END)
+    graph.add_edge(steps[-1].value, END)
     return graph.compile(checkpointer=checkpointer)

@@ -3,6 +3,8 @@
 Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的治理系统。本仓库当前
 已完成 P0 基础骨架、已认证的正式上下文读取、可持久化的训练前确定性配置检查、
 Owner 审批、不可变 Run Manifest、S3 实验草稿上传准备和上传对象复核。
+上传复核通过后会同步运行可恢复的确定性分析前半程，完成配置/结果解析、Manifest
+一致性校验、项目内查重和风险持久化。
 它不保证实验一定正确，也不声称能够
 完整验证真实训练行为。
 
@@ -23,9 +25,15 @@ Owner 审批、不可变 Run Manifest、S3 实验草稿上传准备和上传对�
 * `submission_prepare` 原子创建 `RECEIVED` 草稿和 artifact 声明，返回绑定
   Content-Type 与 SHA-256 checksum 的短期 S3 PUT 地址；
 * `submission_finalize` 通过 S3 HEAD 复核对象存在性、大小、Content-Type 和
-  SHA-256 checksum，原子写入 `UPLOAD_VERIFIED` 与 `CLOUD_VERIFIED` 证据；
-* 六个收敛的 Alembic 迁移和可信本地管理 CLI；
-* 提交分析 LangGraph 的固定节点顺序；
+  SHA-256 checksum，并要求不可变 VersionId，原子写入 `UPLOAD_VERIFIED` 与
+  `CLOUD_VERIFIED` 证据；
+* 错误对象不会被覆盖；失败后系统为冲突 Artifact 换用新 object key，调用者根据
+  `reupload_artifact_ids` 重新获取上传地址，所有失败尝试保留独立审计；
+* `submission_finalize` 成功后按固定 S3 `VersionId` 下载 CONFIG/RESULT，重新计算原始
+  SHA-256，并使用严格 YAML/JSON 规则解析，单文件上限为 1 MiB；
+* 业务表游标驱动的五节点分析前缀：上传证据、解析、Manifest 校验、结构化查重、风险；
+* 可解析的不一致保存为阻断型 CRITICAL 风险；完全重复为 MEDIUM、相同运行条件为 LOW；
+* 七个收敛的 Alembic 迁移和可信本地管理 CLI；
 * Alembic、pytest、Ruff 和 mypy 基础配置。
 
 ## 治理边界
@@ -45,13 +53,16 @@ MCP 工具不接受客户端提交的用户 UUID，调用者来自服务端验�
 `project_get_context`、`experiment_check_plan`、`run_manifest_create` 和
 `submission_prepare`、`submission_finalize` 已接入 CockroachDB；`experiments_query`
 会明确返回尚未实现，不会伪造数据。
-提交分析工作流持久化、Bedrock 和四个 Web 页面尚未实现。
+Bedrock、embedding、人工审核回执、正式实验确认/查询和四个 Web 页面尚未实现。
 
-`UPLOAD_VERIFIED` 仅表示云端读取到的 S3 对象元数据与数据库声明一致，不表示配置、
-训练过程或实验结论已经验证正确。finalize 不下载或解析文件，也不会自动启动分析图。
+`UPLOAD_VERIFIED` 仅表示云端读取到的 S3 对象元数据与数据库声明一致；R11 分析进一步
+确认固定版本的字节哈希、语法和 Manifest 一致性，但仍不表示训练过程或实验结论正确。
+原提交者可以 finalize；原提交者不可用时，项目 Owner 可以使用自己的项目绑定 MCP
+Token 恢复该操作。成功和失败审计均记录具体 Token ID、原始 Agent 标识和恢复模式。
 
-提交分析图目前只有固定拓扑，尚未接通持久化恢复。后续的 `NEEDS_REVIEW` 将作为分析图
-的终态交接，而非 LangGraph 原生 `interrupt()`；用户确认仍由独立幂等事务完成。
+提交分析使用 `experiment_submissions.processing_step/workflow_status` 作为唯一恢复依据，
+LangGraph 只负责编排。R11 完成后停在 `PROCESSING/AWAITING_ENRICHMENT`；后续
+`NEEDS_REVIEW` 是持久化交接状态，不是 LangGraph 原生 `interrupt()`。
 
 ## 本地环境
 
@@ -79,6 +90,7 @@ alembic upgrade head
 补齐历史策略和原始配置快照，`20260721_04` 增加 `approval_records` 和
 `run_manifests`，`20260721_05` 增加 `experiment_submissions` 和 `artifacts`。
 `20260722_06` 增加上传复核证据字段，并扩展 Submission 状态列。
+`20260722_07` 增加分析游标、结构化中间结果和 `submission_risks`。
 后续表按开发阶段通过新 revision 添加，不提前冻结。
 
 ## 初始化与检查链路
@@ -113,10 +125,12 @@ experiment-guardian-admin issue-mcp-token \
 stdio MCP Server 从 `MCP_ACCESS_TOKEN` 环境变量读取凭据。新签发的 MCP Token 同时具备
 `project:read`、`experiment:check`、`manifest:create`、`submission:create` 和
 `submission:finalize` scope；
-旧 Token 需要重新签发。使用 `submission_prepare` 前还需配置 `AWS_REGION`、
-`S3_BUCKET` 和 AWS SDK 凭据；`submission_finalize` 使用同一配置读取对象元数据。
+CLI 返回值会显式列出实际 scopes。旧 Token 需要重新签发。使用 `submission_prepare`
+前还需配置 `AWS_REGION`、`S3_BUCKET` 和 AWS SDK 凭据；Bucket 必须开启 Versioning，
+`submission_finalize` 使用同一配置读取对象元数据并拒绝无 VersionId 的对象。
 预签名 URL 不写入数据库。
 新签发的 Owner API Token 包含 `plan:approve`；旧 Owner Token 也需要轮换后才能审批。
+API Token 与 MCP Token 按用途隔离，不应把两类 scope 合并到单一 Token。
 原始 Token 只在签发时显示一次，数据库只保存 SHA-256，日志和审计记录不得包含原始值。
 
 Owner 批准或拒绝待审批计划：
@@ -155,7 +169,7 @@ src/experiment_guardian/
 ├── infrastructure/  # CockroachDB、S3、Bedrock 等适配器
 ├── api/             # FastAPI 路由与 HTTP 协议转换
 ├── mcp_server/      # 面向本地 Agent 的六个 MCP 工具
-└── workflows/       # 提交分析 LangGraph 固定拓扑，持久化恢复尚未接通
+└── workflows/       # LangGraph 拓扑；R11 前五节点由业务表游标恢复
 ```
 
 项目维护文档：
@@ -179,7 +193,8 @@ Manifest 和 Submission 事务链路时，
 RUN_COCKROACH_INTEGRATION=1 pytest -q tests/integration/test_plan_check_cockroach.py
 ```
 
-配置独立测试 Bucket 和 AWS 凭据后，可显式验证真实预签名 PUT 与对象复核：
+配置已开启 Versioning 的独立测试 Bucket 和 AWS 凭据后，可显式验证真实预签名 PUT、
+防覆盖、对象复核和指定 VersionId GET：
 
 ```bash
 RUN_S3_INTEGRATION=1 pytest -q tests/integration/test_s3_storage.py
@@ -187,6 +202,6 @@ RUN_S3_INTEGRATION=1 pytest -q tests/integration/test_s3_storage.py
 
 ## 下一开发步
 
-1. 只接通可恢复的确定性分析前半程，不提前生成审核回执；
-2. 从 `UPLOAD_VERIFIED` 推进配置解析、Manifest 校验、结构化查重和确定性风险；
-3. Bedrock、embedding、审核回执、正式实验确认和 Web 继续按独立轮次推进。
+1. 只实现 R12 的摘要、embedding 和短审核回执，不进入正式实验事务；
+2. 从 `AWAITING_ENRICHMENT` 恢复，完成后进入 `NEEDS_REVIEW`；
+3. 正式实验确认、查询、Web 和 AWS 部署继续按独立轮次推进。

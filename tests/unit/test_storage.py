@@ -1,12 +1,13 @@
 """S3 预签名适配器测试。"""
 
 import base64
+import io
 from datetime import UTC, datetime
 
 import pytest
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
-from experiment_guardian.application.errors import ServiceUnavailableError
+from experiment_guardian.application.errors import InputValidationError, ServiceUnavailableError
 from experiment_guardian.infrastructure.storage import (
     S3ArtifactStorage,
     UnconfiguredArtifactStorage,
@@ -135,3 +136,83 @@ def test_s3_head_keeps_missing_or_malformed_checksum_unverified() -> None:
 
     assert result is not None
     assert result.checksum_sha256 is None
+
+
+def test_s3_reads_only_the_exact_bounded_version_and_closes_stream() -> None:
+    captured: dict[str, object] = {}
+
+    class Body(io.BytesIO):
+        closed_by_storage = False
+
+        def close(self) -> None:
+            self.closed_by_storage = True
+            super().close()
+
+    body = Body(b"payload")
+
+    class FakeClient:
+        def get_object(self, **kwargs: object) -> dict[str, object]:
+            captured.update(kwargs)
+            return {
+                "VersionId": "version-7",
+                "ContentLength": 7,
+                "Body": body,
+            }
+
+    storage = S3ArtifactStorage(bucket="experiments", region="us-east-1")
+    storage._client = FakeClient()
+
+    assert (
+        storage.read_object_version(object_key="objects/a", version_id="version-7", max_bytes=10)
+        == b"payload"
+    )
+    assert captured == {
+        "Bucket": "experiments",
+        "Key": "objects/a",
+        "VersionId": "version-7",
+    }
+    assert body.closed_by_storage
+
+
+def test_s3_version_read_distinguishes_missing_oversized_and_service_errors() -> None:
+    class MissingClient:
+        def get_object(self, **_: object) -> dict[str, object]:
+            raise ClientError(
+                {
+                    "Error": {"Code": "NoSuchVersion", "Message": "missing"},
+                    "ResponseMetadata": {"HTTPStatusCode": 404},
+                },
+                "GetObject",
+            )
+
+    storage = S3ArtifactStorage(bucket="experiments", region="us-east-1")
+    storage._client = MissingClient()
+    assert (
+        storage.read_object_version(object_key="objects/a", version_id="gone", max_bytes=10) is None
+    )
+
+    class OversizedClient:
+        def get_object(self, **_: object) -> dict[str, object]:
+            return {
+                "VersionId": "version-1",
+                "ContentLength": 11,
+                "Body": io.BytesIO(b"x" * 11),
+            }
+
+    storage._client = OversizedClient()
+    with pytest.raises(InputValidationError, match="分析上限"):
+        storage.read_object_version(object_key="objects/a", version_id="version-1", max_bytes=10)
+
+    class ForbiddenClient:
+        def get_object(self, **_: object) -> dict[str, object]:
+            raise ClientError(
+                {
+                    "Error": {"Code": "AccessDenied", "Message": "denied"},
+                    "ResponseMetadata": {"HTTPStatusCode": 403},
+                },
+                "GetObject",
+            )
+
+    storage._client = ForbiddenClient()
+    with pytest.raises(ServiceUnavailableError, match="版本读取"):
+        storage.read_object_version(object_key="objects/a", version_id="version-1", max_bytes=10)

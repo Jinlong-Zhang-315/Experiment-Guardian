@@ -1,6 +1,7 @@
 """CockroachDB 上的 Plan Check 迁移与事务链路验收。"""
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, inspect, select
+from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -43,6 +44,8 @@ from experiment_guardian.domain.enums import (
     SubmissionStatus,
     TeamRole,
     UploadVerificationResult,
+    WorkflowStatus,
+    WorkflowStep,
 )
 from experiment_guardian.infrastructure.models import (
     ApprovalRecord,
@@ -74,6 +77,8 @@ class _FakeStorage:
         self.call_count = 0
         self.declarations: dict[str, tuple[int, str, str]] = {}
         self.objects: dict[str, StoredObjectMetadata] = {}
+        self.payload_by_sha256: dict[str, bytes] = {}
+        self.version_payloads: dict[tuple[str, str], bytes] = {}
 
     def create_upload_url(
         self,
@@ -95,6 +100,14 @@ class _FakeStorage:
     def inspect_object(self, *, object_key: str) -> StoredObjectMetadata | None:
         return self.objects.get(object_key)
 
+    def read_object_version(
+        self, *, object_key: str, version_id: str, max_bytes: int
+    ) -> bytes | None:
+        payload = self.version_payloads.get((object_key, version_id))
+        if payload is not None and len(payload) > max_bytes:
+            raise InputValidationError("artifact too large")
+        return payload
+
     def accept_declared_uploads(self) -> None:
         for object_key, (content_length, content_type, sha256) in self.declarations.items():
             self.objects[object_key] = StoredObjectMetadata(
@@ -108,6 +121,9 @@ class _FakeStorage:
                 observed_at=COLLECTED_AT,
                 evidence_source=f"s3://cockroach-test/{object_key}",
             )
+            payload = self.payload_by_sha256.get(sha256)
+            if payload is not None:
+                self.version_payloads[(object_key, "cockroach-test-version")] = payload
 
 
 def _run_alembic(database_url: str, *arguments: str) -> None:
@@ -184,11 +200,16 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             "run_manifests",
             "experiment_submissions",
             "artifacts",
+            "submission_risks",
         } <= set(inspect(test_engine).get_table_names())
         assert {
             "upload_verified_at",
             "upload_verified_by",
             "upload_verification_snapshot",
+            "workflow_status",
+            "processing_step",
+            "processing_error",
+            "analysis_snapshot",
         } <= {
             column["name"] for column in inspect(test_engine).get_columns("experiment_submissions")
         }
@@ -358,6 +379,20 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         )
         assert manifest.approval_record_id == decision.approval_record_id
 
+        submission_config = approval_content.encode("utf-8")
+        result_payload = json.dumps(
+            {
+                "schema_version": 1,
+                "status": "COMPLETED",
+                "metrics": {"top1": 0.83},
+                "failure_reason": None,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        storage.payload_by_sha256 = {
+            hashlib.sha256(submission_config).hexdigest(): submission_config,
+            hashlib.sha256(result_payload).hexdigest(): result_payload,
+        }
         submission_request = SubmissionPrepareCommand.model_validate(
             {
                 "project_id": initialized.project_id,
@@ -372,15 +407,15 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
                         "filename": "config.yaml",
                         "artifact_type": "CONFIG",
                         "mime_type": "application/yaml",
-                        "size_bytes": len(content.encode("utf-8")),
-                        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                        "size_bytes": len(submission_config),
+                        "sha256": hashlib.sha256(submission_config).hexdigest(),
                     },
                     {
                         "filename": "result.json",
                         "artifact_type": "RESULT",
                         "mime_type": "application/json",
-                        "size_bytes": 13,
-                        "sha256": "c" * 64,
+                        "size_bytes": len(result_payload),
+                        "sha256": hashlib.sha256(result_payload).hexdigest(),
                     },
                 ],
             }
@@ -404,6 +439,8 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         )
         assert finalized.verification_result is UploadVerificationResult.PASS
         assert finalized.status is SubmissionStatus.UPLOAD_VERIFIED
+        assert finalized.analysis is not None
+        assert finalized.analysis.workflow_status is WorkflowStatus.AWAITING_ENRICHMENT
         prepared_after_finalize = guardian.submission_prepare(submission_request, identity)
         assert prepared_after_finalize.status is SubmissionStatus.UPLOAD_VERIFIED
         assert prepared_after_finalize.artifact_uploads == []
@@ -414,7 +451,9 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             assert session.scalar(select(func.count()).select_from(Artifact)) == 2
             persisted_submission = session.get(ExperimentSubmission, submission.submission_id)
             assert persisted_submission is not None
-            assert persisted_submission.status is SubmissionStatus.UPLOAD_VERIFIED
+            assert persisted_submission.status is SubmissionStatus.PROCESSING
+            assert persisted_submission.workflow_status is WorkflowStatus.AWAITING_ENRICHMENT
+            assert persisted_submission.processing_step is WorkflowStep.RISK_ANALYSIS
             assert persisted_submission.upload_verification_snapshot is not None
             persisted_artifacts = session.scalars(select(Artifact)).all()
             assert all(artifact.cloud_hash_verified for artifact in persisted_artifacts)
@@ -424,6 +463,28 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
 
         test_engine.dispose()
         test_engine = None
+        _run_alembic(rendered_test_url, "downgrade", "20260721_05")
+        downgraded_data_engine = create_engine(test_url)
+        try:
+            with downgraded_data_engine.connect() as connection:
+                assert (
+                    connection.scalar(
+                        text("SELECT status FROM experiment_submissions WHERE id = :submission_id"),
+                        {"submission_id": submission.submission_id},
+                    )
+                    == SubmissionStatus.RECEIVED.value
+                )
+                verification_flags = connection.scalars(
+                    text(
+                        "SELECT cloud_hash_verified FROM artifacts "
+                        "WHERE submission_id = :submission_id"
+                    ),
+                    {"submission_id": submission.submission_id},
+                ).all()
+                assert verification_flags == [False, False]
+        finally:
+            downgraded_data_engine.dispose()
+        _run_alembic(rendered_test_url, "upgrade", "head")
         _run_alembic(rendered_test_url, "downgrade", "base")
         empty_engine = create_engine(test_url)
         try:

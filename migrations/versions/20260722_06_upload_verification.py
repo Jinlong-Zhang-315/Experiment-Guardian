@@ -43,11 +43,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # R9 不认识云端验证证据；先清除标记，避免重新升级后出现半验证 Artifact。
+    op.execute(
+        sa.text("UPDATE artifacts SET cloud_hash_verified = false WHERE cloud_hash_verified = true")
+    )
     # R9 不认识 UPLOAD_VERIFIED；回滚时退回可重新签发上传地址的 RECEIVED。
     op.execute(
         sa.text(
-            "UPDATE experiment_submissions "
-            "SET status = 'RECEIVED' WHERE status = 'UPLOAD_VERIFIED'"
+            "UPDATE experiment_submissions SET status = 'RECEIVED' WHERE status = 'UPLOAD_VERIFIED'"
         )
     )
     with op.batch_alter_table("artifacts") as batch:
