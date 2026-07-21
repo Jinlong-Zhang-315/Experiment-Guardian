@@ -6,6 +6,7 @@
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from typing import Any, TypeGuard
 
@@ -43,7 +44,45 @@ class ConfigurationError(ValueError):
 
 
 class UniqueKeySafeLoader(yaml.SafeLoader):
-    """保留 SafeLoader 能力，同时拒绝同一映射中的重复键。"""
+    """安全加载 YAML，并仅保留明确、可跨格式复现的 JSON 标量类型。"""
+
+    # PyYAML 默认采用 YAML 1.1 隐式解析，会把 yes/on 解析为布尔值、日期解析为 datetime。
+    # P0 配置需要与 JSON 语义稳定互通，因此从空解析表开始，只注册下方显式标量规则。
+    yaml_implicit_resolvers: dict[str | None, list[tuple[str, re.Pattern[str]]]] = {}
+
+
+def _add_json_scalar_resolver(
+    tag: str, pattern: re.Pattern[str], first_characters: list[str]
+) -> None:
+    # PyYAML 没有为该公开类方法提供类型声明；忽略严格限制在此第三方边界。
+    UniqueKeySafeLoader.add_implicit_resolver(  # type: ignore[no-untyped-call]
+        tag, pattern, first_characters
+    )
+
+
+_add_json_scalar_resolver(
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|false)$"),
+    ["t", "f"],
+)
+_add_json_scalar_resolver(
+    "tag:yaml.org,2002:null",
+    re.compile(r"^(?:null|)$"),
+    ["n", ""],
+)
+_add_json_scalar_resolver(
+    "tag:yaml.org,2002:int",
+    re.compile(r"^-?(?:0|[1-9][0-9]*)$"),
+    list("-0123456789"),
+)
+_add_json_scalar_resolver(
+    "tag:yaml.org,2002:float",
+    re.compile(
+        r"^-?(?:(?:0|[1-9][0-9]*)\.[0-9]+(?:[eE][+-]?[0-9]+)?|"
+        r"(?:0|[1-9][0-9]*)[eE][+-]?[0-9]+)$"
+    ),
+    list("-0123456789"),
+)
 
 
 def _construct_unique_mapping(
@@ -143,7 +182,7 @@ def _escape_path_segment(segment: str) -> str:
     return segment.replace("\\", "\\\\").replace(".", r"\.")
 
 
-def _flatten(value: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> dict[str, Any]:
+def flatten_configuration(value: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> dict[str, Any]:
     """将嵌套对象展开为无碰撞点分路径；P0 将数组视为一个整体值。"""
 
     flattened: dict[str, Any] = {}
@@ -153,10 +192,14 @@ def _flatten(value: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> dict[str
             raise ConfigurationError(f"配置键 {key!r} 不是字符串")
         segments = (*prefix, _escape_path_segment(key))
         if isinstance(child, Mapping):
-            flattened.update(_flatten(child, segments))
+            flattened.update(flatten_configuration(child, segments))
         else:
             flattened[".".join(segments)] = child
     return flattened
+
+
+# 保留内部旧名称，避免第一阶段调用方在迁移期间被无关接口变化打断。
+_flatten = flatten_configuration
 
 
 def _is_allowed(value: Any, constraint: ParameterConstraint) -> bool:
@@ -207,8 +250,8 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
 
     candidate = parse_configuration(data.candidate)
     config_hash = canonical_config_hash(candidate)
-    baseline_flat = _flatten(data.baseline_config)
-    candidate_flat = _flatten(candidate)
+    baseline_flat = flatten_configuration(data.baseline_config)
+    candidate_flat = flatten_configuration(candidate)
     confirmed_groups: dict[str, list[ParameterConstraint]] = {}
     pending_groups: dict[str, list[ParameterConstraint]] = {}
     for item in data.constraints:
@@ -456,20 +499,37 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
         )
     else:
         local = data.local_attestation
-        required_evidence = {
+        core_evidence = {
             "working_tree_clean": local.working_tree_clean,
             "git_branch": local.git_branch,
             "git_commit": local.git_commit,
             "run_command": local.run_command,
             "output_directory_exists": local.output_directory_exists,
-            "checkpoint_exists": local.checkpoint_exists,
-            "checkpoint_path": local.checkpoint_path,
             "config_sha256": local.config_sha256,
             "environment.python": local.environment.python,
+        }
+        for field_path, evidence in core_evidence.items():
+            if not _is_applicable(evidence):
+                needs_approval = True
+                risks.append(
+                    RiskItem(
+                        code="CORE_LOCAL_ATTESTATION_REQUIRED",
+                        severity=RiskSeverity.HIGH,
+                        evidence_type=None,
+                        field_path=field_path,
+                        message=f"核心本地声明字段 {field_path} 必须提供且不能标记为不适用",
+                        impact="缺少该证据时不能可靠生成 Run Manifest。",
+                        recommendation="由本地 Agent 重新采集该核心字段后执行检查。",
+                    )
+                )
+
+        optional_evidence = {
+            "checkpoint_exists": local.checkpoint_exists,
+            "checkpoint_path": local.checkpoint_path,
             "environment.cuda": local.environment.cuda,
             "environment.pytorch": local.environment.pytorch,
         }
-        for field_path, evidence in required_evidence.items():
+        for field_path, evidence in optional_evidence.items():
             if evidence is None:
                 needs_approval = True
                 risks.append(
@@ -483,6 +543,25 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
                         recommendation="由本地 Agent 补充采集，或由用户明确确认缺失信息。",
                     )
                 )
+
+        checkpoint_evidence = local.checkpoint_exists or local.checkpoint_path
+        if (
+            data.checkpoint is not None
+            and checkpoint_evidence is not None
+            and not _is_applicable(checkpoint_evidence)
+        ):
+            needs_approval = True
+            risks.append(
+                _risk_from_local_evidence(
+                    evidence=checkpoint_evidence,
+                    code="CHECKPOINT_APPLICABILITY_CONFLICT",
+                    severity=RiskSeverity.HIGH,
+                    message="运行计划指定了 checkpoint，但本地 Agent 将 checkpoint 标记为不适用",
+                    field_path="checkpoint",
+                    impact="Manifest 的初始化权重与本地声明互相冲突。",
+                    recommendation="移除计划中的 checkpoint，或提供 checkpoint 路径和存在性声明。",
+                )
+            )
 
         consistency_checks = (
             ("git_commit", data.git_commit, local.git_commit),

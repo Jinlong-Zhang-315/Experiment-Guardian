@@ -58,16 +58,18 @@ class FieldEvidence(ContractModel):
     def require_not_applicable_reason(self) -> "FieldEvidence":
         """显式区分“不适用”和“未采集”，并为审计保存判断依据。"""
 
-        if (
-            self.applicability is EvidenceApplicability.NOT_APPLICABLE
-            and not self.not_applicable_reason
-        ):
-            raise ValueError("NOT_APPLICABLE 证据必须说明不适用原因")
+        if self.applicability is EvidenceApplicability.NOT_APPLICABLE:
+            if not self.not_applicable_reason:
+                raise ValueError("NOT_APPLICABLE 证据必须说明不适用原因")
+            if self.value is not None:
+                raise ValueError("NOT_APPLICABLE 证据不能同时携带实际值")
         if (
             self.applicability is EvidenceApplicability.APPLICABLE
             and self.not_applicable_reason is not None
         ):
             raise ValueError("APPLICABLE 证据不能填写不适用原因")
+        if self.applicability is EvidenceApplicability.APPLICABLE and self.value is None:
+            raise ValueError("APPLICABLE 证据必须携带实际值")
         return self
 
 
@@ -97,27 +99,74 @@ class LocalAttestation(ContractModel):
 
     @model_validator(mode="after")
     def require_local_evidence_type(self) -> "LocalAttestation":
-        """本地声明不得伪装成 CLOUD_VERIFIED 或 USER_PROVIDED。"""
+        """校验证据边界，并禁止核心证据通过 NOT_APPLICABLE 绕过。"""
 
-        fields = [
-            self.working_tree_clean,
-            self.git_branch,
-            self.git_commit,
-            self.run_command,
-            self.output_directory_exists,
-            self.checkpoint_exists,
-            self.checkpoint_path,
-            self.config_sha256,
-            self.git_diff_sha256,
-            self.environment.python,
-            self.environment.cuda,
-            self.environment.pytorch,
-        ]
+        fields = {
+            "working_tree_clean": self.working_tree_clean,
+            "git_branch": self.git_branch,
+            "git_commit": self.git_commit,
+            "run_command": self.run_command,
+            "output_directory_exists": self.output_directory_exists,
+            "checkpoint_exists": self.checkpoint_exists,
+            "checkpoint_path": self.checkpoint_path,
+            "config_sha256": self.config_sha256,
+            "git_diff_sha256": self.git_diff_sha256,
+            "environment.python": self.environment.python,
+            "environment.cuda": self.environment.cuda,
+            "environment.pytorch": self.environment.pytorch,
+        }
         if any(
             item is not None and item.evidence_type is not EvidenceType.LOCAL_ATTESTED
-            for item in fields
+            for item in fields.values()
         ):
             raise ValueError("LocalAttestation 中的证据类型必须为 LOCAL_ATTESTED")
+
+        core_paths = {
+            "working_tree_clean",
+            "git_branch",
+            "git_commit",
+            "run_command",
+            "output_directory_exists",
+            "config_sha256",
+            "environment.python",
+        }
+        invalid_core_paths: list[str] = []
+        for path in sorted(core_paths):
+            item = fields[path]
+            if item is None or item.applicability is EvidenceApplicability.NOT_APPLICABLE:
+                invalid_core_paths.append(path)
+        if invalid_core_paths:
+            raise ValueError(
+                "核心本地证据必须提供且不能标记为 NOT_APPLICABLE: " + ", ".join(invalid_core_paths)
+            )
+
+        allowed_not_applicable_paths = {
+            "checkpoint_exists",
+            "checkpoint_path",
+            "environment.cuda",
+            "environment.pytorch",
+        }
+        forbidden_not_applicable_paths = [
+            path
+            for path, item in fields.items()
+            if item is not None
+            and item.applicability is EvidenceApplicability.NOT_APPLICABLE
+            and path not in allowed_not_applicable_paths
+        ]
+        if forbidden_not_applicable_paths:
+            raise ValueError(
+                "以下本地证据不允许标记为 NOT_APPLICABLE: "
+                + ", ".join(sorted(forbidden_not_applicable_paths))
+            )
+
+        checkpoint_exists = self.checkpoint_exists
+        checkpoint_path = self.checkpoint_path
+        if (
+            checkpoint_exists is not None
+            and checkpoint_path is not None
+            and checkpoint_exists.applicability is not checkpoint_path.applicability
+        ):
+            raise ValueError("checkpoint_exists 与 checkpoint_path 必须使用相同的适用状态")
         return self
 
 
@@ -285,13 +334,45 @@ class ExperimentIntentReference(ContractModel):
     mode: ExperimentMode
 
 
+class ProjectContextPayload(ContractModel):
+    project_id: UUID
+    project_name: str
+    description: str
+    repository_url: str | None = None
+    goal: str
+    non_goals: list[Any]
+    mainline_model: str
+    baseline: dict[str, Any]
+    dataset: str
+    protocol: str
+    primary_metric: dict[str, Any]
+    default_seeds: list[int]
+    active_branch: str
+    active_config: dict[str, Any]
+    deprecated_items: list[Any]
+    key_decisions: list[Any]
+
+
+class ExperimentIntentPayload(ContractModel):
+    name: str
+    objective: str
+    hypothesis: str
+    allowed_variables: list[str]
+    controlled_variables: list[str]
+    expected_outputs: list[str]
+    acceptance_criteria: list[str]
+    original_message: str
+    intent_receipt: str
+
+
 class ProjectContextBundle(ContractModel):
     """``project_get_context`` 的稳定返回骨架，明确当前生效版本。"""
 
     context: ProjectContextReference
     active_intent: ExperimentIntentReference | None
     constraints: list[ParameterConstraint]
-    context_payload: dict[str, Any]
+    context_payload: ProjectContextPayload
+    intent_payload: ExperimentIntentPayload | None
 
     @model_validator(mode="after")
     def expose_only_formal_facts(self) -> "ProjectContextBundle":
@@ -299,6 +380,8 @@ class ProjectContextBundle(ContractModel):
 
         if self.active_intent is not None and self.active_intent.status is not IntentStatus.ACTIVE:
             raise ValueError("active_intent 必须是 ACTIVE 版本")
+        if (self.active_intent is None) != (self.intent_payload is None):
+            raise ValueError("active_intent 与 intent_payload 必须同时存在或同时为空")
         if any(
             item.verification_status is not VerificationStatus.CONFIRMED
             for item in self.constraints

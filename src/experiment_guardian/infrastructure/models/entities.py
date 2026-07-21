@@ -40,6 +40,7 @@ from experiment_guardian.domain.enums import (
     RiskSeverity,
     SubmissionStatus,
     TeamRole,
+    TokenAudience,
     VerificationStatus,
     WorkflowStep,
 )
@@ -78,6 +79,32 @@ class TeamMember(CreatedAtMixin, Base):
     team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), primary_key=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
     role: Mapped[TeamRole] = mapped_column(enum_column(TeamRole, "team_role"), nullable=False)
+
+
+class AccessToken(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "access_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash"),
+        Index("ix_access_token_principal", "user_id", "audience", "project_id"),
+        CheckConstraint(
+            "audience != 'MCP' OR project_id IS NOT NULL",
+            name="mcp_token_requires_project",
+        ),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"))
+    audience: Mapped[TokenAudience] = mapped_column(
+        enum_column(TokenAudience, "token_audience"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    token_prefix: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
 
 
 class Project(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -211,7 +238,7 @@ class ProtectedParameter(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     intent_version: Mapped[int | None] = mapped_column(Integer)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     supersedes_constraint_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("protected_parameters.id")
+        ForeignKey("protected_parameters.id", name="fk_protected_parameters_supersedes")
     )
     parameter_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     protection_level: Mapped[ProtectionLevel] = mapped_column(

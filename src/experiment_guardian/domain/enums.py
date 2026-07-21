@@ -12,6 +12,11 @@ class TeamRole(StrEnum):
     RESEARCHER = "RESEARCHER"
 
 
+class TokenAudience(StrEnum):
+    API = "API"
+    MCP = "MCP"
+
+
 class ContextStatus(StrEnum):
     DRAFT = "DRAFT"
     ACTIVE = "ACTIVE"

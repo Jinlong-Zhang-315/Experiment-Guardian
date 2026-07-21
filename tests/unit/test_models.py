@@ -5,6 +5,7 @@ from experiment_guardian.infrastructure.models import Base
 
 def test_p0_tables_are_registered() -> None:
     expected = {
+        "access_tokens",
         "projects",
         "project_contexts",
         "experiment_intents",

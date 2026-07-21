@@ -42,7 +42,7 @@ def project_get_context(project_id: str) -> dict[str, Any]:
 
     identity = get_identity_provider().current_identity()
     result = get_guardian_use_cases().project_get_context(
-        project_id=UUID(project_id), actor_id=identity.user_id
+        project_id=UUID(project_id), identity=identity
     )
     return result.model_dump(mode="json")
 

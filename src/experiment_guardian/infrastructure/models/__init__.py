@@ -2,6 +2,7 @@
 
 from experiment_guardian.infrastructure.models.base import Base
 from experiment_guardian.infrastructure.models.entities import (
+    AccessToken,
     ApprovalRecord,
     Artifact,
     AuditLog,
@@ -23,6 +24,7 @@ from experiment_guardian.infrastructure.models.entities import (
 )
 
 __all__ = [
+    "AccessToken",
     "ApprovalRecord",
     "Artifact",
     "AuditLog",

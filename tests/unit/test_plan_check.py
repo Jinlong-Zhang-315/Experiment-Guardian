@@ -118,6 +118,7 @@ def evaluate(
     constraints: list[ParameterConstraint],
     *,
     local_attestation: LocalAttestation | None = None,
+    checkpoint: str | None = CHECKPOINT_PATH,
 ):
     return evaluate_plan(
         PlanEvaluationInput(
@@ -128,7 +129,7 @@ def evaluate(
             local_attestation=local_attestation or complete_attestation(),
             git_commit=GIT_COMMIT,
             run_command=RUN_COMMAND,
-            checkpoint=CHECKPOINT_PATH,
+            checkpoint=checkpoint,
         )
     )
 
@@ -290,6 +291,7 @@ model:
 """,
         [],
         local_attestation=attestation,
+        checkpoint=None,
     )
 
     assert result.check_result is CheckResult.PASS
@@ -305,6 +307,100 @@ def test_not_applicable_evidence_requires_reason() -> None:
             collection_tool="experiment-guardian-local-preflight/0.1",
             applicability=EvidenceApplicability.NOT_APPLICABLE,
         )
+
+
+def test_not_applicable_evidence_cannot_carry_value() -> None:
+    with pytest.raises(ValueError, match="不能同时携带实际值"):
+        FieldEvidence(
+            value="12.4",
+            evidence_type=EvidenceType.LOCAL_ATTESTED,
+            source="local run plan",
+            collected_at=COLLECTED_AT,
+            collection_tool="experiment-guardian-local-preflight/0.1",
+            applicability=EvidenceApplicability.NOT_APPLICABLE,
+            not_applicable_reason="本次任务只使用 CPU",
+        )
+
+
+def test_applicable_evidence_requires_actual_value() -> None:
+    with pytest.raises(ValueError, match="必须携带实际值"):
+        FieldEvidence(
+            evidence_type=EvidenceType.LOCAL_ATTESTED,
+            source="local preflight",
+            collected_at=COLLECTED_AT,
+            collection_tool="experiment-guardian-local-preflight/0.1",
+        )
+
+
+def test_core_local_evidence_cannot_be_not_applicable() -> None:
+    attestation = complete_attestation()
+
+    with pytest.raises(ValueError, match="run_command"):
+        LocalAttestation(
+            working_tree_clean=attestation.working_tree_clean,
+            git_branch=attestation.git_branch,
+            git_commit=attestation.git_commit,
+            run_command=not_applicable("尝试绕过命令采集"),
+            output_directory_exists=attestation.output_directory_exists,
+            checkpoint_exists=attestation.checkpoint_exists,
+            checkpoint_path=attestation.checkpoint_path,
+            config_sha256=attestation.config_sha256,
+            git_diff_sha256=attestation.git_diff_sha256,
+            environment=attestation.environment,
+        )
+
+
+def test_checkpoint_not_applicable_conflicts_with_planned_checkpoint() -> None:
+    attestation = complete_attestation()
+    attestation.checkpoint_exists = not_applicable("本次实验从头训练")
+    attestation.checkpoint_path = not_applicable("本次实验不加载 checkpoint")
+
+    result = evaluate(
+        """
+dataset:
+  protocol: 40/20
+model:
+  backbone: shift-gcn
+  fusion: 0.2
+""",
+        [],
+        local_attestation=attestation,
+    )
+
+    assert result.check_result is CheckResult.NEEDS_APPROVAL
+    assert any(risk.code == "CHECKPOINT_APPLICABILITY_CONFLICT" for risk in result.risks)
+
+
+def test_rule_engine_defends_against_mutated_core_not_applicable_evidence() -> None:
+    attestation = complete_attestation()
+    attestation.run_command = not_applicable("对象构建后被错误修改")
+    # 模拟内部代码使用 model_construct 绕过 Pydantic 校验；规则引擎仍不得返回 PASS。
+    evaluation_input = PlanEvaluationInput.model_construct(
+        baseline_config=BASELINE,
+        candidate=ConfigurationDocument(
+            format=ConfigFormat.YAML,
+            content="""
+dataset:
+  protocol: 40/20
+model:
+  backbone: shift-gcn
+  fusion: 0.2
+""",
+        ),
+        constraints=[],
+        allowed_variable_paths={"model.fusion"},
+        local_attestation=attestation,
+        git_commit=GIT_COMMIT,
+        run_command=RUN_COMMAND,
+        checkpoint=CHECKPOINT_PATH,
+    )
+    result = evaluate_plan(evaluation_input)
+
+    assert result.check_result is CheckResult.NEEDS_APPROVAL
+    assert any(
+        risk.code == "CORE_LOCAL_ATTESTATION_REQUIRED" and risk.field_path == "run_command"
+        for risk in result.risks
+    )
 
 
 def test_formal_baseline_must_match_confirmed_expected_value() -> None:
@@ -399,6 +495,38 @@ def test_duplicate_config_fields_are_rejected(config_format: ConfigFormat, conte
 def test_yaml_non_string_key_is_rejected() -> None:
     with pytest.raises(ConfigurationError, match="不是字符串"):
         parse_configuration(ConfigurationDocument(format=ConfigFormat.YAML, content="1: value\n"))
+
+
+def test_yaml_ambiguous_scalars_remain_strings() -> None:
+    parsed = parse_configuration(
+        ConfigurationDocument(
+            format=ConfigFormat.YAML,
+            content="""
+flag: yes
+mode: on
+date: 2026-07-21
+leading_zero: 012
+enabled: true
+disabled: false
+count: 12
+ratio: 0.25
+empty:
+""",
+        )
+    )
+
+    assert parsed == {
+        "flag": "yes",
+        "mode": "on",
+        "date": "2026-07-21",
+        "leading_zero": "012",
+        "enabled": True,
+        "disabled": False,
+        "count": 12,
+        "ratio": 0.25,
+        "empty": None,
+    }
+    canonical_config_hash(parsed)
 
 
 def test_flatten_escapes_literal_dot_and_backslash_keys() -> None:

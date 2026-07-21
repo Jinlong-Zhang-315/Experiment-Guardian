@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 from uuid import UUID
 
+from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanCommand,
     ExperimentQueryCommand,
@@ -20,7 +21,9 @@ from experiment_guardian.domain.contracts import (
 class GuardianUseCases(Protocol):
     """REST 与 MCP 共同依赖的六个 P0 用例。"""
 
-    def project_get_context(self, *, project_id: UUID, actor_id: UUID) -> ProjectContextBundle: ...
+    def project_get_context(
+        self, *, project_id: UUID, identity: RequestIdentity
+    ) -> ProjectContextBundle: ...
 
     def experiment_check_plan(
         self, command: ExperimentCheckPlanCommand

@@ -1643,6 +1643,10 @@ Token 必须绑定：
 
 Token 必须支持撤销。
 
+Token 必须使用至少 256 bit 的随机值，数据库只保存不可逆哈希。原始 Token 只在签发时
+显示一次，不得写入应用日志、审计日志或幂等响应。MCP Token 必须绑定具体项目；用于
+项目初始化的 API Token 可以只绑定用户和团队，但必须限制为最小 scope。
+
 ## 18.2 数据隔离
 
 所有查询必须包含 team_id 或 project_id 范围。
@@ -1686,6 +1690,9 @@ Git 状态、输出目录、checkpoint、运行命令和本地环境默认属于
 声明缺失或互相冲突时必须提高风险并要求确认，风险报告不得将其描述为云端事实。
 字段确实不适用于本次实验时，必须显式标记 `NOT_APPLICABLE` 并保存原因；这与字段缺失
 不同。例如从头训练可以将 checkpoint 标为不适用，CPU 任务可以将 CUDA 标为不适用。
+`working_tree_clean`、Git branch/commit、`run_command`、`output_directory_exists`、
+`config_sha256` 和 Python 版本属于核心证据，必须提供且不得标记为不适用。不适用字段
+不得同时携带实际值。
 
 ## 18.5 日志安全
 

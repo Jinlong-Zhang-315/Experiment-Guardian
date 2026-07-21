@@ -1,4 +1,5 @@
-"""CockroachDB 仓储适配器目录。
+"""CockroachDB 仓储适配器目录。"""
 
-下一阶段按用例拆分仓储，不创建一个包含所有表操作的“大仓储”。
-"""
+from experiment_guardian.infrastructure.repositories.projects import SqlAlchemyProjectRepository
+
+__all__ = ["SqlAlchemyProjectRepository"]

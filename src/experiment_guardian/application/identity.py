@@ -14,8 +14,10 @@ class RequestIdentity:
     """当前已认证调用者；该信息只能由服务端认证适配器创建。"""
 
     user_id: UUID
-    team_id: UUID | None = None
-    token_id: UUID | None = None
+    team_id: UUID
+    token_id: UUID
+    project_id: UUID | None = None
+    scopes: frozenset[str] = frozenset()
 
 
 class IdentityProvider(Protocol):

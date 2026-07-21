@@ -3,7 +3,9 @@
 from fastapi import FastAPI
 
 from experiment_guardian import __version__
+from experiment_guardian.api.errors import application_error_handler
 from experiment_guardian.api.router import api_router
+from experiment_guardian.application.errors import ApplicationError
 from experiment_guardian.core.config import get_settings
 from experiment_guardian.core.logging import configure_logging
 
@@ -17,6 +19,7 @@ def create_app() -> FastAPI:
         version=__version__,
         description="提高实验一致性、可追溯性和风险可见性的治理服务",
     )
+    app.add_exception_handler(ApplicationError, application_error_handler)  # type: ignore[arg-type]
     app.include_router(api_router, prefix=settings.api_prefix)
     return app
 

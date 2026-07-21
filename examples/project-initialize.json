@@ -1,0 +1,60 @@
+{
+  "project": {
+    "name": "NTU60 Governance",
+    "description": "Experiment Guardian P0 demo project",
+    "repository_url": "https://example.invalid/research.git"
+  },
+  "context": {
+    "goal": "验证融合系数变化是否改善 NTU60 结果",
+    "non_goals": ["不自动启动训练", "不自动修改代码"],
+    "mainline_model": "shift-gcn",
+    "baseline": {"checkpoint": "checkpoints/baseline.pt"},
+    "dataset": "NTU60",
+    "protocol": "40/20",
+    "primary_metric": {"name": "top1", "higher_is_better": true},
+    "default_seeds": [1],
+    "active_branch": "main",
+    "active_config": {
+      "dataset": {"protocol": "40/20"},
+      "model": {"backbone": "shift-gcn", "fusion": 0.2}
+    },
+    "deprecated_items": [],
+    "key_decisions": ["protocol 固定为 40/20"],
+    "change_reason": "创建首个正式上下文"
+  },
+  "intent": {
+    "name": "fusion coefficient sweep",
+    "objective": "验证 fusion=0.3",
+    "hypothesis": "适度提高融合系数可以提升准确率",
+    "allowed_variables": ["model.fusion"],
+    "controlled_variables": ["dataset.protocol", "model.backbone"],
+    "expected_outputs": ["top1"],
+    "acceptance_criteria": ["配置和结果可追溯"],
+    "original_message": "只修改 fusion coefficient"
+  },
+  "constraints": [
+    {
+      "parameter_path": "dataset.protocol",
+      "protection_level": "LOCKED",
+      "expected_value": "40/20",
+      "reason": "正式数据协议",
+      "original_message": "protocol 固定为 40/20"
+    },
+    {
+      "parameter_path": "model.backbone",
+      "protection_level": "APPROVAL_REQUIRED",
+      "expected_value": "shift-gcn",
+      "reason": "主干变化需要 Owner 审批",
+      "original_message": "backbone 变化必须审批"
+    },
+    {
+      "parameter_path": "model.fusion",
+      "protection_level": "EXPERIMENT_VARIABLE",
+      "expected_value": 0.2,
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "reason": "本轮允许探索的变量",
+      "original_message": "允许修改 fusion coefficient"
+    }
+  ]
+}

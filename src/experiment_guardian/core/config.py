@@ -7,7 +7,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     mcp_transport: Literal["stdio", "streamable-http"] = "stdio"
     mcp_host: str = "127.0.0.1"
     mcp_port: int = Field(default=8001, ge=1, le=65535)
+    mcp_access_token: SecretStr | None = None
 
     manifest_hash_algorithm: Literal["sha256"] = "sha256"
 
