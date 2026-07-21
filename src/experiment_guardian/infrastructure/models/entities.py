@@ -54,10 +54,16 @@ from experiment_guardian.infrastructure.models.base import (
 )
 
 
-def enum_column(enum_type: type[Any], name: str) -> Enum:
+def enum_column(enum_type: type[Any], name: str, *, length: int | None = None) -> Enum:
     """使用字符串 CHECK/Enum 映射，避免依赖 PostgreSQL 原生枚举迁移。"""
 
-    return Enum(enum_type, name=name, native_enum=False, validate_strings=True)
+    return Enum(
+        enum_type,
+        name=name,
+        native_enum=False,
+        validate_strings=True,
+        length=length,
+    )
 
 
 class User(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -415,8 +421,11 @@ class ExperimentSubmission(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     declared_metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     evidence_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     status: Mapped[SubmissionStatus] = mapped_column(
-        enum_column(SubmissionStatus, "submission_status"), nullable=False
+        enum_column(SubmissionStatus, "submission_status", length=32), nullable=False
     )
+    upload_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    upload_verified_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    upload_verification_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -446,6 +455,9 @@ class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         enum_column(ArtifactType, "artifact_type"), nullable=False
     )
     cloud_hash_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verification_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    s3_version_id: Mapped[str | None] = mapped_column(String(1024))
 
 
 class SubmissionRisk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

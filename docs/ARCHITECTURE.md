@@ -1,7 +1,7 @@
 # Experiment Guardian 当前框架图
 
-更新时间：2026-07-21  
-对应数据库 revision：`20260721_05`
+更新时间：2026-07-22
+对应数据库 revision：`20260722_06`
 
 本文档维护当前仓库的实际框架。状态标记：
 
@@ -35,15 +35,16 @@
            |                                                           v
            |        Browser / API Client                    +------------------------+
            |                 |                              | GuardianApplication    |
-           |                 v                              | [PARTIAL: 4/6]         |
+           |                 v                              | [PARTIAL: 5/6]         |
            |      +------------------------+                | project_get_context    |
            |      | FastAPI                |                | experiment_check_plan  |
            |      | /health [DONE]         |                |   [DONE]               |
            |      | /capabilities [DONE]   |                | run_manifest_create    |
            |      | /plan-check decision  |                |   [DONE]               |
            |      | [DONE]                 |                | submission_prepare     |
-           |      | /projects/initialize   |                |   [DONE]               |
-           |      | [DONE]                 |                | other 2 [SCAFFOLD]     |
+           |      | /projects/initialize   |                | submission_finalize    |
+           |      | [DONE]                 |                |   [DONE]               |
+           |      |                        |                | query [SCAFFOLD]       |
            |      +-----------+------------+                            |
            |                  | Bearer auth                             |
            |                  v                                         |
@@ -62,6 +63,7 @@
                   | - Owner final decision        |
                   | - immutable Manifest          |
                   | - submission upload draft     |
+                  | - S3 upload verification      |
                   | - stable application errors   |
                   +---------------+---------------+
                                   |
@@ -76,6 +78,7 @@
                   | - Plan Check replay           |
                   | - approval/manifest locks     |
                   | - submission/artifact replay  |
+                  | - finalize row locks/evidence |
                   +---------------+---------------+
                                   |
                                   v
@@ -97,7 +100,7 @@
 | Interface Layer                                                          |
 |                                                                          |
 |  FastAPI routes                 MCP tools                 Admin CLI       |
-|  [DONE partial API]             [DONE 4/6 use cases]      [DONE]          |
+|  [DONE partial API]             [DONE 5/6 use cases]      [DONE]          |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -123,7 +126,7 @@
 |  database.py      models/         repositories/        security.py       |
 |  SQLAlchemy       ORM schema      project/plan/governance repositories   |
 |                                                                          |
-|  S3 presign [DONE]  S3 verify [PLANNED]  Bedrock/CloudWatch [PLANNED]     |
+|  S3 presign [DONE]  S3 HEAD verify [DONE]  Bedrock/CloudWatch [PLANNED]    |
 +--------------------------------------------------------------------------+
 ```
 
@@ -167,7 +170,10 @@ User
   |                                  |          |
   |                                  |          +---- run_manifest_id/hash
   |                                  |          +---- declared status/metrics/evidence
-  |                                  |          +----< Artifact (declared hash/size/S3 key)
+  |                                  |          +---- UPLOAD_VERIFIED audit snapshot
+  |                                  |          +----< Artifact
+  |                                  |                   +---- declared hash/size/S3 key
+  |                                  |                   +---- cloud metadata/evidence/time
   |                                  |
   |                                  +----< AuditLog
   |
@@ -232,19 +238,27 @@ SubmissionRisk -> Experiment -> ExperimentMetric -> Memory
    -> one transaction: RECEIVED Submission + Artifacts + AuditLog + IdempotencyRecord
    -> sign short-lived S3 PUT URLs after commit; URLs are never persisted
    -> same key reuses database IDs and issues fresh upload URLs
+
+9. Local Agent calls submission_finalize(submission_id, idempotency_key)
+   -> MCP Token project/team/member/submission:finalize validation
+   -> only the original submitter may finalize a RECEIVED draft
+   -> outside transaction: S3 HEAD with ChecksumMode=ENABLED for every Artifact
+   -> missing/mismatch: retryable FAILED receipt, no partial Artifact verification
+   -> all match: one transaction writes all CLOUD_VERIFIED evidence,
+      UPLOAD_VERIFIED Submission, AuditLog and completed IdempotencyRecord
+   -> successful replay never calls S3 again; prepare replay no longer issues PUT URLs
 ```
 
 ## 已有但尚未接通的框架
 
 ```text
-submission_finalize         [SCAFFOLD: contract/model/workflow topology only]
 experiments_query           [SCAFFOLD: query contract/model only]
 
 Submission LangGraph:
 UPLOAD_VERIFICATION -> CONFIG_PARSE -> MANIFEST_VALIDATION -> DUPLICATE_CHECK
 -> RISK_ANALYSIS -> SUMMARY_GENERATION -> EMBEDDING_GENERATION -> NEEDS_REVIEW -> END
 
-NEEDS_REVIEW is a persisted hand-off target, not a LangGraph interrupt.
+NEEDS_REVIEW is the planned persisted hand-off target, not a LangGraph interrupt.
 ```
 
 ## 计划中的完整部署边界
@@ -259,7 +273,7 @@ Local Agent -> MCP Server -----+-> FastAPI/Application
              v                        v                        v
        CockroachDB               Amazon S3                Bedrock
        state/vector              artifacts                summary/risk
-       [PARTIAL]                 [PARTIAL: presign]       [PLANNED]
+       [PARTIAL]                 [PARTIAL: PUT/HEAD]      [PLANNED]
              |
              v
        CloudWatch [PLANNED]

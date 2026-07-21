@@ -89,6 +89,9 @@ def test_submission_prepare_schema_keeps_upload_declarations_narrow() -> None:
         "declared_metrics",
         "evidence_snapshot",
         "status",
+        "upload_verified_at",
+        "upload_verified_by",
+        "upload_verification_snapshot",
     } <= set(submission.columns.keys())
     assert "processing_step" not in submission.columns
     assert "generated_summary" not in submission.columns
@@ -101,6 +104,7 @@ def test_submission_prepare_schema_keeps_upload_declarations_narrow() -> None:
         "ck_artifacts_artifact_size_limit",
         "ck_artifacts_artifact_sha256_length",
     } <= {constraint.name for constraint in artifact.constraints}
+    assert {"verified_at", "verification_evidence", "s3_version_id"} <= set(artifact.columns.keys())
 
 
 def test_memory_has_structured_vector_filters() -> None:

@@ -77,8 +77,38 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         "uq_artifacts_submission_filename",
         "uq_artifacts_s3_key",
     } <= {item["name"] for item in inspector.get_unique_constraints("artifacts")}
+    assert {
+        "upload_verified_at",
+        "upload_verified_by",
+        "upload_verification_snapshot",
+    } <= {item["name"] for item in inspector.get_columns("experiment_submissions")}
+    status_column = next(
+        item for item in inspector.get_columns("experiment_submissions") if item["name"] == "status"
+    )
+    assert status_column["type"].length == 32
+    assert {"verified_at", "verification_evidence", "s3_version_id"} <= {
+        item["name"] for item in inspector.get_columns("artifacts")
+    }
     engine.dispose()
 
+    run_alembic("downgrade", "20260721_05")
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    assert not (
+        {"upload_verified_at", "upload_verified_by", "upload_verification_snapshot"}
+        & {item["name"] for item in inspector.get_columns("experiment_submissions")}
+    )
+    status_column = next(
+        item for item in inspector.get_columns("experiment_submissions") if item["name"] == "status"
+    )
+    assert status_column["type"].length == 12
+    assert not (
+        {"verified_at", "verification_evidence", "s3_version_id"}
+        & {item["name"] for item in inspector.get_columns("artifacts")}
+    )
+    engine.dispose()
+
+    run_alembic("upgrade", "head")
     run_alembic("downgrade", "20260721_04")
     engine = create_engine(database_url)
     inspector = inspect(engine)

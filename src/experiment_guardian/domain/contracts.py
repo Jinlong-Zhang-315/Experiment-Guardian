@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from experiment_guardian.domain.enums import (
     ApprovalStatus,
     ArtifactType,
+    ArtifactVerificationIssueCode,
     CheckResult,
     ConfigFormat,
     ConstraintSource,
@@ -28,6 +29,7 @@ from experiment_guardian.domain.enums import (
     RiskSeverity,
     SubmissionStatus,
     SubmittedRunStatus,
+    UploadVerificationResult,
     VerificationStatus,
 )
 
@@ -549,12 +551,94 @@ class SubmissionPrepareResult(ContractModel):
     project_id: UUID
     run_manifest_id: UUID
     manifest_hash: str = Field(pattern=SHA256_PATTERN)
-    status: Literal[SubmissionStatus.RECEIVED] = SubmissionStatus.RECEIVED
+    status: Literal[SubmissionStatus.RECEIVED, SubmissionStatus.UPLOAD_VERIFIED] = (
+        SubmissionStatus.RECEIVED
+    )
     experiment_status: SubmittedRunStatus
     metrics_summary: dict[str, float]
     required_files_check: Literal["PASS"] = "PASS"
     artifact_uploads: list[ArtifactUploadTarget]
     created_at: datetime
+
+
+class StoredObjectMetadata(ContractModel):
+    """Artifact Storage 通过云服务元数据接口观测到的对象状态。"""
+
+    content_length: int = Field(strict=True, ge=0)
+    content_type: str | None = None
+    checksum_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    checksum_type: str | None = None
+    etag: str | None = None
+    version_id: str | None = None
+    last_modified: datetime | None = None
+    observed_at: datetime
+    evidence_source: str = Field(min_length=1, max_length=2000)
+
+
+class ArtifactVerificationIssue(ContractModel):
+    artifact_id: UUID
+    filename: str
+    code: ArtifactVerificationIssueCode
+    field: str
+    expected: Any = None
+    actual: Any = None
+    message: str = Field(min_length=1)
+    evidence_source: str = Field(min_length=1, max_length=2000)
+    observed_at: datetime
+    collection_tool: Literal["boto3.s3.head_object"] = "boto3.s3.head_object"
+
+
+class ArtifactVerificationReceipt(ContractModel):
+    artifact_id: UUID
+    filename: str
+    artifact_type: ArtifactType
+    content_length: int
+    content_type: str
+    checksum_sha256: str = Field(pattern=SHA256_PATTERN)
+    etag: str | None = None
+    version_id: str | None = None
+    last_modified: datetime | None = None
+    verified_at: datetime
+    evidence_type: Literal[EvidenceType.CLOUD_VERIFIED] = EvidenceType.CLOUD_VERIFIED
+    evidence_source: str = Field(min_length=1, max_length=2000)
+    collection_tool: Literal["boto3.s3.head_object"] = "boto3.s3.head_object"
+
+
+class SubmissionFinalizeCommand(ContractModel):
+    submission_id: UUID
+    idempotency_key: UUID
+
+
+class SubmissionFinalizeResult(ContractModel):
+    submission_id: UUID
+    project_id: UUID
+    verification_result: UploadVerificationResult
+    status: Literal[SubmissionStatus.RECEIVED, SubmissionStatus.UPLOAD_VERIFIED]
+    retryable: bool
+    issues: list[ArtifactVerificationIssue] = Field(default_factory=list)
+    artifact_verifications: list[ArtifactVerificationReceipt] = Field(default_factory=list)
+    verified_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_verification_state(self) -> "SubmissionFinalizeResult":
+        if self.verification_result is UploadVerificationResult.PASS:
+            if (
+                self.status is not SubmissionStatus.UPLOAD_VERIFIED
+                or self.retryable
+                or self.issues
+                or not self.artifact_verifications
+                or self.verified_at is None
+            ):
+                raise ValueError("PASS 回执必须表示上传已验证且不可重试")
+        elif (
+            self.status is not SubmissionStatus.RECEIVED
+            or not self.retryable
+            or not self.issues
+            or self.artifact_verifications
+            or self.verified_at is not None
+        ):
+            raise ValueError("FAILED 回执必须保持 RECEIVED 并提供可重试问题")
+        return self
 
 
 class IntentInterpretation(ContractModel):

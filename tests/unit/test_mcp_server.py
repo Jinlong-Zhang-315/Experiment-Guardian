@@ -9,6 +9,7 @@ import pytest
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanCommand,
+    SubmissionFinalizeCommand,
     SubmissionPrepareCommand,
 )
 from experiment_guardian.mcp_server import server
@@ -34,6 +35,8 @@ async def test_mcp_exposes_only_the_six_p0_tools() -> None:
         properties = tool.inputSchema.get("properties", {})
         assert "actor_id" not in properties
         assert "requester_id" not in properties
+        if tool.name == "submission_finalize":
+            assert set(properties) == {"submission_id", "idempotency_key"}
 
 
 def test_experiment_check_plan_uses_server_authenticated_identity(
@@ -192,3 +195,41 @@ def test_submission_prepare_uses_server_authenticated_identity(
     assert isinstance(captured["command"], SubmissionPrepareCommand)
     assert captured["identity"] is identity
     assert result == {"status": "RECEIVED"}
+
+
+def test_submission_finalize_uses_server_identity_and_no_client_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = RequestIdentity(
+        user_id=uuid4(),
+        team_id=uuid4(),
+        token_id=uuid4(),
+        project_id=uuid4(),
+        scopes=frozenset({"submission:finalize"}),
+    )
+    captured: dict[str, object] = {}
+
+    class FakeUseCases:
+        def submission_finalize(
+            self, command: SubmissionFinalizeCommand, request_identity: RequestIdentity
+        ) -> SimpleNamespace:
+            captured["command"] = command
+            captured["identity"] = request_identity
+            return SimpleNamespace(model_dump=lambda **_: {"verification_result": "PASS"})
+
+    monkeypatch.setattr(
+        server,
+        "get_identity_provider",
+        lambda: SimpleNamespace(current_identity=lambda: identity),
+    )
+    monkeypatch.setattr(server, "get_guardian_use_cases", lambda: FakeUseCases())
+    submission_id, idempotency_key = uuid4(), uuid4()
+
+    result = server.submission_finalize(str(submission_id), str(idempotency_key))
+
+    command = captured["command"]
+    assert isinstance(command, SubmissionFinalizeCommand)
+    assert command.submission_id == submission_id
+    assert command.idempotency_key == idempotency_key
+    assert captured["identity"] is identity
+    assert result == {"verification_result": "PASS"}

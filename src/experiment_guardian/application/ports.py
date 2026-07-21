@@ -4,8 +4,8 @@
 后续实现适配器时不会让 MCP 工具或 FastAPI 路由直接依赖某个云厂商 SDK。
 """
 
-from collections.abc import Mapping, Sequence
-from typing import Any, Protocol
+from collections.abc import Sequence
+from typing import Protocol
 from uuid import UUID
 
 from experiment_guardian.application.identity import RequestIdentity
@@ -17,6 +17,9 @@ from experiment_guardian.domain.contracts import (
     PresignedUpload,
     ProjectContextBundle,
     RunManifestResult,
+    StoredObjectMetadata,
+    SubmissionFinalizeCommand,
+    SubmissionFinalizeResult,
     SubmissionPrepareCommand,
     SubmissionPrepareResult,
 )
@@ -46,13 +49,8 @@ class GuardianUseCases(Protocol):
     ) -> SubmissionPrepareResult: ...
 
     def submission_finalize(
-        self,
-        *,
-        submission_id: UUID,
-        actor_id: UUID,
-        idempotency_key: UUID,
-        uploaded_files: Sequence[Mapping[str, Any]],
-    ) -> Mapping[str, Any]: ...
+        self, command: SubmissionFinalizeCommand, identity: RequestIdentity
+    ) -> SubmissionFinalizeResult: ...
 
     def experiments_query(
         self, command: ExperimentQueryCommand
@@ -71,6 +69,8 @@ class ArtifactStorage(Protocol):
         sha256: str,
         expires_in: int,
     ) -> PresignedUpload: ...
+
+    def inspect_object(self, *, object_key: str) -> StoredObjectMetadata | None: ...
 
 
 class SubmissionWorkflow(Protocol):

@@ -106,6 +106,7 @@ class EvidenceApplicability(StrEnum):
 
 class SubmissionStatus(StrEnum):
     RECEIVED = "RECEIVED"
+    UPLOAD_VERIFIED = "UPLOAD_VERIFIED"
     PROCESSING = "PROCESSING"
     NEEDS_REVIEW = "NEEDS_REVIEW"
     APPROVED = "APPROVED"
@@ -136,6 +137,19 @@ class SubmittedRunStatus(StrEnum):
 
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+class UploadVerificationResult(StrEnum):
+    PASS = "PASS"
+    FAILED = "FAILED"
+
+
+class ArtifactVerificationIssueCode(StrEnum):
+    OBJECT_MISSING = "OBJECT_MISSING"
+    CONTENT_LENGTH_MISMATCH = "CONTENT_LENGTH_MISMATCH"
+    CONTENT_TYPE_MISMATCH = "CONTENT_TYPE_MISMATCH"
+    CHECKSUM_SHA256_MISSING = "CHECKSUM_SHA256_MISSING"
+    CHECKSUM_SHA256_MISMATCH = "CHECKSUM_SHA256_MISMATCH"
 
 
 class ArtifactType(StrEnum):

@@ -25,7 +25,8 @@
 | 2026-07-21 | R7 | `4f0a7b3` | 已认证、幂等、可追溯的训练前检查 |
 | 2026-07-21 | R7.1 | `2937a0b` | Plan Check 历史依据与事务稳定性加固 |
 | 2026-07-21 | R8 | `2937a0b` | Owner 计划审批和不可变 Run Manifest |
-| 2026-07-21 | R9 | `working tree` | S3 实验草稿上传准备 |
+| 2026-07-21 | R9 | `5ace7c3` | S3 实验草稿上传准备 |
+| 2026-07-22 | R10 | `working tree` | 上传完成确认与 S3 对象复核 |
 
 ## R0：需求分析与 MVP 收敛
 
@@ -363,7 +364,7 @@
 
 ## R9：S3 实验草稿上传准备
 
-版本：`working tree`，当前实现轮次。
+版本：`5ace7c3`。
 
 ### 更新内容
 
@@ -418,6 +419,65 @@
   SHA-256 尚未由云端复核。
 * LangGraph 分析、Bedrock、风险回执、正式实验确认、查询和 Web 继续延后，未在 R9
   扩大实现范围。
+
+## R10：上传完成确认与 S3 对象复核
+
+版本：`working tree`，当前实现轮次。
+
+### 更新内容
+
+* 新增 revision `20260722_06`，为 Submission 增加上传复核人、时间和完整回执快照，
+  为 Artifact 增加复核时间、结构化云端证据和 S3 VersionId。
+* 新增 `UPLOAD_VERIFIED` 状态，以及上传验证 PASS/FAILED、逐文件验证回执和结构化
+  缺失/大小/MIME/checksum 问题契约。
+* `submission_finalize` MCP 输入收敛为 `submission_id`、`idempotency_key`；身份只来自
+  服务端 MCP Token，新签 Token 增加 `submission:finalize` scope。
+* finalize 校验 Token 项目绑定、团队成员和原提交者身份，只处理 `RECEIVED` 草稿。
+* S3 适配器新增 `inspect_object`，使用 `HEAD` 与 `ChecksumMode=ENABLED` 读取对象
+  长度、Content-Type、SHA-256 checksum、ETag、VersionId 和 LastModified。
+* S3 调用全部位于数据库事务之外。只有所有对象匹配时才在单一 CockroachDB 事务中
+  写入全部 Artifact 云端证据、Submission 状态、AuditLog 和幂等结果。
+* 失败回执包含本次发现的全部确定性问题，保持 Submission 为 `RECEIVED` 且不写部分
+  Artifact 验证；修复对象后可用相同 key 重新检查。
+* 成功幂等重放从数据库回执直接返回，不再次调用 S3；成功后 prepare 重放不再签发
+  上传 URL。
+* 真实 S3 可选测试改为通过生产 `inspect_object` 验收 PUT 后的对象元数据，而不是测试
+  自己直接调用 boto3 HEAD。
+
+### 修复的问题
+
+* CockroachDB 实库测试发现 R9 创建的 Submission 状态列为 `VARCHAR(12)`，无法保存
+  15 字符的 `UPLOAD_VERIFIED`；revision 06 现将该列扩至 `VARCHAR(32)`，ORM 也固定
+  使用同一长度。
+* 带 `UPLOAD_VERIFIED` 实际数据直接 downgrade 会因列缩短失败；回滚现先把新版状态
+  映射为旧版可识别的 `RECEIVED`，再恢复 `VARCHAR(12)`。
+* 对象部分成功、部分缺失时不会留下混合验证状态；数据库提交只接受完整且未漂移的
+  Artifact 声明快照。
+* 同一失败幂等键不会永久缓存暂时性对象问题；相同 key 可在对象修复后从 FAILED
+  更新为 COMPLETED，但用于不同 Submission 时仍返回冲突。
+* S3 服务不可用不会被错误记为业务验证失败，也不会写入幂等或部分证据。
+* finalize 成功不再错误进入 `PROCESSING`；R10 使用独立 `UPLOAD_VERIFIED` 状态，明确
+  表示尚未启动内容分析。
+
+### 验证结果
+
+* 全量收集 103 项测试，101 项默认执行全部通过，真实 CockroachDB 和 AWS S3 两项
+  外部测试默认跳过。
+* 新增 finalize 成功/失败/修复重试/异体冲突、原提交者授权、服务端身份、S3 故障、
+  无部分写入、成功重放不访问 S3、prepare 后置重放和契约状态一致性测试。
+* SQLite migration 完成 revision 06 升级、降级到 05、再升级及后续全链路降级。
+* 真实 CockroachDB 隔离库显式执行通过：完成 `head -> 05 -> head -> 03 -> head`、
+  完整 Plan/审批/Manifest/prepare/finalize 事务，以及含 `UPLOAD_VERIFIED` 数据时的
+  `head -> base` 回滚。
+* 开发 CockroachDB 已从 `20260721_05` 升级至 `20260722_06 (head)`。
+* Ruff format、Ruff check、mypy、`git diff --check` 和全量 pytest 均通过。
+* 真实 AWS S3 测试代码已更新；当前未配置专用 Bucket/凭据，本轮未实际访问 AWS。
+
+### 已知遗留项
+
+* R10 仅校验 S3 对象元数据与声明一致，不下载/解析配置或结果，不保证真实训练行为正确。
+* LangGraph 持久化分析、重复检查、风险/摘要、Bedrock、embedding、人工审核确认、正式
+  实验查询和 Web 均未在本轮实现。
 
 ## 新日志模板
 

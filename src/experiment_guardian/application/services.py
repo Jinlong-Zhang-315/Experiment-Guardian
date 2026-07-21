@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -31,6 +31,8 @@ from experiment_guardian.domain.administration import (
 )
 from experiment_guardian.domain.contracts import (
     ArtifactUploadTarget,
+    ArtifactVerificationIssue,
+    ArtifactVerificationReceipt,
     ExperimentCheckPlanCommand,
     ExperimentCheckPlanResult,
     ExperimentQueryCommand,
@@ -38,6 +40,9 @@ from experiment_guardian.domain.contracts import (
     PlanEvaluationInput,
     ProjectContextBundle,
     RunManifestResult,
+    StoredObjectMetadata,
+    SubmissionFinalizeCommand,
+    SubmissionFinalizeResult,
     SubmissionPrepareCommand,
     SubmissionPrepareResult,
 )
@@ -46,6 +51,7 @@ from experiment_guardian.domain.enums import (
     ApprovalStatus,
     ApprovalTargetType,
     ArtifactType,
+    ArtifactVerificationIssueCode,
     CheckResult,
     ConstraintSource,
     ContextStatus,
@@ -57,6 +63,7 @@ from experiment_guardian.domain.enums import (
     SubmissionStatus,
     SubmittedRunStatus,
     TeamRole,
+    UploadVerificationResult,
     VerificationStatus,
 )
 from experiment_guardian.domain.plan_check import (
@@ -89,6 +96,7 @@ INITIALIZE_OPERATION = "project.initialize"
 PLAN_DECISION_OPERATION = "plan_check.decision"
 RUN_MANIFEST_OPERATION = "run_manifest.create"
 SUBMISSION_PREPARE_OPERATION = "submission.prepare"
+SUBMISSION_FINALIZE_OPERATION = "submission.finalize"
 RISK_PRIORITY = {
     RiskSeverity.LOW: 0,
     RiskSeverity.MEDIUM: 1,
@@ -135,6 +143,14 @@ class _PreparedSubmission:
     experiment_status: SubmittedRunStatus
     metrics_summary: dict[str, float]
     created_at: datetime
+    artifacts: tuple[_PreparedArtifact, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _FinalizeSnapshot:
+    submission_id: UUID
+    project_id: UUID
+    declaration_hash: str
     artifacts: tuple[_PreparedArtifact, ...]
 
 
@@ -731,6 +747,20 @@ class GuardianApplication:
         )
 
     def _issue_upload_targets(self, prepared: _PreparedSubmission) -> SubmissionPrepareResult:
+        if prepared.status is SubmissionStatus.UPLOAD_VERIFIED:
+            return SubmissionPrepareResult(
+                submission_id=prepared.id,
+                project_id=prepared.project_id,
+                run_manifest_id=prepared.run_manifest_id,
+                manifest_hash=prepared.manifest_hash,
+                status=prepared.status,
+                experiment_status=prepared.experiment_status,
+                metrics_summary=prepared.metrics_summary,
+                artifact_uploads=[],
+                created_at=prepared.created_at,
+            )
+        if prepared.status is not SubmissionStatus.RECEIVED:
+            raise ConflictError("当前 Submission 状态不允许继续签发上传地址")
         if self._artifact_storage is None:
             raise ServiceUnavailableError("S3 Artifact Storage 尚未配置")
         expires_at = datetime.now(UTC) + timedelta(seconds=self._upload_url_ttl_seconds)
@@ -766,23 +796,483 @@ class GuardianApplication:
             project_id=prepared.project_id,
             run_manifest_id=prepared.run_manifest_id,
             manifest_hash=prepared.manifest_hash,
-            status=SubmissionStatus.RECEIVED,
+            status=prepared.status,
             experiment_status=prepared.experiment_status,
             metrics_summary=prepared.metrics_summary,
             artifact_uploads=uploads,
             created_at=prepared.created_at,
         )
 
-    @staticmethod
     def submission_finalize(
+        self, command: SubmissionFinalizeCommand, identity: RequestIdentity
+    ) -> SubmissionFinalizeResult:
+        request_hash = _canonical_hash(command.model_dump(mode="json", exclude={"idempotency_key"}))
+        initial = run_with_serialization_retry(
+            lambda: self._load_finalize_snapshot(command, identity, request_hash)
+        )
+        if isinstance(initial, SubmissionFinalizeResult):
+            return initial
+
+        result = self._inspect_submission_artifacts(initial)
+        if result.verification_result is UploadVerificationResult.FAILED:
+            return run_with_serialization_retry(
+                lambda: self._persist_failed_finalization(
+                    command=command,
+                    identity=identity,
+                    request_hash=request_hash,
+                    snapshot=initial,
+                    result=result,
+                )
+            )
+        return run_with_serialization_retry(
+            lambda: self._commit_verified_finalization(
+                command=command,
+                identity=identity,
+                request_hash=request_hash,
+                snapshot=initial,
+                result=result,
+            )
+        )
+
+    def _load_finalize_snapshot(
+        self,
+        command: SubmissionFinalizeCommand,
+        identity: RequestIdentity,
+        request_hash: str,
+    ) -> _FinalizeSnapshot | SubmissionFinalizeResult:
+        if "submission:finalize" not in identity.scopes:
+            raise AuthorizationError("Token 缺少 submission:finalize scope")
+        with self._session_factory() as session, session.begin():
+            submission = self._submissions.get_submission(session, command.submission_id)
+            if submission is None:
+                raise ResourceNotFoundError("Submission 不存在")
+            self._authorize_finalize(session, submission, identity)
+            existing = self._governance.find_idempotency(
+                session,
+                actor_id=identity.user_id,
+                operation=SUBMISSION_FINALIZE_OPERATION,
+                idempotency_key=command.idempotency_key,
+            )
+            if existing is not None:
+                if existing.request_hash != request_hash:
+                    raise ConflictError("相同 Idempotency-Key 已用于不同的 finalize 请求")
+                if existing.operation_status is IdempotencyOperationStatus.COMPLETED:
+                    return self._replay_finalize(existing, request_hash)
+                if existing.operation_status is IdempotencyOperationStatus.IN_PROGRESS:
+                    raise ConflictError("相同 Idempotency-Key 的 finalize 操作仍在处理")
+
+            if submission.status is not SubmissionStatus.RECEIVED:
+                raise ConflictError("当前 Submission 状态不允许 finalize")
+            artifacts = self._submissions.list_artifacts(session, submission.id)
+            prepared = self._validate_finalize_artifacts(artifacts)
+            return _FinalizeSnapshot(
+                submission_id=submission.id,
+                project_id=submission.project_id,
+                declaration_hash=self._artifact_declaration_hash(prepared),
+                artifacts=prepared,
+            )
+
+    def _inspect_submission_artifacts(
+        self, snapshot: _FinalizeSnapshot
+    ) -> SubmissionFinalizeResult:
+        if self._artifact_storage is None:
+            raise ServiceUnavailableError("S3 Artifact Storage 尚未配置")
+
+        issues: list[ArtifactVerificationIssue] = []
+        receipts: list[ArtifactVerificationReceipt] = []
+        for artifact in snapshot.artifacts:
+            metadata = self._artifact_storage.inspect_object(object_key=artifact.s3_key)
+            if metadata is None:
+                issues.append(
+                    ArtifactVerificationIssue(
+                        artifact_id=artifact.id,
+                        filename=artifact.filename,
+                        code=ArtifactVerificationIssueCode.OBJECT_MISSING,
+                        field="object",
+                        expected="PRESENT",
+                        actual="MISSING",
+                        message="S3 中不存在该 Artifact 对象",
+                        evidence_source=f"object_key:{artifact.s3_key}",
+                        observed_at=datetime.now(UTC),
+                    )
+                )
+                continue
+
+            artifact_issues = self._compare_artifact_metadata(artifact, metadata)
+            issues.extend(artifact_issues)
+            if not artifact_issues:
+                receipts.append(
+                    ArtifactVerificationReceipt(
+                        artifact_id=artifact.id,
+                        filename=artifact.filename,
+                        artifact_type=artifact.artifact_type,
+                        content_length=metadata.content_length,
+                        content_type=artifact.mime_type,
+                        checksum_sha256=artifact.sha256,
+                        etag=metadata.etag,
+                        version_id=metadata.version_id,
+                        last_modified=metadata.last_modified,
+                        verified_at=metadata.observed_at,
+                        evidence_source=metadata.evidence_source,
+                    )
+                )
+
+        if issues:
+            return SubmissionFinalizeResult(
+                submission_id=snapshot.submission_id,
+                project_id=snapshot.project_id,
+                verification_result=UploadVerificationResult.FAILED,
+                status=SubmissionStatus.RECEIVED,
+                retryable=True,
+                issues=issues,
+                artifact_verifications=[],
+                verified_at=None,
+            )
+        return SubmissionFinalizeResult(
+            submission_id=snapshot.submission_id,
+            project_id=snapshot.project_id,
+            verification_result=UploadVerificationResult.PASS,
+            status=SubmissionStatus.UPLOAD_VERIFIED,
+            retryable=False,
+            artifact_verifications=receipts,
+            verified_at=datetime.now(UTC),
+        )
+
+    @staticmethod
+    def _compare_artifact_metadata(
+        artifact: _PreparedArtifact, metadata: StoredObjectMetadata
+    ) -> list[ArtifactVerificationIssue]:
+        issues: list[ArtifactVerificationIssue] = []
+        common = {
+            "artifact_id": artifact.id,
+            "filename": artifact.filename,
+            "evidence_source": metadata.evidence_source,
+            "observed_at": metadata.observed_at,
+        }
+        if metadata.content_length != artifact.size_bytes:
+            issues.append(
+                ArtifactVerificationIssue(
+                    **common,
+                    code=ArtifactVerificationIssueCode.CONTENT_LENGTH_MISMATCH,
+                    field="content_length",
+                    expected=artifact.size_bytes,
+                    actual=metadata.content_length,
+                    message="S3 对象大小与 Artifact 声明不一致",
+                )
+            )
+        if metadata.content_type != artifact.mime_type:
+            issues.append(
+                ArtifactVerificationIssue(
+                    **common,
+                    code=ArtifactVerificationIssueCode.CONTENT_TYPE_MISMATCH,
+                    field="content_type",
+                    expected=artifact.mime_type,
+                    actual=metadata.content_type,
+                    message="S3 Content-Type 与 Artifact 声明不一致",
+                )
+            )
+        if metadata.checksum_sha256 is None:
+            issues.append(
+                ArtifactVerificationIssue(
+                    **common,
+                    code=ArtifactVerificationIssueCode.CHECKSUM_SHA256_MISSING,
+                    field="checksum_sha256",
+                    expected=artifact.sha256,
+                    actual=None,
+                    message="S3 对象缺少可验证的 SHA-256 checksum",
+                )
+            )
+        elif metadata.checksum_sha256 != artifact.sha256:
+            issues.append(
+                ArtifactVerificationIssue(
+                    **common,
+                    code=ArtifactVerificationIssueCode.CHECKSUM_SHA256_MISMATCH,
+                    field="checksum_sha256",
+                    expected=artifact.sha256,
+                    actual=metadata.checksum_sha256,
+                    message="S3 SHA-256 checksum 与 Artifact 声明不一致",
+                )
+            )
+        return issues
+
+    def _persist_failed_finalization(
+        self,
         *,
-        submission_id: UUID,
+        command: SubmissionFinalizeCommand,
+        identity: RequestIdentity,
+        request_hash: str,
+        snapshot: _FinalizeSnapshot,
+        result: SubmissionFinalizeResult,
+    ) -> SubmissionFinalizeResult:
+        try:
+            with self._session_factory() as session, session.begin():
+                submission = self._submissions.get_submission_for_update(
+                    session, command.submission_id
+                )
+                if submission is None:
+                    raise ResourceNotFoundError("Submission 不存在")
+                self._authorize_finalize(session, submission, identity)
+                existing = self._governance.find_idempotency(
+                    session,
+                    actor_id=identity.user_id,
+                    operation=SUBMISSION_FINALIZE_OPERATION,
+                    idempotency_key=command.idempotency_key,
+                )
+                if existing is not None:
+                    if existing.request_hash != request_hash:
+                        raise ConflictError("相同 Idempotency-Key 已用于不同的 finalize 请求")
+                    if existing.operation_status is IdempotencyOperationStatus.COMPLETED:
+                        return self._replay_finalize(existing, request_hash)
+                self._require_unchanged_finalize_target(session, submission, snapshot)
+                response = result.model_dump(mode="json")
+                if existing is None:
+                    session.add(
+                        IdempotencyRecord(
+                            actor_id=identity.user_id,
+                            operation=SUBMISSION_FINALIZE_OPERATION,
+                            idempotency_key=command.idempotency_key,
+                            request_hash=request_hash,
+                            response_snapshot=response,
+                            operation_status=IdempotencyOperationStatus.FAILED,
+                            expires_at=datetime.now(UTC) + timedelta(days=7),
+                        )
+                    )
+                else:
+                    existing.response_snapshot = response
+                    existing.operation_status = IdempotencyOperationStatus.FAILED
+                    existing.expires_at = datetime.now(UTC) + timedelta(days=7)
+                return result
+        except IntegrityError as exc:
+            replay = self._replay_finalize_after_integrity(
+                actor_id=identity.user_id,
+                idempotency_key=command.idempotency_key,
+                request_hash=request_hash,
+                allow_failed=True,
+            )
+            if replay is not None:
+                return replay
+            raise ConflictError("Submission finalize 与现有数据冲突") from exc
+
+    def _commit_verified_finalization(
+        self,
+        *,
+        command: SubmissionFinalizeCommand,
+        identity: RequestIdentity,
+        request_hash: str,
+        snapshot: _FinalizeSnapshot,
+        result: SubmissionFinalizeResult,
+    ) -> SubmissionFinalizeResult:
+        try:
+            with self._session_factory() as session, session.begin():
+                submission = self._submissions.get_submission_for_update(
+                    session, command.submission_id
+                )
+                if submission is None:
+                    raise ResourceNotFoundError("Submission 不存在")
+                project = self._authorize_finalize(session, submission, identity)
+                existing = self._governance.find_idempotency(
+                    session,
+                    actor_id=identity.user_id,
+                    operation=SUBMISSION_FINALIZE_OPERATION,
+                    idempotency_key=command.idempotency_key,
+                )
+                if existing is not None:
+                    if existing.request_hash != request_hash:
+                        raise ConflictError("相同 Idempotency-Key 已用于不同的 finalize 请求")
+                    if existing.operation_status is IdempotencyOperationStatus.COMPLETED:
+                        return self._replay_finalize(existing, request_hash)
+                artifacts = self._require_unchanged_finalize_target(
+                    session, submission, snapshot, lock_artifacts=True
+                )
+                receipts = {item.artifact_id: item for item in result.artifact_verifications}
+                if set(receipts) != {item.id for item in artifacts}:
+                    raise ConflictError("S3 复核回执与 Artifact 声明集合不一致")
+
+                for artifact in artifacts:
+                    receipt = receipts[artifact.id]
+                    artifact.cloud_hash_verified = True
+                    artifact.verified_at = receipt.verified_at
+                    artifact.s3_version_id = receipt.version_id
+                    artifact.verification_evidence = self._verification_evidence(receipt)
+
+                submission.status = SubmissionStatus.UPLOAD_VERIFIED
+                submission.upload_verified_at = result.verified_at
+                submission.upload_verified_by = identity.user_id
+                response = result.model_dump(mode="json")
+                submission.upload_verification_snapshot = response
+                if existing is None:
+                    session.add(
+                        IdempotencyRecord(
+                            actor_id=identity.user_id,
+                            operation=SUBMISSION_FINALIZE_OPERATION,
+                            idempotency_key=command.idempotency_key,
+                            request_hash=request_hash,
+                            response_snapshot=response,
+                            operation_status=IdempotencyOperationStatus.COMPLETED,
+                            expires_at=datetime.now(UTC) + timedelta(days=7),
+                        )
+                    )
+                else:
+                    existing.response_snapshot = response
+                    existing.operation_status = IdempotencyOperationStatus.COMPLETED
+                    existing.expires_at = datetime.now(UTC) + timedelta(days=7)
+                session.add(
+                    AuditLog(
+                        team_id=project.team_id,
+                        project_id=submission.project_id,
+                        actor_type="USER",
+                        actor_id=identity.user_id,
+                        action=SUBMISSION_FINALIZE_OPERATION,
+                        target_type="EXPERIMENT_SUBMISSION",
+                        target_id=submission.id,
+                        before_value={"status": SubmissionStatus.RECEIVED.value},
+                        after_value={
+                            "status": SubmissionStatus.UPLOAD_VERIFIED.value,
+                            "artifact_ids": [str(item.id) for item in artifacts],
+                            "verified_at": result.verified_at.isoformat()
+                            if result.verified_at
+                            else None,
+                        },
+                    )
+                )
+                return result
+        except IntegrityError as exc:
+            replay = self._replay_finalize_after_integrity(
+                actor_id=identity.user_id,
+                idempotency_key=command.idempotency_key,
+                request_hash=request_hash,
+                allow_failed=False,
+            )
+            if replay is not None:
+                return replay
+            raise ConflictError("Submission finalize 与现有数据冲突") from exc
+
+    def _authorize_finalize(
+        self, session: Session, submission: ExperimentSubmission, identity: RequestIdentity
+    ) -> Project:
+        if identity.project_id != submission.project_id:
+            raise AuthorizationError("MCP Token 未绑定 Submission 所属项目")
+        project = self._projects.require_project_member(
+            session,
+            project_id=submission.project_id,
+            user_id=identity.user_id,
+            team_id=identity.team_id,
+        )
+        if submission.submitted_by != identity.user_id:
+            raise AuthorizationError("只有 Submission 原提交者可以 finalize")
+        return project
+
+    def _require_unchanged_finalize_target(
+        self,
+        session: Session,
+        submission: ExperimentSubmission,
+        snapshot: _FinalizeSnapshot,
+        *,
+        lock_artifacts: bool = False,
+    ) -> list[Artifact]:
+        if submission.status is not SubmissionStatus.RECEIVED:
+            raise ConflictError("当前 Submission 状态不允许 finalize")
+        artifacts = (
+            self._submissions.list_artifacts_for_update(session, submission.id)
+            if lock_artifacts
+            else self._submissions.list_artifacts(session, submission.id)
+        )
+        prepared = self._validate_finalize_artifacts(artifacts)
+        if self._artifact_declaration_hash(prepared) != snapshot.declaration_hash:
+            raise ConflictError("Artifact 声明在 S3 复核期间已发生变化")
+        return artifacts
+
+    @staticmethod
+    def _validate_finalize_artifacts(
+        artifacts: Sequence[Artifact],
+    ) -> tuple[_PreparedArtifact, ...]:
+        if not artifacts or any(item.cloud_hash_verified for item in artifacts):
+            raise ConflictError("Submission 的 Artifact 验证状态不完整")
+        counts = {
+            artifact_type: sum(item.artifact_type is artifact_type for item in artifacts)
+            for artifact_type in ArtifactType
+        }
+        if counts[ArtifactType.CONFIG] != 1 or counts[ArtifactType.RESULT] != 1:
+            raise ConflictError("Submission 必须恰好关联一个 CONFIG 和一个 RESULT")
+        return tuple(
+            _PreparedArtifact(
+                id=item.id,
+                filename=item.filename,
+                artifact_type=item.artifact_type,
+                mime_type=item.mime_type,
+                size_bytes=item.size_bytes,
+                sha256=item.sha256,
+                s3_key=item.s3_key,
+            )
+            for item in artifacts
+        )
+
+    @staticmethod
+    def _artifact_declaration_hash(artifacts: Sequence[_PreparedArtifact]) -> str:
+        return _canonical_hash(
+            [
+                {
+                    "id": str(item.id),
+                    "filename": item.filename,
+                    "artifact_type": item.artifact_type.value,
+                    "mime_type": item.mime_type,
+                    "size_bytes": item.size_bytes,
+                    "sha256": item.sha256,
+                    "s3_key": item.s3_key,
+                }
+                for item in artifacts
+            ]
+        )
+
+    @staticmethod
+    def _verification_evidence(receipt: ArtifactVerificationReceipt) -> dict[str, Any]:
+        return {
+            "value": {
+                "content_length": receipt.content_length,
+                "content_type": receipt.content_type,
+                "checksum_sha256": receipt.checksum_sha256,
+                "etag": receipt.etag,
+                "version_id": receipt.version_id,
+                "last_modified": receipt.last_modified.isoformat()
+                if receipt.last_modified
+                else None,
+            },
+            "evidence_type": receipt.evidence_type.value,
+            "source": receipt.evidence_source,
+            "collected_at": receipt.verified_at.isoformat(),
+            "collection_tool": receipt.collection_tool,
+        }
+
+    @staticmethod
+    def _replay_finalize(record: IdempotencyRecord, request_hash: str) -> SubmissionFinalizeResult:
+        if record.request_hash != request_hash:
+            raise ConflictError("相同 Idempotency-Key 已用于不同的 finalize 请求")
+        if not record.response_snapshot:
+            raise ConflictError("finalize 幂等回执不完整")
+        return SubmissionFinalizeResult.model_validate(record.response_snapshot)
+
+    def _replay_finalize_after_integrity(
+        self,
+        *,
         actor_id: UUID,
         idempotency_key: UUID,
-        uploaded_files: Sequence[Mapping[str, Any]],
-    ) -> Mapping[str, Any]:
-        del submission_id, actor_id, idempotency_key, uploaded_files
-        raise FeatureUnavailableError("submission_finalize 当前阶段尚未实现")
+        request_hash: str,
+        allow_failed: bool,
+    ) -> SubmissionFinalizeResult | None:
+        with self._session_factory() as session:
+            record = self._governance.find_idempotency(
+                session,
+                actor_id=actor_id,
+                operation=SUBMISSION_FINALIZE_OPERATION,
+                idempotency_key=idempotency_key,
+            )
+            if record is None or record.request_hash != request_hash:
+                return None
+            if record.operation_status is IdempotencyOperationStatus.COMPLETED or (
+                allow_failed and record.operation_status is IdempotencyOperationStatus.FAILED
+            ):
+                return self._replay_finalize(record, request_hash)
+            return None
 
     @staticmethod
     def experiments_query(_: ExperimentQueryCommand) -> Sequence[ExperimentQueryResult]:

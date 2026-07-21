@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
-更新时间：2026-07-21  
-当前完成轮次：R9
-下一轮：R10 上传完成确认与 S3 对象复核
+更新时间：2026-07-22
+当前完成轮次：R10
+下一轮：R11 可恢复的确定性提交分析前半程
 
 本文档维护“每轮交付了什么”和“下一轮只做什么”。详细缺陷与修复过程见
 `docs/DEVELOPMENT_LOG.md`，当前代码结构见 `docs/ARCHITECTURE.md`。
@@ -21,10 +21,11 @@
 | R7 | 训练前检查持久化 | 完成 | 已认证、幂等、完整策略快照 Plan Check |
 | R8 | 计划审批和 Run Manifest | 完成 | Owner 最终决策与不可变 Manifest |
 | R9 | S3 草稿提交 | 完成 | RECEIVED 草稿、artifact 声明与短期 PUT URL |
-| R10 | 上传确认与 S3 复核 | 下一轮 | 只接通 finalize 和对象元数据验证 |
-| R11 | 可恢复提交分析与审核回执 | 排队 | 不属于下一轮 |
-| R12 | 正式实验确认、查询和向量候选 | 排队 | 不属于下一轮 |
-| R13 | Web 页面与 AWS 演示部署 | 排队 | 不属于下一轮 |
+| R10 | 上传确认与 S3 复核 | 完成 | UPLOAD_VERIFIED 与原子云端证据 |
+| R11 | 可恢复的确定性分析前半程 | 下一轮 | 解析、校验、查重和风险 |
+| R12 | 摘要、embedding 与审核回执 | 排队 | 不属于下一轮 |
+| R13 | 正式实验确认、查询和向量候选 | 排队 | 不属于下一轮 |
+| R14 | Web 页面与 AWS 演示部署 | 排队 | 不属于下一轮 |
 
 ## 已完成轮次
 
@@ -173,47 +174,72 @@ experiment_check_plan
 
 R9 没有实现 `submission_finalize`、S3 对象复核、提交分析、Bedrock 或正式实验确认。
 
-## 下一轮 R10：上传完成确认与 S3 对象复核
+### R10：上传完成确认与 S3 对象复核
+
+交付：
+
+* revision `20260722_06` 增加 Submission 上传复核人、时间、回执快照以及 Artifact
+  复核时间、S3 version ID 和结构化证据；状态列扩至 `VARCHAR(32)`。
+* MCP `submission_finalize` 只接受 `submission_id` 和 `idempotency_key`，调用者身份来自
+  项目绑定 Token，并要求 `submission:finalize` scope 和原提交者身份。
+* S3 适配器使用 `HEAD` 与 `ChecksumMode=ENABLED` 获取对象存在性、Content-Length、
+  Content-Type、ChecksumSHA256、ETag、VersionId 和观测时间。
+* 对象缺失或声明不匹配返回完整的可重试 FAILED 回执，Submission 保持 `RECEIVED`，
+  不写入任何部分 Artifact 验证结果。
+* 同一失败 key 可在修复对象后重新检查；相同 key 对不同 Submission 的异体请求冲突。
+* 全部对象通过后，一个 CockroachDB 事务原子写入 Artifact `CLOUD_VERIFIED` 证据、
+  Submission `UPLOAD_VERIFIED`、AuditLog 和 IdempotencyRecord。
+* 成功幂等重放直接返回原回执，不再次访问 S3；prepare 重放也不再签发上传 URL。
+* S3 服务暂时不可用时不绑定失败幂等结果，不修改 Submission 或 Artifact，可用相同 key
+  安全重试。
+* 迁移 downgrade 会先把新版 `UPLOAD_VERIFIED` 映射为 R9 可理解的 `RECEIVED`，再恢复
+  旧状态列长度，保证存在实际数据时也能回滚。
+* 103 项测试被收集，101 项默认执行全部通过；CockroachDB 隔离库验收已显式执行通过，
+  真实 AWS S3 PUT/HEAD 测试因未配置专用 Bucket 和凭据而默认跳过。
+
+R10 没有下载或解析 CONFIG/RESULT，不启动 LangGraph，不生成风险、摘要或 embedding，
+也不实现正式实验确认、查询和 Web。
+
+## 下一轮 R11：可恢复的确定性提交分析前半程
 
 ### 单一目标
 
-只实现 `submission_finalize`：根据数据库中的 artifact 声明复核 S3 对象，记录“上传已验证”
-状态。不在该轮解析配置和结果，不启动 LangGraph。
+只把 `UPLOAD_VERIFIED` Submission 推进到完成 `RISK_ANALYSIS` 的持久化中间状态。该轮
+聚焦分析状态、确定性校验和故障恢复，不生成最终审核回执。
 
 ### 本轮包含
 
-1. 为 finalize 定义专用输入/回执契约，不接受客户端 `actor_id`。
-2. 新增 `submission:finalize` scope，校验 Token 项目绑定、团队和成员资格。
-3. 只允许 finalize 当前 `RECEIVED` 且拥有完整 artifact 声明的 Submission。
-4. 对每个声明 object key 调用 S3 HEAD，比对 Content-Length、Content-Type 和
-   `ChecksumSHA256`；不信任客户端回传的文件元数据。
-5. 所有对象通过后，在单个 CockroachDB 事务中写入 Artifact 云端验证结果、
-   Submission 过渡状态、AuditLog 和幂等结果。
-6. 相同 key 重放返回原验证回执；异体请求冲突；部分缺失或不匹配不得留下
-   “部分已验证”状态。
-7. finalize 成功后，`submission_prepare` 的幂等重放不再为已完成上传的对象签发新 URL。
+1. 为 Submission 增加 `processing_step`、`workflow_status`、`processing_error` 和有界的
+   中间结果字段；每一步完成后独立持久化。
+2. 只允许从 `UPLOAD_VERIFIED` 启动；重复启动复用同一工作流状态，失败后从最后成功步骤
+   继续，不重复 S3 上传复核。
+3. 接通 CONFIG/RESULT 下载、大小限制、严格 YAML/JSON 解析和 Manifest/配置哈希校验。
+4. 基于项目、协议、状态和哈希做结构化重复检查；不调用向量检索替代结构化结论。
+5. 生成确定性风险清单，明确区分 `CLOUD_VERIFIED`、`LOCAL_ATTESTED` 和
+   `USER_PROVIDED`，LLM 不参与降级或覆盖规则。
+6. 复用固定工作流的前五个节点；恢复依据来自数据库持久状态，后续节点由 R12 继续。
 
 ### 明确不包含
 
-* 下载或解析 CONFIG/RESULT/LOG 内容。
-* LangGraph 分析、查重、风险分析、Bedrock、embedding 和人工审核。
-* 正式实验确认、查询、Web 页面和 AWS 部署。
+* `SUMMARY_GENERATION`、`EMBEDDING_GENERATION` 和 `NEEDS_REVIEW` 审核回执。
+* Bedrock、向量 embedding、正式实验确认和 Experiment/Metric/Memory 正式迁移。
+* Web 页面、自动训练、自动改代码和 AWS 部署。
 
 ### 验收条件
 
-* 对象缺失、超时或任一元数据不匹配时 finalize 失败，Submission 仍可安全重试。
-* 通过时所有 Artifact 均带 `CLOUD_VERIFIED` 的复核时间和来源。
-* 默认 fake S3 测试、CockroachDB 隔离库事务测试和可选真实 S3 验收分层运行。
-* R9 的 prepare、幂等、上传约束和全量旧功能保持回归通过。
+* 进程在前五个节点任一步后重启可从最后完成步骤继续，已保存步骤不会重复执行。
+* 文件解析、Manifest 校验或重复检查失败时保存稳定错误，修复后可安全重试。
+* 完成后持久化结构化解析、重复候选和风险结果，但状态不得伪装成 `NEEDS_REVIEW`。
+* R10 finalize、幂等、迁移和云端证据链保持全量回归通过。
 
 ## 后续队列
 
-后续轮次只表示顺序，不在 R10 同时开发：
+后续轮次只表示顺序，不在 R11 同时开发：
 
 ```text
-R11 Recoverable submission analysis + review receipt
-R12 Transactional experiment confirmation + structured/vector query
-R13 Four Web pages + AWS deployment + final demonstration
+R12 Summary/embedding generation + NEEDS_REVIEW receipt
+R13 Transactional experiment confirmation + structured/vector query
+R14 Four Web pages + AWS deployment + final demonstration
 ```
 
 ## 每轮更新要求

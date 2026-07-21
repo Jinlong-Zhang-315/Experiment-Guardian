@@ -15,7 +15,11 @@ from experiment_guardian.application.errors import (
 )
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.services import GuardianApplication
-from experiment_guardian.domain.contracts import PresignedUpload, SubmissionPrepareCommand
+from experiment_guardian.domain.contracts import (
+    PresignedUpload,
+    StoredObjectMetadata,
+    SubmissionPrepareCommand,
+)
 from experiment_guardian.domain.enums import TeamRole
 from experiment_guardian.infrastructure.models import (
     Artifact,
@@ -38,6 +42,9 @@ from tests.integration.test_plan_check_slice import command, initialize_policy
 class FakeStorage:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.inspection_calls: list[str] = []
+        self.objects: dict[str, StoredObjectMetadata] = {}
+        self.inspection_error: Exception | None = None
         self.fail = False
 
     def create_upload_url(
@@ -64,6 +71,27 @@ class FakeStorage:
             upload_url=f"https://upload.example.invalid/{len(self.calls)}",
             required_headers={"Content-Type": content_type},
         )
+
+    def inspect_object(self, *, object_key: str) -> StoredObjectMetadata | None:
+        self.inspection_calls.append(object_key)
+        if self.inspection_error is not None:
+            raise self.inspection_error
+        return self.objects.get(object_key)
+
+    def accept_declared_uploads(self) -> None:
+        for call in self.calls:
+            object_key = str(call["object_key"])
+            self.objects[object_key] = StoredObjectMetadata(
+                content_length=int(call["content_length"]),
+                content_type=str(call["content_type"]),
+                checksum_sha256=str(call["sha256"]),
+                checksum_type="FULL_OBJECT",
+                etag="test-etag",
+                version_id="test-version",
+                last_modified=datetime(2026, 7, 22, tzinfo=UTC),
+                observed_at=datetime(2026, 7, 22, tzinfo=UTC),
+                evidence_source=f"s3://test-bucket/{object_key}",
+            )
 
 
 def build_submission_service(

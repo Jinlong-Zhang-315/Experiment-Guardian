@@ -1,6 +1,5 @@
 """可选的真实 AWS S3 预签名上传兼容性验收。"""
 
-import base64
 import hashlib
 import os
 from uuid import uuid4
@@ -25,7 +24,6 @@ def test_presigned_put_persists_declared_checksum_and_content_type() -> None:
 
     payload = b'{"integration":true}'
     digest = hashlib.sha256(payload).hexdigest()
-    expected_checksum = base64.b64encode(bytes.fromhex(digest)).decode("ascii")
     object_key = f"integration-tests/submission-prepare/{uuid4()}.json"
     storage = S3ArtifactStorage(bucket=settings.s3_bucket, region=settings.aws_region)
     client = boto3.client("s3", region_name=settings.aws_region)
@@ -45,13 +43,12 @@ def test_presigned_put_persists_declared_checksum_and_content_type() -> None:
             timeout=30,
         )
         response.raise_for_status()
-        metadata = client.head_object(
-            Bucket=settings.s3_bucket,
-            Key=object_key,
-            ChecksumMode="ENABLED",
-        )
-        assert metadata["ContentLength"] == len(payload)
-        assert metadata["ContentType"] == "application/json"
-        assert metadata["ChecksumSHA256"] == expected_checksum
+        metadata = storage.inspect_object(object_key=object_key)
+        assert metadata is not None
+        assert metadata.content_length == len(payload)
+        assert metadata.content_type == "application/json"
+        assert metadata.checksum_sha256 == digest
+        assert metadata.evidence_source == f"s3://{settings.s3_bucket}/{object_key}"
+        assert metadata.observed_at is not None
     finally:
         client.delete_object(Bucket=settings.s3_bucket, Key=object_key)

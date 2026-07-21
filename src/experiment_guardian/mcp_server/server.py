@@ -19,6 +19,7 @@ from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanCommand,
     ExperimentQueryCommand,
     LocalAttestation,
+    SubmissionFinalizeCommand,
     SubmissionPrepareCommand,
 )
 from experiment_guardian.domain.enums import ConfigFormat, ExperimentStatus, SubmittedRunStatus
@@ -122,18 +123,16 @@ def submission_prepare(
 def submission_finalize(
     submission_id: str,
     idempotency_key: str,
-    uploaded_files: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """确认文件上传完成并启动可恢复的提交分析工作流。"""
+    """复核已声明的 S3 对象；本阶段不启动提交分析工作流。"""
 
     identity = get_identity_provider().current_identity()
-    result = get_guardian_use_cases().submission_finalize(
+    command = SubmissionFinalizeCommand(
         submission_id=UUID(submission_id),
-        actor_id=identity.user_id,
         idempotency_key=UUID(idempotency_key),
-        uploaded_files=uploaded_files,
     )
-    return dict(result)
+    result = get_guardian_use_cases().submission_finalize(command, identity)
+    return result.model_dump(mode="json")
 
 
 @mcp.tool()

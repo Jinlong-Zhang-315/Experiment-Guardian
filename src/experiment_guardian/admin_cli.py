@@ -97,6 +97,7 @@ def _issue_mcp_token(args: argparse.Namespace) -> dict[str, Any]:
                 "manifest:create",
                 "project:read",
                 "submission:create",
+                "submission:finalize",
             },
             lifetime_days=args.ttl_days,
             created_by=user.id,

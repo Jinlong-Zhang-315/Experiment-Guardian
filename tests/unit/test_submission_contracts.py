@@ -6,7 +6,12 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from experiment_guardian.domain.contracts import SubmissionPrepareCommand
+from experiment_guardian.domain.contracts import (
+    ArtifactVerificationIssue,
+    ArtifactVerificationReceipt,
+    SubmissionFinalizeResult,
+    SubmissionPrepareCommand,
+)
 
 
 def artifact(
@@ -116,3 +121,58 @@ def test_total_file_size_and_optional_file_counts_are_limited() -> None:
     )
     with pytest.raises(ValidationError, match="NOTE"):
         SubmissionPrepareCommand.model_validate(duplicate_note)
+
+
+def test_finalize_result_enforces_pass_and_retryable_failure_states() -> None:
+    submission_id, project_id, artifact_id = uuid4(), uuid4(), uuid4()
+    receipt = ArtifactVerificationReceipt(
+        artifact_id=artifact_id,
+        filename="config.yaml",
+        artifact_type="CONFIG",
+        content_length=100,
+        content_type="application/yaml",
+        checksum_sha256="a" * 64,
+        verified_at=datetime(2026, 7, 22, tzinfo=UTC),
+        evidence_source="s3://bucket/key",
+    )
+    passed = SubmissionFinalizeResult(
+        submission_id=submission_id,
+        project_id=project_id,
+        verification_result="PASS",
+        status="UPLOAD_VERIFIED",
+        retryable=False,
+        artifact_verifications=[receipt],
+        verified_at=datetime(2026, 7, 22, tzinfo=UTC),
+    )
+    issue = ArtifactVerificationIssue(
+        artifact_id=artifact_id,
+        filename="config.yaml",
+        code="OBJECT_MISSING",
+        field="object",
+        expected="PRESENT",
+        actual="MISSING",
+        message="missing",
+        evidence_source="object_key:key",
+        observed_at=datetime(2026, 7, 22, tzinfo=UTC),
+    )
+    failed = SubmissionFinalizeResult(
+        submission_id=submission_id,
+        project_id=project_id,
+        verification_result="FAILED",
+        status="RECEIVED",
+        retryable=True,
+        issues=[issue],
+    )
+
+    assert passed.verified_at is not None
+    assert failed.retryable
+    with pytest.raises(ValidationError, match="PASS"):
+        SubmissionFinalizeResult(
+            submission_id=submission_id,
+            project_id=project_id,
+            verification_result="PASS",
+            status="RECEIVED",
+            retryable=False,
+            artifact_verifications=[receipt],
+            verified_at=datetime(2026, 7, 22, tzinfo=UTC),
+        )

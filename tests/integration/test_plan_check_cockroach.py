@@ -32,13 +32,17 @@ from experiment_guardian.domain.contracts import (
     LocalAttestation,
     LocalEnvironment,
     PresignedUpload,
+    StoredObjectMetadata,
+    SubmissionFinalizeCommand,
     SubmissionPrepareCommand,
 )
 from experiment_guardian.domain.enums import (
     ApprovalDecision,
     ConfigFormat,
     EvidenceType,
+    SubmissionStatus,
     TeamRole,
+    UploadVerificationResult,
 )
 from experiment_guardian.infrastructure.models import (
     ApprovalRecord,
@@ -68,6 +72,8 @@ class _FakeStorage:
 
     def __init__(self) -> None:
         self.call_count = 0
+        self.declarations: dict[str, tuple[int, str, str]] = {}
+        self.objects: dict[str, StoredObjectMetadata] = {}
 
     def create_upload_url(
         self,
@@ -78,12 +84,30 @@ class _FakeStorage:
         sha256: str,
         expires_in: int,
     ) -> PresignedUpload:
-        del object_key, content_length, sha256, expires_in
+        del expires_in
         self.call_count += 1
+        self.declarations[object_key] = (content_length, content_type, sha256)
         return PresignedUpload(
             upload_url=f"https://upload.example.invalid/{self.call_count}",
             required_headers={"Content-Type": content_type},
         )
+
+    def inspect_object(self, *, object_key: str) -> StoredObjectMetadata | None:
+        return self.objects.get(object_key)
+
+    def accept_declared_uploads(self) -> None:
+        for object_key, (content_length, content_type, sha256) in self.declarations.items():
+            self.objects[object_key] = StoredObjectMetadata(
+                content_length=content_length,
+                content_type=content_type,
+                checksum_sha256=sha256,
+                checksum_type="FULL_OBJECT",
+                etag="cockroach-test-etag",
+                version_id="cockroach-test-version",
+                last_modified=COLLECTED_AT,
+                observed_at=COLLECTED_AT,
+                evidence_source=f"s3://cockroach-test/{object_key}",
+            )
 
 
 def _run_alembic(database_url: str, *arguments: str) -> None:
@@ -161,8 +185,54 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             "experiment_submissions",
             "artifacts",
         } <= set(inspect(test_engine).get_table_names())
+        assert {
+            "upload_verified_at",
+            "upload_verified_by",
+            "upload_verification_snapshot",
+        } <= {
+            column["name"] for column in inspect(test_engine).get_columns("experiment_submissions")
+        }
+        status_column = next(
+            column
+            for column in inspect(test_engine).get_columns("experiment_submissions")
+            if column["name"] == "status"
+        )
+        assert status_column["type"].length == 32
+        assert {"verified_at", "verification_evidence", "s3_version_id"} <= {
+            column["name"] for column in inspect(test_engine).get_columns("artifacts")
+        }
         test_engine.dispose()
         test_engine = None
+        _run_alembic(rendered_test_url, "downgrade", "20260721_05")
+        revision_05_engine = create_engine(test_url)
+        try:
+            assert not (
+                {
+                    "upload_verified_at",
+                    "upload_verified_by",
+                    "upload_verification_snapshot",
+                }
+                & {
+                    column["name"]
+                    for column in inspect(revision_05_engine).get_columns("experiment_submissions")
+                }
+            )
+            status_column = next(
+                column
+                for column in inspect(revision_05_engine).get_columns("experiment_submissions")
+                if column["name"] == "status"
+            )
+            assert status_column["type"].length == 12
+            assert not (
+                {"verified_at", "verification_evidence", "s3_version_id"}
+                & {
+                    column["name"]
+                    for column in inspect(revision_05_engine).get_columns("artifacts")
+                }
+            )
+        finally:
+            revision_05_engine.dispose()
+        _run_alembic(rendered_test_url, "upgrade", "head")
         _run_alembic(rendered_test_url, "downgrade", "20260721_03")
         downgrade_engine = create_engine(test_url)
         try:
@@ -229,7 +299,14 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             team_id=team_id,
             token_id=uuid4(),
             project_id=initialized.project_id,
-            scopes=frozenset({"experiment:check", "manifest:create", "submission:create"}),
+            scopes=frozenset(
+                {
+                    "experiment:check",
+                    "manifest:create",
+                    "submission:create",
+                    "submission:finalize",
+                }
+            ),
         )
 
         content = "dataset:\n  protocol: 40/20\nmodel:\n  backbone: shift-gcn\n  fusion: 0.3\n"
@@ -317,11 +394,33 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         assert submission_replay.artifact_uploads[0].upload_url != (
             submission.artifact_uploads[0].upload_url
         )
+        storage.accept_declared_uploads()
+        finalized = guardian.submission_finalize(
+            SubmissionFinalizeCommand(
+                submission_id=submission.submission_id,
+                idempotency_key=uuid4(),
+            ),
+            identity,
+        )
+        assert finalized.verification_result is UploadVerificationResult.PASS
+        assert finalized.status is SubmissionStatus.UPLOAD_VERIFIED
+        prepared_after_finalize = guardian.submission_prepare(submission_request, identity)
+        assert prepared_after_finalize.status is SubmissionStatus.UPLOAD_VERIFIED
+        assert prepared_after_finalize.artifact_uploads == []
         with factory() as session:
             assert session.scalar(select(func.count()).select_from(ApprovalRecord)) == 1
             assert session.scalar(select(func.count()).select_from(RunManifest)) == 1
             assert session.scalar(select(func.count()).select_from(ExperimentSubmission)) == 1
             assert session.scalar(select(func.count()).select_from(Artifact)) == 2
+            persisted_submission = session.get(ExperimentSubmission, submission.submission_id)
+            assert persisted_submission is not None
+            assert persisted_submission.status is SubmissionStatus.UPLOAD_VERIFIED
+            assert persisted_submission.upload_verification_snapshot is not None
+            persisted_artifacts = session.scalars(select(Artifact)).all()
+            assert all(artifact.cloud_hash_verified for artifact in persisted_artifacts)
+            assert all(
+                artifact.verification_evidence is not None for artifact in persisted_artifacts
+            )
 
         test_engine.dispose()
         test_engine = None

@@ -2,7 +2,7 @@
 
 Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的治理系统。本仓库当前
 已完成 P0 基础骨架、已认证的正式上下文读取、可持久化的训练前确定性配置检查、
-Owner 审批、不可变 Run Manifest 和 S3 实验草稿上传准备。
+Owner 审批、不可变 Run Manifest、S3 实验草稿上传准备和上传对象复核。
 它不保证实验一定正确，也不声称能够
 完整验证真实训练行为。
 
@@ -22,7 +22,9 @@ Owner 审批、不可变 Run Manifest 和 S3 实验草稿上传准备。
 * `run_manifest_create` 只从历史 Plan Check 快照生成版本化、可重复计算哈希的 Manifest；
 * `submission_prepare` 原子创建 `RECEIVED` 草稿和 artifact 声明，返回绑定
   Content-Type 与 SHA-256 checksum 的短期 S3 PUT 地址；
-* 五个收敛的 Alembic 迁移和可信本地管理 CLI；
+* `submission_finalize` 通过 S3 HEAD 复核对象存在性、大小、Content-Type 和
+  SHA-256 checksum，原子写入 `UPLOAD_VERIFIED` 与 `CLOUD_VERIFIED` 证据；
+* 六个收敛的 Alembic 迁移和可信本地管理 CLI；
 * 提交分析 LangGraph 的固定节点顺序；
 * Alembic、pytest、Ruff 和 mypy 基础配置。
 
@@ -41,12 +43,15 @@ Owner 审批、不可变 Run Manifest 和 S3 实验草稿上传准备。
 
 MCP 工具不接受客户端提交的用户 UUID，调用者来自服务端验证的项目绑定 Token。当前
 `project_get_context`、`experiment_check_plan`、`run_manifest_create` 和
-`submission_prepare` 已接入 CockroachDB；其他两个工具
+`submission_prepare`、`submission_finalize` 已接入 CockroachDB；`experiments_query`
 会明确返回尚未实现，不会伪造数据。
-S3 对象复核、提交分析工作流持久化、Bedrock 和四个 Web 页面尚未实现。
+提交分析工作流持久化、Bedrock 和四个 Web 页面尚未实现。
 
-提交分析图可从最后成功的分析步骤恢复；`NEEDS_REVIEW` 是分析图的终态交接，并非
-LangGraph 原生 `interrupt()`。用户确认由独立、幂等的数据库事务完成。
+`UPLOAD_VERIFIED` 仅表示云端读取到的 S3 对象元数据与数据库声明一致，不表示配置、
+训练过程或实验结论已经验证正确。finalize 不下载或解析文件，也不会自动启动分析图。
+
+提交分析图目前只有固定拓扑，尚未接通持久化恢复。后续的 `NEEDS_REVIEW` 将作为分析图
+的终态交接，而非 LangGraph 原生 `interrupt()`；用户确认仍由独立幂等事务完成。
 
 ## 本地环境
 
@@ -73,6 +78,7 @@ alembic upgrade head
 `20260721_01` 创建 10 张基础表，`20260721_02` 增加 `plan_checks`，`20260721_03`
 补齐历史策略和原始配置快照，`20260721_04` 增加 `approval_records` 和
 `run_manifests`，`20260721_05` 增加 `experiment_submissions` 和 `artifacts`。
+`20260722_06` 增加上传复核证据字段，并扩展 Submission 状态列。
 后续表按开发阶段通过新 revision 添加，不提前冻结。
 
 ## 初始化与检查链路
@@ -105,9 +111,11 @@ experiment-guardian-admin issue-mcp-token \
 ```
 
 stdio MCP Server 从 `MCP_ACCESS_TOKEN` 环境变量读取凭据。新签发的 MCP Token 同时具备
-`project:read`、`experiment:check`、`manifest:create` 和 `submission:create` scope；
+`project:read`、`experiment:check`、`manifest:create`、`submission:create` 和
+`submission:finalize` scope；
 旧 Token 需要重新签发。使用 `submission_prepare` 前还需配置 `AWS_REGION`、
-`S3_BUCKET` 和 AWS SDK 凭据；预签名 URL 不写入数据库。
+`S3_BUCKET` 和 AWS SDK 凭据；`submission_finalize` 使用同一配置读取对象元数据。
+预签名 URL 不写入数据库。
 新签发的 Owner API Token 包含 `plan:approve`；旧 Owner Token 也需要轮换后才能审批。
 原始 Token 只在签发时显示一次，数据库只保存 SHA-256，日志和审计记录不得包含原始值。
 
@@ -147,7 +155,7 @@ src/experiment_guardian/
 ├── infrastructure/  # CockroachDB、S3、Bedrock 等适配器
 ├── api/             # FastAPI 路由与 HTTP 协议转换
 ├── mcp_server/      # 面向本地 Agent 的六个 MCP 工具
-└── workflows/       # 可恢复的提交分析 LangGraph
+└── workflows/       # 提交分析 LangGraph 固定拓扑，持久化恢复尚未接通
 ```
 
 项目维护文档：
@@ -171,7 +179,7 @@ Manifest 和 Submission 事务链路时，
 RUN_COCKROACH_INTEGRATION=1 pytest -q tests/integration/test_plan_check_cockroach.py
 ```
 
-配置独立测试 Bucket 和 AWS 凭据后，可显式验证真实预签名 PUT：
+配置独立测试 Bucket 和 AWS 凭据后，可显式验证真实预签名 PUT 与对象复核：
 
 ```bash
 RUN_S3_INTEGRATION=1 pytest -q tests/integration/test_s3_storage.py
@@ -179,6 +187,6 @@ RUN_S3_INTEGRATION=1 pytest -q tests/integration/test_s3_storage.py
 
 ## 下一开发步
 
-1. 只实现 `submission_finalize` 和 S3 HEAD/checksum 复核；
-2. 缺失、大小、Content-Type 或 SHA-256 不一致时不启动分析；
-3. 分析工作流、Bedrock、正式实验确认和 Web 页面仍保持在后续轮次。
+1. 只接通可恢复的确定性分析前半程，不提前生成审核回执；
+2. 从 `UPLOAD_VERIFIED` 推进配置解析、Manifest 校验、结构化查重和确定性风险；
+3. Bedrock、embedding、审核回执、正式实验确认和 Web 继续按独立轮次推进。

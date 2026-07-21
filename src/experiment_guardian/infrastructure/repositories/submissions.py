@@ -18,11 +18,32 @@ class SqlAlchemySubmissionRepository:
         return session.get(ExperimentSubmission, submission_id)
 
     @staticmethod
+    def get_submission_for_update(
+        session: Session, submission_id: UUID
+    ) -> ExperimentSubmission | None:
+        return session.scalar(
+            select(ExperimentSubmission)
+            .where(ExperimentSubmission.id == submission_id)
+            .with_for_update()
+        )
+
+    @staticmethod
     def list_artifacts(session: Session, submission_id: UUID) -> list[Artifact]:
         return list(
             session.scalars(
                 select(Artifact)
                 .where(Artifact.submission_id == submission_id)
                 .order_by(Artifact.artifact_type, Artifact.filename)
+            ).all()
+        )
+
+    @staticmethod
+    def list_artifacts_for_update(session: Session, submission_id: UUID) -> list[Artifact]:
+        return list(
+            session.scalars(
+                select(Artifact)
+                .where(Artifact.submission_id == submission_id)
+                .order_by(Artifact.artifact_type, Artifact.filename)
+                .with_for_update()
             ).all()
         )
