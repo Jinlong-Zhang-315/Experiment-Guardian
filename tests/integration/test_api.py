@@ -27,3 +27,4 @@ async def test_capabilities_exposes_exactly_six_mcp_tools() -> None:
     assert response.status_code == 200
     assert len(response.json()["mcp_tools"]) == 6
     assert response.json()["plan_results"] == ["PASS", "NEEDS_APPROVAL", "BLOCKED"]
+    assert "不代表" in response.json()["verification_disclaimer"]

@@ -31,6 +31,29 @@ class ProtectionLevel(StrEnum):
     EXPERIMENT_VARIABLE = "EXPERIMENT_VARIABLE"
 
 
+class ConstraintSource(StrEnum):
+    """结构化约束来自用户明确表达，还是模型基于上下文推断。"""
+
+    EXPLICIT = "EXPLICIT"
+    INFERRED = "INFERRED"
+
+
+class VerificationStatus(StrEnum):
+    """候选事实或约束的人工确认生命周期。"""
+
+    PENDING = "PENDING"
+    CONFIRMED = "CONFIRMED"
+    REJECTED = "REJECTED"
+    SUPERSEDED = "SUPERSEDED"
+
+
+class ExperimentMode(StrEnum):
+    """正式复现与独立探索必须在意图创建时明确区分。"""
+
+    FORMAL = "FORMAL"
+    EXPLORATORY = "EXPLORATORY"
+
+
 class CheckResult(StrEnum):
     PASS = "PASS"
     NEEDS_APPROVAL = "NEEDS_APPROVAL"

@@ -14,16 +14,18 @@ from experiment_guardian.core.config import get_settings
 from experiment_guardian.domain.contracts import (
     ConfigurationDocument,
     ExperimentCheckPlanCommand,
+    ExperimentQueryCommand,
     LocalAttestation,
 )
-from experiment_guardian.domain.enums import ConfigFormat
+from experiment_guardian.domain.enums import ConfigFormat, ExperimentStatus
 
 settings = get_settings()
 mcp = FastMCP(
     name="experiment-guardian",
     instructions=(
-        "读取团队正式实验上下文、执行训练前配置检查，并提交可追溯的实验草稿。"
-        "工具返回的 LOCAL_ATTESTED 字段仅代表本地 Agent 声明。"
+        "读取经过用户确认的团队实验上下文、执行训练前配置一致性检查，并提交可追溯的"
+        "实验草稿。系统提高一致性、可追溯性和风险可见性，不保证实验行为或结果正确。"
+        "LOCAL_ATTESTED 字段仅代表本地 Agent 声明。"
     ),
     host=settings.mcp_host,
     port=settings.mcp_port,
@@ -33,12 +35,12 @@ mcp = FastMCP(
 
 @mcp.tool()
 def project_get_context(project_id: str, actor_id: str) -> dict[str, Any]:
-    """读取当前正式上下文、Active 实验意图、参数约束和对应版本。"""
+    """读取当前正式上下文、Active 意图、已确认约束及其不可省略的版本信息。"""
 
     result = get_guardian_use_cases().project_get_context(
         project_id=UUID(project_id), actor_id=UUID(actor_id)
     )
-    return dict(result)
+    return result.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -53,7 +55,7 @@ def experiment_check_plan(
     git_commit: str,
     local_attestation: dict[str, Any],
 ) -> dict[str, Any]:
-    """检查 YAML/JSON 配置，返回参数 diff、风险和训练前检查结论。"""
+    """检查配置与正式意图的一致性；该结果不等于真实训练行为已验证正确。"""
 
     payload = ExperimentCheckPlanCommand(
         project_id=UUID(project_id),
@@ -126,18 +128,31 @@ def experiments_query(
     project_id: str,
     actor_id: str,
     query: str,
+    protocol: str,
+    model_name: str | None = None,
+    seed: int | None = None,
+    include_historical: bool = False,
     top_k: int = 10,
 ) -> list[dict[str, Any]]:
-    """只查询正式实验和已确认记忆，并返回可追溯来源。"""
+    """先按项目/状态/协议等过滤正式记录，再将向量结果作为候选证据返回。"""
 
     safe_top_k = max(1, min(top_k, 50))
-    result = get_guardian_use_cases().experiments_query(
+    statuses = {ExperimentStatus.COMPLETED, ExperimentStatus.FAILED}
+    if include_historical:
+        statuses.update({ExperimentStatus.DEPRECATED, ExperimentStatus.SUPERSEDED})
+    command = ExperimentQueryCommand(
         project_id=UUID(project_id),
         actor_id=UUID(actor_id),
         query=query,
+        protocol=protocol,
+        model_name=model_name,
+        seed=seed,
+        statuses=statuses,
+        include_historical=include_historical,
         top_k=safe_top_k,
     )
-    return [dict(item) for item in result]
+    result = get_guardian_use_cases().experiments_query(command)
+    return [item.model_dump(mode="json") for item in result]
 
 
 def run() -> None:

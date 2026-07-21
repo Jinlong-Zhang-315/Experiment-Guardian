@@ -17,7 +17,10 @@
 
 ## 1.1 产品定义
 
-Experiment Guardian 是一个面向深度学习实验室团队的实验记忆与意图防护系统。
+Experiment Guardian 是一个提高实验一致性、可追溯性和风险可见性的治理系统。
+
+系统不保证实验一定正确，也不声称能够完整验证真实训练行为。配置检查、风险分析和
+向量检索均为治理证据，不能替代用户确认或确定性实验复现。
 
 系统通过 MCP 与用户本地的 Coding Agent、实验 Agent 或命令行工具连接，使本地 Agent 能够：
 
@@ -261,13 +264,24 @@ Viewer 不能提交、确认或修改数据。
 * 有版本号；
 * 有创建人；
 * 有确认人；
+* 有确认时间；
 * 有生效时间；
+* 有修改原因；
 * 保留历史版本；
-* 不允许 Agent 自动覆盖。
+* 不允许云端或本地 Agent 自动覆盖。
 
 ## 5.2 实验意图
 
 实验意图描述一次计划实验准备验证什么。
+
+云端 Agent 对自然语言的解释首先生成候选结果，必须分为：
+
+* 用户明确表达的约束（`EXPLICIT`）；
+* 模型推断的约束（`INFERRED`）；
+* 尚未解决的歧义；
+* 面向用户的简短意图回执。
+
+候选结果在用户确认前不能成为 Active Experiment Intent 或正式参数约束。
 
 必须包含：
 
@@ -288,9 +302,23 @@ Viewer 不能提交、确认或修改数据。
 
 只有 `ACTIVE` 状态的实验意图可以生成正式 Run Manifest。
 
+实验意图必须标记为 `FORMAL` 或 `EXPLORATORY`。探索意图不能静默修改正式上下文，
+探索结果不能自动替代当前正式 baseline 或主线。
+
 ## 5.3 参数约束
 
 参数约束分为三类。
+
+每条约束还必须保存：
+
+* 来源类型：`EXPLICIT` 或 `INFERRED`；
+* 确认状态：`PENDING`、`CONFIRMED`、`REJECTED` 或 `SUPERSEDED`；
+* 原始用户消息；
+* 可选推断依据和置信度；
+* 确认人和确认时间。
+
+只有 `CONFIRMED` 约束可以产生强制 `BLOCKED`。待确认的明确约束或推断约束只能产生
+提醒或 `NEEDS_APPROVAL`；`REJECTED` 和 `SUPERSEDED` 约束不得影响新的检查。
 
 ### LOCKED
 
@@ -463,16 +491,17 @@ NEEDS_REVIEW → REJECTED
 训练前检查返回：
 
 * `PASS`
-* `WARNING`
+* `NEEDS_APPROVAL`
 * `BLOCKED`
 
 ### PASS
 
 所有变化符合当前实验意图和项目约束。
 
-### WARNING
+### NEEDS_APPROVAL
 
-存在需要用户注意的变化，但不违反 Locked 约束。
+修改了已确认的 `APPROVAL_REQUIRED` 参数，命中尚未确认的候选约束，或存在需要用户
+决策的本地声明风险。Owner 批准前不能生成 Run Manifest。
 
 ### BLOCKED
 
@@ -616,7 +645,7 @@ CockroachDB Cloud Managed MCP Server 用于满足比赛工具要求，并支持�
 
 ### 输出
 
-* `PASS`、`WARNING` 或 `BLOCKED`
+* `PASS`、`NEEDS_APPROVAL` 或 `BLOCKED`
 * 参数级差异；
 * 违反的约束；
 * 缺失字段；
@@ -630,7 +659,8 @@ CockroachDB Cloud Managed MCP Server 用于满足比赛工具要求，并支持�
 
 ### 强制规则
 
-只要任意 `LOCKED` 参数发生变化，结果必须为 `BLOCKED`。
+只要任意已确认的 `LOCKED` 参数发生变化，结果必须为 `BLOCKED`。未确认的推断规则
+不得产生强制阻断。
 
 ---
 
@@ -669,7 +699,7 @@ CockroachDB Cloud Managed MCP Server 用于满足比赛工具要求，并支持�
 
 ### 创建条件
 
-* 检查结果不能为 `BLOCKED`；
+* 检查结果为 `PASS` 且无需审批，或者 `NEEDS_APPROVAL` 已由 Owner 批准；
 * 实验意图必须为 `ACTIVE`；
 * 必填字段必须完整；
 * 配置哈希必须与检查时一致。
@@ -849,9 +879,12 @@ CockroachDB Cloud Managed MCP Server 用于满足比赛工具要求，并支持�
 * 用户说明是否存在明显歧义；
 * 是否使用了已废弃方案。
 
-语义规则只能提高风险等级或生成 Warning。
+语义规则只能生成候选意图、解释风险或提高风险等级。
 
 语义规则不能降低确定性规则产生的 Blocked 结果。
+
+无法可靠映射为配置路径的自然语言不得直接生成 Locked 规则，必须保留为未解决歧义并
+等待用户确认。
 
 ---
 
@@ -981,6 +1014,10 @@ CockroachDB Cloud Managed MCP Server 用于满足比赛工具要求，并支持�
 * 请求 Owner 审批。
 
 用户不应被要求重新填写本地 Agent 已经可靠采集的信息。
+
+回执默认只突出实验目标、允许变化、关键结果和最高风险。LOW/MEDIUM 详情可以折叠，
+HIGH/CRITICAL 风险必须展开并显示原值、新值、来源和影响。CRITICAL 风险不能通过普通
+确认绕过。
 
 ---
 
@@ -1175,20 +1212,39 @@ MVP 至少需要以下表。
 * active_branch
 * active_config
 * deprecated_items
+* key_decisions
+* change_reason
 * status
+* supersedes_context_id
+* created_by
 * confirmed_by
+* confirmed_at
+* effective_at
 * created_at
 
 ## 15.6 `protected_parameters`
 
 * id
 * project_id
+* context_id
 * context_version
+* intent_id
+* intent_version
+* version
+* supersedes_constraint_id
 * parameter_path
 * protection_level
 * expected_value
 * allowed_range
 * reason
+* source_type
+* verification_status
+* original_message
+* inference_basis
+* confidence
+* created_by
+* confirmed_by
+* confirmed_at
 * active
 * created_at
 
@@ -1196,7 +1252,11 @@ MVP 至少需要以下表。
 
 * id
 * project_id
+* context_id
+* context_version
 * version
+* supersedes_intent_id
+* experiment_mode
 * name
 * objective
 * hypothesis
@@ -1204,9 +1264,19 @@ MVP 至少需要以下表。
 * controlled_variables
 * expected_outputs
 * acceptance_criteria
+* source_type
+* verification_status
+* original_message
+* inference_basis
+* confidence
+* unresolved_ambiguities
+* intent_receipt
 * status
 * created_by
 * confirmed_by
+* confirmed_at
+* activated_by
+* activated_at
 * created_at
 
 ## 15.8 `plan_checks`
@@ -1214,13 +1284,25 @@ MVP 至少需要以下表。
 * id
 * project_id
 * intent_id
+* context_id
+* context_version
+* intent_version
+* experiment_mode
 * requester_id
+* idempotency_key
+* request_hash
 * input_config_hash
 * git_commit
+* command
+* local_attestation
+* constraint_snapshot
 * planned_changes
-* result
+* check_result
+* approval_status
 * risk_level
 * report
+* approved_by
+* approved_at
 * created_at
 
 ## 15.9 `run_manifests`
@@ -1228,9 +1310,15 @@ MVP 至少需要以下表。
 * id
 * project_id
 * intent_id
+* plan_check_id
+* approval_record_id
+* context_id
 * context_version
 * intent_version
+* experiment_mode
+* idempotency_key
 * config_s3_key
+* config_snapshot
 * config_hash
 * git_branch
 * git_commit
@@ -1241,6 +1329,7 @@ MVP 至少需要以下表。
 * checkpoint
 * command
 * environment
+* evidence_snapshot
 * manifest_hash
 * created_by
 * created_at
@@ -1252,23 +1341,35 @@ MVP 至少需要以下表。
 * run_manifest_id
 * submitted_by
 * source_agent
+* idempotency_key
+* request_hash
+* manifest_hash
+* evidence_snapshot
 * status
+* processing_step
+* processing_error
+* workflow_checkpoint
 * local_summary
+* generated_summary
 * risk_level
 * receipt
+* embedding_payload
 * created_at
 * updated_at
 
-## 15.11 `submission_artifacts`
+## 15.11 `artifacts`
 
 * id
 * submission_id
+* experiment_id
 * filename
 * mime_type
 * size_bytes
 * sha256
 * s3_key
-* uploaded_at
+* artifact_type
+* cloud_hash_verified
+* created_at
 
 ## 15.12 `submission_risks`
 
@@ -1277,12 +1378,23 @@ MVP 至少需要以下表。
 * risk_type
 * severity
 * field_path
+* previous_value
 * current_value
 * expected_value
 * rule_id
 * message
+* impact
+* evidence_type
+* evidence_source
+* collected_at
+* collection_tool
+* constraint_source
+* constraint_status
+* inference_basis
+* confidence
 * recommendation
 * blocking
+* resolved
 * created_at
 
 ## 15.13 `experiments`
@@ -1291,6 +1403,12 @@ MVP 至少需要以下表。
 * project_id
 * intent_id
 * run_manifest_id
+* submission_id
+* project_context_id
+* project_context_version
+* intent_version
+* experiment_mode
+* eligible_as_baseline
 * name
 * model_name
 * dataset
@@ -1324,6 +1442,11 @@ MVP 至少需要以下表。
 * id
 * project_id
 * experiment_id
+* protocol
+* model_name
+* seed
+* experiment_status
+* current_valid
 * memory_type
 * content
 * embedding
@@ -1332,17 +1455,20 @@ MVP 至少需要以下表。
 * source_id
 * created_at
 
-## 15.16 `agent_runs`
+## 15.16 `approval_records`
 
 * id
 * project_id
-* workflow_type
-* thread_id
-* current_node
+* target_type
+* target_id
+* approval_type
 * status
-* checkpoint
-* started_at
-* updated_at
+* requested_by
+* decided_by
+* request_reason
+* decision_reason
+* created_at
+* decided_at
 
 ## 15.17 `audit_logs`
 
@@ -1357,6 +1483,19 @@ MVP 至少需要以下表。
 * before_value
 * after_value
 * created_at
+
+## 15.18 `idempotency_records`
+
+* id
+* actor_id
+* operation
+* idempotency_key
+* request_hash
+* response_snapshot
+* operation_status
+* expires_at
+* created_at
+* updated_at
 
 ---
 
@@ -1460,7 +1599,12 @@ MVP 推荐：
 
 * team_id 或 project_id 过滤；
 * verification_status 过滤；
+* 实验状态过滤；
+* protocol 等实验条件过滤；
 * 当前有效状态过滤。
+
+默认只返回 `CONFIRMED` 且当前有效的记录。`DEPRECATED` 和 `SUPERSEDED` 必须明确标记。
+向量相似度只能生成候选证据，不能替代结构化查询结果。
 
 ## 17.2 CockroachDB Cloud Managed MCP Server
 
@@ -1523,7 +1667,18 @@ Token 必须支持撤销。
 * 用户 home 目录；
 * 未经指定的代码文件。
 
-## 18.4 日志安全
+## 18.4 证据类型
+
+所有关键字段必须保存 `value`、证据类型、来源、采集时间和采集工具。证据类型只使用：
+
+* `CLOUD_VERIFIED`；
+* `LOCAL_ATTESTED`；
+* `USER_PROVIDED`。
+
+Git 状态、输出目录、checkpoint、运行命令和本地环境默认属于 `LOCAL_ATTESTED`。本地
+声明缺失或互相冲突时必须提高风险并要求确认，风险报告不得将其描述为云端事实。
+
+## 18.5 日志安全
 
 CloudWatch 和审计日志不得记录：
 

@@ -15,7 +15,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
-        description="深度学习实验记忆与意图防护服务",
+        description="提高实验一致性、可追溯性和风险可见性的治理服务",
     )
     app.include_router(api_router, prefix=settings.api_prefix)
     return app

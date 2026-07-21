@@ -23,6 +23,8 @@ class CapabilitiesResponse(BaseModel):
     config_formats: list[str]
     artifact_formats: list[str]
     plan_results: list[str]
+    product_positioning: str
+    verification_disclaimer: str
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -53,4 +55,6 @@ async def capabilities() -> CapabilitiesResponse:
         config_formats=["yaml", "json"],
         artifact_formats=["yaml", "json", "txt", "md"],
         plan_results=["PASS", "NEEDS_APPROVAL", "BLOCKED"],
+        product_positioning="提高实验一致性、可追溯性和风险可见性的治理系统。",
+        verification_disclaimer="配置一致性检查不代表真实训练行为或实验结果已被完整验证。",
     )

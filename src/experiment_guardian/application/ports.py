@@ -8,13 +8,19 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 from uuid import UUID
 
-from experiment_guardian.domain.contracts import ExperimentCheckPlanCommand, PlanEvaluationResult
+from experiment_guardian.domain.contracts import (
+    ExperimentCheckPlanCommand,
+    ExperimentQueryCommand,
+    ExperimentQueryResult,
+    PlanEvaluationResult,
+    ProjectContextBundle,
+)
 
 
 class GuardianUseCases(Protocol):
     """REST 与 MCP 共同依赖的六个 P0 用例。"""
 
-    def project_get_context(self, *, project_id: UUID, actor_id: UUID) -> Mapping[str, Any]: ...
+    def project_get_context(self, *, project_id: UUID, actor_id: UUID) -> ProjectContextBundle: ...
 
     def experiment_check_plan(
         self, command: ExperimentCheckPlanCommand
@@ -48,13 +54,8 @@ class GuardianUseCases(Protocol):
     ) -> Mapping[str, Any]: ...
 
     def experiments_query(
-        self,
-        *,
-        project_id: UUID,
-        actor_id: UUID,
-        query: str,
-        top_k: int,
-    ) -> Sequence[Mapping[str, Any]]: ...
+        self, command: ExperimentQueryCommand
+    ) -> Sequence[ExperimentQueryResult]: ...
 
 
 class ArtifactStorage(Protocol):

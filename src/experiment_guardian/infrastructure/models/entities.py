@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     Float,
@@ -28,7 +29,10 @@ from experiment_guardian.domain.enums import (
     ApprovalTargetType,
     ArtifactType,
     CheckResult,
+    ConstraintSource,
     ContextStatus,
+    EvidenceType,
+    ExperimentMode,
     ExperimentStatus,
     IdempotencyOperationStatus,
     IntentStatus,
@@ -36,6 +40,7 @@ from experiment_guardian.domain.enums import (
     RiskSeverity,
     SubmissionStatus,
     TeamRole,
+    VerificationStatus,
     WorkflowStep,
 )
 from experiment_guardian.infrastructure.models.base import (
@@ -91,6 +96,11 @@ class ProjectContext(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __table_args__ = (
         UniqueConstraint("project_id", "version"),
         Index("ix_project_context_active", "project_id", "status"),
+        CheckConstraint(
+            "status != 'ACTIVE' OR "
+            "(confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL AND effective_at IS NOT NULL)",
+            name="active_context_requires_confirmation",
+        ),
     )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
@@ -107,12 +117,14 @@ class ProjectContext(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     active_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     deprecated_items: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
     key_decisions: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    change_reason: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[ContextStatus] = mapped_column(
         enum_column(ContextStatus, "context_status"), nullable=False
     )
     supersedes_context_id: Mapped[UUID | None] = mapped_column(ForeignKey("project_contexts.id"))
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -121,12 +133,27 @@ class ExperimentIntent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __table_args__ = (
         UniqueConstraint("project_id", "version"),
         Index("ix_experiment_intent_active", "project_id", "status"),
+        CheckConstraint(
+            "verification_status != 'CONFIRMED' OR "
+            "(confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL)",
+            name="confirmed_intent_requires_actor",
+        ),
+        CheckConstraint(
+            "status != 'ACTIVE' OR "
+            "(verification_status = 'CONFIRMED' AND activated_by IS NOT NULL "
+            "AND activated_at IS NOT NULL)",
+            name="active_intent_requires_confirmed_version",
+        ),
     )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     context_id: Mapped[UUID] = mapped_column(ForeignKey("project_contexts.id"), nullable=False)
     context_version: Mapped[int] = mapped_column(Integer, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
+    supersedes_intent_id: Mapped[UUID | None] = mapped_column(ForeignKey("experiment_intents.id"))
+    experiment_mode: Mapped[ExperimentMode] = mapped_column(
+        enum_column(ExperimentMode, "intent_experiment_mode"), nullable=False
+    )
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     objective: Mapped[str] = mapped_column(Text, nullable=False)
     hypothesis: Mapped[str] = mapped_column(Text, nullable=False)
@@ -134,21 +161,58 @@ class ExperimentIntent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     controlled_variables: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
     expected_outputs: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
     acceptance_criteria: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    source_type: Mapped[ConstraintSource] = mapped_column(
+        enum_column(ConstraintSource, "intent_source_type"), nullable=False
+    )
+    verification_status: Mapped[VerificationStatus] = mapped_column(
+        enum_column(VerificationStatus, "intent_verification_status"), nullable=False
+    )
+    original_message: Mapped[str] = mapped_column(Text, nullable=False)
+    inference_basis: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    unresolved_ambiguities: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    intent_receipt: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[IntentStatus] = mapped_column(
         enum_column(IntentStatus, "intent_status"), nullable=False
     )
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     activated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ProtectedParameter(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "protected_parameters"
-    __table_args__ = (UniqueConstraint("project_id", "context_version", "parameter_path"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "context_version", "parameter_path", "version"),
+        Index(
+            "ix_protected_parameter_effective",
+            "project_id",
+            "context_version",
+            "verification_status",
+            "active",
+        ),
+        CheckConstraint(
+            "verification_status != 'CONFIRMED' OR "
+            "(confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL)",
+            name="confirmed_constraint_requires_actor",
+        ),
+        CheckConstraint(
+            "verification_status NOT IN ('REJECTED', 'SUPERSEDED') OR NOT active",
+            name="inactive_rejected_constraint",
+        ),
+    )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     context_id: Mapped[UUID] = mapped_column(ForeignKey("project_contexts.id"), nullable=False)
     context_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_id: Mapped[UUID | None] = mapped_column(ForeignKey("experiment_intents.id"))
+    intent_version: Mapped[int | None] = mapped_column(Integer)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    supersedes_constraint_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("protected_parameters.id")
+    )
     parameter_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     protection_level: Mapped[ProtectionLevel] = mapped_column(
         enum_column(ProtectionLevel, "protection_level"), nullable=False
@@ -156,6 +220,18 @@ class ProtectedParameter(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     expected_value: Mapped[Any] = mapped_column(JSON, nullable=False)
     allowed_range: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    source_type: Mapped[ConstraintSource] = mapped_column(
+        enum_column(ConstraintSource, "constraint_source_type"), nullable=False
+    )
+    verification_status: Mapped[VerificationStatus] = mapped_column(
+        enum_column(VerificationStatus, "constraint_verification_status"), nullable=False
+    )
+    original_message: Mapped[str] = mapped_column(Text, nullable=False)
+    inference_basis: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
@@ -171,6 +247,9 @@ class PlanCheck(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     context_id: Mapped[UUID] = mapped_column(ForeignKey("project_contexts.id"), nullable=False)
     context_version: Mapped[int] = mapped_column(Integer, nullable=False)
     intent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    experiment_mode: Mapped[ExperimentMode] = mapped_column(
+        enum_column(ExperimentMode, "plan_experiment_mode"), nullable=False
+    )
     requester_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -179,6 +258,7 @@ class PlanCheck(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     git_commit: Mapped[str] = mapped_column(String(64), nullable=False)
     command: Mapped[str] = mapped_column(Text, nullable=False)
     local_attestation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    constraint_snapshot: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
     planned_changes: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
     check_result: Mapped[CheckResult] = mapped_column(
         enum_column(CheckResult, "check_result"), nullable=False
@@ -229,6 +309,9 @@ class RunManifest(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     context_id: Mapped[UUID] = mapped_column(ForeignKey("project_contexts.id"), nullable=False)
     context_version: Mapped[int] = mapped_column(Integer, nullable=False)
     intent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    experiment_mode: Mapped[ExperimentMode] = mapped_column(
+        enum_column(ExperimentMode, "manifest_experiment_mode"), nullable=False
+    )
     idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
     config_s3_key: Mapped[str | None] = mapped_column(String(1500))
     config_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -242,6 +325,7 @@ class RunManifest(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     checkpoint: Mapped[str | None] = mapped_column(String(1500))
     command: Mapped[str] = mapped_column(Text, nullable=False)
     environment: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    evidence_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
 
@@ -260,6 +344,7 @@ class ExperimentSubmission(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     status: Mapped[SubmissionStatus] = mapped_column(
         enum_column(SubmissionStatus, "submission_status"), nullable=False
     )
@@ -296,7 +381,7 @@ class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     artifact_type: Mapped[ArtifactType] = mapped_column(
         enum_column(ArtifactType, "artifact_type"), nullable=False
     )
-    verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    cloud_hash_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class SubmissionRisk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -310,10 +395,26 @@ class SubmissionRisk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         enum_column(RiskSeverity, "risk_severity"), nullable=False
     )
     field_path: Mapped[str | None] = mapped_column(String(1000))
-    current_value: Mapped[Any] = mapped_column(JSON)
-    expected_value: Mapped[Any] = mapped_column(JSON)
+    previous_value: Mapped[Any] = mapped_column(JSON, nullable=True)
+    current_value: Mapped[Any] = mapped_column(JSON, nullable=True)
+    expected_value: Mapped[Any] = mapped_column(JSON, nullable=True)
     rule_id: Mapped[str] = mapped_column(String(200), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
+    impact: Mapped[str | None] = mapped_column(Text)
+    evidence_type: Mapped[EvidenceType | None] = mapped_column(
+        enum_column(EvidenceType, "risk_evidence_type")
+    )
+    evidence_source: Mapped[str | None] = mapped_column(String(500))
+    collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    collection_tool: Mapped[str | None] = mapped_column(String(500))
+    constraint_source: Mapped[ConstraintSource | None] = mapped_column(
+        enum_column(ConstraintSource, "risk_constraint_source")
+    )
+    constraint_status: Mapped[VerificationStatus | None] = mapped_column(
+        enum_column(VerificationStatus, "risk_constraint_status")
+    )
+    inference_basis: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float)
     recommendation: Mapped[str | None] = mapped_column(Text)
     blocking: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -324,6 +425,10 @@ class Experiment(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __table_args__ = (
         UniqueConstraint("submission_id"),
         Index("ix_experiment_project_status", "project_id", "status"),
+        CheckConstraint(
+            "NOT (experiment_mode = 'EXPLORATORY' AND eligible_as_baseline)",
+            name="exploratory_not_eligible_as_baseline",
+        ),
     )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
@@ -337,6 +442,10 @@ class Experiment(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     project_context_version: Mapped[int] = mapped_column(Integer, nullable=False)
     intent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    experiment_mode: Mapped[ExperimentMode] = mapped_column(
+        enum_column(ExperimentMode, "experiment_mode"), nullable=False
+    )
+    eligible_as_baseline: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     model_name: Mapped[str] = mapped_column(String(300), nullable=False)
     dataset: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -372,14 +481,32 @@ class ExperimentMetric(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
 class Memory(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "memories"
-    __table_args__ = (Index("ix_memory_project_verified", "project_id", "verification_status"),)
+    __table_args__ = (
+        Index(
+            "ix_memory_structured_filter",
+            "project_id",
+            "verification_status",
+            "experiment_status",
+            "protocol",
+            "current_valid",
+        ),
+    )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     experiment_id: Mapped[UUID] = mapped_column(ForeignKey("experiments.id"), nullable=False)
+    protocol: Mapped[str] = mapped_column(String(200), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    seed: Mapped[int] = mapped_column(Integer, nullable=False)
+    experiment_status: Mapped[ExperimentStatus] = mapped_column(
+        enum_column(ExperimentStatus, "memory_experiment_status"), nullable=False
+    )
+    current_valid: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     memory_type: Mapped[str] = mapped_column(String(100), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(VectorType(1536), nullable=False)
-    verification_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    verification_status: Mapped[VerificationStatus] = mapped_column(
+        enum_column(VerificationStatus, "memory_verification_status"), nullable=False
+    )
     source_type: Mapped[str] = mapped_column(String(100), nullable=False)
     source_id: Mapped[UUID] = mapped_column(nullable=False)
 
