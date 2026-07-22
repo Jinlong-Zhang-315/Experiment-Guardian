@@ -19,12 +19,13 @@ async def test_health_endpoint() -> None:
 
 
 @pytest.mark.asyncio
-async def test_capabilities_exposes_exactly_six_mcp_tools() -> None:
+async def test_capabilities_exposes_exactly_seven_mcp_tools() -> None:
     transport = httpx.ASGITransport(app=create_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/v1/capabilities")
 
     assert response.status_code == 200
-    assert len(response.json()["mcp_tools"]) == 6
+    assert len(response.json()["mcp_tools"]) == 7
+    assert "submission_get_status" in response.json()["mcp_tools"]
     assert response.json()["plan_results"] == ["PASS", "NEEDS_APPROVAL", "BLOCKED"]
     assert "不代表" in response.json()["verification_disclaimer"]

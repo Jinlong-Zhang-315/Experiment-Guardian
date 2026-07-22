@@ -37,6 +37,7 @@ from experiment_guardian.domain.enums import (
     ExperimentStatus,
     IdempotencyOperationStatus,
     IntentStatus,
+    OutboxStatus,
     ProtectionLevel,
     RiskSeverity,
     SubmissionStatus,
@@ -44,6 +45,8 @@ from experiment_guardian.domain.enums import (
     TeamRole,
     TokenAudience,
     VerificationStatus,
+    WorkflowJobStatus,
+    WorkflowJobType,
     WorkflowStatus,
     WorkflowStep,
 )
@@ -438,6 +441,81 @@ class ExperimentSubmission(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     processing_error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     analysis_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    generated_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class WorkflowJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """可租约执行的异步工作项；每个 Submission 在 R12a 只有一个摘要 Job。"""
+
+    __tablename__ = "workflow_jobs"
+    __table_args__ = (
+        UniqueConstraint("submission_id", "job_type", name="uq_workflow_jobs_submission_type"),
+        CheckConstraint("job_type = 'SUBMISSION_SUMMARY'", name="workflow_job_type_summary_only"),
+        CheckConstraint(
+            "status IN ('PENDING_DISPATCH', 'QUEUED', 'RUNNING', 'RETRYABLE_FAILURE', "
+            "'SUCCEEDED', 'DEAD_LETTER', 'FAILED')",
+            name="workflow_job_status_valid",
+        ),
+        CheckConstraint("generation >= 1", name="workflow_job_generation_positive"),
+        CheckConstraint("attempt_count >= 0", name="workflow_job_attempt_count_nonnegative"),
+        CheckConstraint("max_attempts >= 1", name="workflow_job_max_attempts_positive"),
+        Index("ix_workflow_jobs_status_available", "status", "available_at"),
+    )
+
+    submission_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_submissions.id"), nullable=False
+    )
+    job_type: Mapped[WorkflowJobType] = mapped_column(
+        enum_column(WorkflowJobType, "workflow_job_type", length=32), nullable=False
+    )
+    status: Mapped[WorkflowJobStatus] = mapped_column(
+        enum_column(WorkflowJobStatus, "workflow_job_status", length=32), nullable=False
+    )
+    generation: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(300))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    sqs_message_id: Mapped[str | None] = mapped_column(String(300))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OutboxEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """事务内写入、事务外投递的 SQS 消息。"""
+
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("workflow_job_id", "generation", name="uq_outbox_events_job_generation"),
+        CheckConstraint(
+            "event_type = 'SUBMISSION_SUMMARY_REQUESTED'",
+            name="outbox_event_type_summary_only",
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'PUBLISHING', 'PUBLISHED')",
+            name="outbox_status_valid",
+        ),
+        CheckConstraint("generation >= 1", name="outbox_generation_positive"),
+        CheckConstraint("attempt_count >= 0", name="outbox_attempt_count_nonnegative"),
+        Index("ix_outbox_events_status_available", "status", "available_at"),
+    )
+
+    workflow_job_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_jobs.id"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[OutboxStatus] = mapped_column(
+        enum_column(OutboxStatus, "outbox_status", length=16), nullable=False
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(300))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sqs_message_id: Mapped[str | None] = mapped_column(String(300))
 
 
 class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

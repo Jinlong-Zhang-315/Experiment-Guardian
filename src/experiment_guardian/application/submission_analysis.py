@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from experiment_guardian.application.async_summary import SubmissionSummaryScheduler
 from experiment_guardian.application.errors import InputValidationError, ServiceUnavailableError
 from experiment_guardian.application.ports import ArtifactStorage
 from experiment_guardian.application.transactions import run_with_serialization_retry
@@ -71,10 +72,12 @@ class SubmissionAnalysisService:
         session_factory: sessionmaker[Session],
         repository: SqlAlchemySubmissionRepository,
         storage: ArtifactStorage,
+        summary_scheduler: SubmissionSummaryScheduler | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository
         self._storage = storage
+        self._summary_scheduler = summary_scheduler
         handlers = {
             WorkflowStep.UPLOAD_VERIFICATION: self._upload_verification,
             WorkflowStep.CONFIG_PARSE: self._config_parse,
@@ -121,7 +124,13 @@ class SubmissionAnalysisService:
             if submission.workflow_status in {
                 WorkflowStatus.TERMINAL_FAILURE,
                 WorkflowStatus.AWAITING_ENRICHMENT,
+                WorkflowStatus.QUEUED,
             }:
+                return False
+            if (
+                self._summary_scheduler is not None
+                and submission.processing_step is WorkflowStep.RISK_ANALYSIS
+            ):
                 return False
             if submission.status not in {
                 SubmissionStatus.UPLOAD_VERIFIED,
@@ -582,6 +591,12 @@ class SubmissionAnalysisService:
                     },
                     final=True,
                 )
+                if (
+                    self._summary_scheduler is not None
+                    and submission.workflow_status is WorkflowStatus.AWAITING_ENRICHMENT
+                ):
+                    # 与风险记录同事务写入 Job/Outbox，避免提交已完成却永久漏发消息。
+                    self._summary_scheduler.ensure_in_session(session, submission)
 
         run_with_serialization_retry(persist)
         return state

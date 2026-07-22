@@ -50,6 +50,7 @@ async def capabilities() -> CapabilitiesResponse:
             "run_manifest_create",
             "submission_prepare",
             "submission_finalize",
+            "submission_get_status",
             "experiments_query",
         ],
         config_formats=["yaml", "json"],

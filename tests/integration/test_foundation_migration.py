@@ -5,8 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.orm import sessionmaker
 
+from experiment_guardian.domain.enums import WorkflowStatus, WorkflowStep
+from experiment_guardian.infrastructure.models import ExperimentSubmission
 from migrations.scope import (
     FOUNDATION_TABLES,
     GOVERNANCE_TABLES,
@@ -15,6 +18,7 @@ from migrations.scope import (
     SUBMISSION_ANALYSIS_TABLES,
     SUBMISSION_PREPARE_TABLES,
 )
+from tests.integration.test_submission_finalize_slice import finalize_identity, prepare_draft
 
 
 def test_foundation_and_plan_check_migrations_are_independently_reversible(
@@ -96,11 +100,57 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         "processing_step",
         "processing_error",
         "analysis_snapshot",
+        "generated_summary",
     } <= {item["name"] for item in inspector.get_columns("experiment_submissions")}
     assert "uq_submission_risks_submission_fingerprint" in {
         item["name"] for item in inspector.get_unique_constraints("submission_risks")
     }
+    assert "uq_workflow_jobs_submission_type" in {
+        item["name"] for item in inspector.get_unique_constraints("workflow_jobs")
+    }
+    assert "uq_outbox_events_job_generation" in {
+        item["name"] for item in inspector.get_unique_constraints("outbox_events")
+    }
     engine.dispose()
+
+    # revision 08 降级必须保留 R11 风险游标，并清除 R12a 的瞬时失败状态。
+    engine = create_engine(database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    owner, project_id, storage, service, finalize, _ = prepare_draft(factory)
+    storage.accept_declared_uploads()
+    service.submission_finalize(finalize, finalize_identity(owner, project_id))
+    with factory() as session, session.begin():
+        submission = session.get(ExperimentSubmission, finalize.submission_id)
+        assert submission is not None
+        submission.workflow_status = WorkflowStatus.RETRYABLE_FAILURE
+        submission.processing_step = WorkflowStep.SUMMARY_GENERATION
+        submission.processing_error = {"code": "BEDROCK_TIMEOUT", "retryable": True}
+        submission.generated_summary = {"schema_version": 1, "text": "temporary"}
+    engine.dispose()
+
+    run_alembic("downgrade", "20260722_07")
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    assert not ({"workflow_jobs", "outbox_events"} & set(inspector.get_table_names()))
+    assert "generated_summary" not in {
+        item["name"] for item in inspector.get_columns("experiment_submissions")
+    }
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT status, workflow_status, processing_step, processing_error "
+                "FROM experiment_submissions WHERE id = :submission_id"
+            ),
+            {"submission_id": finalize.submission_id.hex},
+        ).one()
+        assert tuple(row) == (
+            "PROCESSING",
+            "AWAITING_ENRICHMENT",
+            "RISK_ANALYSIS",
+            None,
+        )
+    engine.dispose()
+    run_alembic("upgrade", "head")
 
     run_alembic("downgrade", "20260722_06")
     engine = create_engine(database_url)

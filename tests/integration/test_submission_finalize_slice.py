@@ -36,9 +36,11 @@ from experiment_guardian.infrastructure.models import (
     AuditLog,
     ExperimentSubmission,
     IdempotencyRecord,
+    OutboxEvent,
     SubmissionRisk,
     TeamMember,
     User,
+    WorkflowJob,
 )
 from tests.integration.test_submission_prepare_slice import (
     CONFIG_PAYLOAD,
@@ -111,7 +113,7 @@ def test_finalize_persists_cloud_evidence_and_replays_without_new_s3_calls(
         submission = session.get(ExperimentSubmission, command.submission_id)
         assert submission is not None
         assert submission.status is SubmissionStatus.PROCESSING
-        assert submission.workflow_status is WorkflowStatus.AWAITING_ENRICHMENT
+        assert submission.workflow_status is WorkflowStatus.QUEUED
         assert submission.processing_step is WorkflowStep.RISK_ANALYSIS
         assert submission.processing_error is None
         assert submission.analysis_snapshot["schema_version"] == 1
@@ -151,11 +153,16 @@ def test_finalize_persists_cloud_evidence_and_replays_without_new_s3_calls(
         )
         assert record is not None
         assert record.operation_status is IdempotencyOperationStatus.COMPLETED
+        assert session.scalar(select(func.count()).select_from(WorkflowJob)) == 1
+        assert session.scalar(select(func.count()).select_from(OutboxEvent)) == 1
 
-    with pytest.raises(ConflictError, match="状态不允许 finalize"):
-        service.submission_finalize(
-            command.model_copy(update={"idempotency_key": uuid4()}), identity
-        )
+    inspection_count = len(storage.inspection_calls)
+    resumed = service.submission_finalize(
+        command.model_copy(update={"idempotency_key": uuid4()}), identity
+    )
+    assert resumed.analysis is not None
+    assert resumed.analysis.workflow_status is WorkflowStatus.QUEUED
+    assert len(storage.inspection_calls) == inspection_count
 
 
 def test_failed_verification_is_complete_and_same_key_can_succeed_after_repair(
@@ -449,13 +456,21 @@ def test_analysis_transient_s3_failure_resumes_with_same_finalize_key(
     assert failed.analysis.error is not None
     assert failed.analysis.error["code"] == "S3_READ_UNAVAILABLE"
 
+    recovery_command = command.model_copy(update={"idempotency_key": uuid4()})
+    recovery_failed = service.submission_finalize(recovery_command, identity)
+    assert recovery_failed.analysis is not None
+    assert recovery_failed.analysis.workflow_status is WorkflowStatus.RETRYABLE_FAILURE
+    with plan_check_session_factory() as session:
+        # 新 key 可以恢复 R11，但风险前缀完成前不能提前创建摘要 Job。
+        assert session.scalar(select(func.count()).select_from(WorkflowJob)) == 0
+
     storage.read_error = None
-    resumed = service.submission_finalize(command, identity)
+    resumed = service.submission_finalize(recovery_command, identity)
     assert resumed.analysis is not None
-    assert resumed.analysis.workflow_status is WorkflowStatus.AWAITING_ENRICHMENT
+    assert resumed.analysis.workflow_status is WorkflowStatus.QUEUED
     assert resumed.analysis.processing_step is WorkflowStep.RISK_ANALYSIS
     assert storage.inspection_calls == inspected
-    assert len(storage.read_calls) == 3
+    assert len(storage.read_calls) == 4
 
 
 def test_changed_immutable_version_is_a_terminal_analysis_failure(
@@ -537,7 +552,7 @@ def test_manifest_mismatch_becomes_blocking_critical_risk_not_terminal_failure(
     )
 
     assert result.analysis is not None
-    assert result.analysis.workflow_status is WorkflowStatus.AWAITING_ENRICHMENT
+    assert result.analysis.workflow_status is WorkflowStatus.QUEUED
     assert result.analysis.highest_risk is RiskSeverity.CRITICAL
     with plan_check_session_factory() as session:
         risks = session.scalars(

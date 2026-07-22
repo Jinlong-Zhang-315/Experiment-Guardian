@@ -226,6 +226,7 @@ def test_issue_mcp_token_cli_grants_plan_check_scope(
             "manifest:create",
             "submission:create",
             "submission:finalize",
+            "submission:read",
         }
     )
 

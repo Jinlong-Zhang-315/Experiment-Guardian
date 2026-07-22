@@ -1,7 +1,7 @@
 """面向本地 Coding Agent 的产品 MCP Server。
 
 MCP 层只处理参数校验和协议转换，禁止在工具函数中直接拼 SQL、访问 S3 或调用 Bedrock。
-六个工具全部委托给应用门面，因此 REST 和 MCP 可以共享权限、幂等与审计逻辑。
+七个工具全部委托给应用门面，因此 REST 和 MCP 可以共享权限、幂等与审计逻辑。
 """
 
 from typing import Any
@@ -124,7 +124,7 @@ def submission_finalize(
     submission_id: str,
     idempotency_key: str,
 ) -> dict[str, Any]:
-    """复核已声明的 S3 对象；本阶段不启动提交分析工作流。"""
+    """复核 S3 对象并启动分析；失败摘要可用新幂等 key 重新入队。"""
 
     identity = get_identity_provider().current_identity()
     command = SubmissionFinalizeCommand(
@@ -132,6 +132,18 @@ def submission_finalize(
         idempotency_key=UUID(idempotency_key),
     )
     result = get_guardian_use_cases().submission_finalize(command, identity)
+    return result.model_dump(mode="json")
+
+
+@mcp.tool()
+def submission_get_status(submission_id: str) -> dict[str, Any]:
+    """读取提交、摘要 Job、既有风险和模型摘要；该操作不会触发处理。"""
+
+    identity = get_identity_provider().current_identity()
+    result = get_guardian_use_cases().submission_get_status(
+        submission_id=UUID(submission_id),
+        identity=identity,
+    )
     return result.model_dump(mode="json")
 
 

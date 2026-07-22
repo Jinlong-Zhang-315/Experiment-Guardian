@@ -16,6 +16,7 @@ from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyPlanCheckRepository,
     SqlAlchemyProjectRepository,
     SqlAlchemySubmissionRepository,
+    SqlAlchemyWorkflowRepository,
 )
 from experiment_guardian.infrastructure.security import (
     EnvironmentIdentityProvider,
@@ -48,6 +49,11 @@ def get_submission_repository() -> SqlAlchemySubmissionRepository:
 
 
 @lru_cache(maxsize=1)
+def get_workflow_repository() -> SqlAlchemyWorkflowRepository:
+    return SqlAlchemyWorkflowRepository()
+
+
+@lru_cache(maxsize=1)
 def get_artifact_storage() -> S3ArtifactStorage | UnconfiguredArtifactStorage:
     settings = get_settings()
     if not settings.s3_bucket:
@@ -71,6 +77,8 @@ def get_guardian_use_cases() -> GuardianUseCases:
         get_submission_repository(),
         get_artifact_storage(),
         settings.s3_presign_expires_seconds,
+        get_workflow_repository(),
+        settings.worker_max_attempts,
     )
 
 

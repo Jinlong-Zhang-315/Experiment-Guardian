@@ -31,6 +31,7 @@ from experiment_guardian.domain.enums import (
     SubmittedRunStatus,
     UploadVerificationResult,
     VerificationStatus,
+    WorkflowJobStatus,
     WorkflowStatus,
     WorkflowStep,
 )
@@ -682,6 +683,67 @@ class SubmissionFinalizeResult(ContractModel):
         ):
             raise ValueError("FAILED 回执必须保持 RECEIVED 并提供可重试问题")
         return self
+
+
+class SummaryUsage(ContractModel):
+    """Bedrock 返回的可选 token 计数；缺失不影响摘要有效性。"""
+
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+
+
+class GeneratedSummary(ContractModel):
+    """模型生成的解释性摘要，不属于 CLOUD_VERIFIED 证据。"""
+
+    schema_version: Literal[1] = 1
+    text: str = Field(min_length=1, max_length=3000)
+    model_id: str = Field(min_length=1, max_length=500)
+    prompt_version: Literal["submission-summary-v1"] = "submission-summary-v1"
+    source_hash: str = Field(pattern=SHA256_PATTERN)
+    language_strategy: Literal["AUTO_FROM_INTENT"] = "AUTO_FROM_INTENT"
+    generated_at: datetime
+    usage: SummaryUsage = Field(default_factory=SummaryUsage)
+    disclaimer: str = Field(min_length=1, max_length=1000)
+
+
+class WorkflowJobReceipt(ContractModel):
+    id: UUID
+    status: WorkflowJobStatus
+    generation: int = Field(ge=1)
+    attempt_count: int = Field(ge=0)
+    max_attempts: int = Field(ge=1)
+    available_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    last_error: dict[str, Any] | None = None
+
+
+class SummaryQueueEnvelope(ContractModel):
+    """SQS 中只保留定位信息，所有业务事实均从数据库重新加载。"""
+
+    schema_version: Literal[1] = 1
+    job_id: UUID
+    submission_id: UUID
+    generation: int = Field(ge=1)
+
+
+class SubmissionStatusResult(ContractModel):
+    """原提交者和 Owner 可见的动态分析状态。"""
+
+    submission_id: UUID
+    project_id: UUID
+    run_manifest_id: UUID
+    submission_status: SubmissionStatus
+    workflow_status: WorkflowStatus
+    processing_step: WorkflowStep | None = None
+    retryable: bool
+    processing_error: dict[str, Any] | None = None
+    job: WorkflowJobReceipt | None = None
+    risk_count: int = Field(ge=0)
+    highest_risk: RiskSeverity | None = None
+    generated_summary: GeneratedSummary | None = None
+    updated_at: datetime
+    disclaimer: str = Field(min_length=1, max_length=1000)
 
 
 class SubmittedResultDocument(ContractModel):

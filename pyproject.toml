@@ -29,6 +29,7 @@ dependencies = [
 experiment-guardian-api = "experiment_guardian.main:run"
 experiment-guardian-mcp = "experiment_guardian.mcp_server.server:run"
 experiment-guardian-admin = "experiment_guardian.admin_cli:main"
+experiment-guardian-worker = "experiment_guardian.worker:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -604,6 +604,88 @@
   测试覆盖，本轮不扩展为跨历史 revision 的反射规范化重构。
 * 未增加 Web、自动训练、自动改代码、KMS/lifecycle 或生产 AWS 部署配置。
 
+## R12a：可靠异步编排与 Bedrock 摘要
+
+版本：`working tree`，当前实现轮次。
+
+### 更新内容
+
+* 新增 Alembic revision `20260722_08`。`experiment_submissions` 只增加
+  `generated_summary`；新增 `workflow_jobs` 与 `outbox_events`，以唯一
+  `(submission_id, job_type)` 和 `(workflow_job_id, generation)` 约束防止重复业务记录。
+* Job 保存 generation、尝试次数、最大次数、available time、租约、错误、SQS message ID
+  和起止时间；Outbox 保存发布状态、租约、退避和回执。数据库约束限制 R12a 只能使用
+  `SUBMISSION_SUMMARY` 和 `SUBMISSION_SUMMARY_REQUESTED`。
+* R11 风险节点完成时，在写入风险摘要的同一事务内创建 Job/Outbox，并把 Submission
+  切换为 `PROCESSING/QUEUED/RISK_ANALYSIS`。Worker 启动时会为 revision 07 遗留的
+  `AWAITING_ENRICHMENT/RISK_ANALYSIS` 记录补建缺失任务。
+* 增加 SQS Standard 端口与 boto3 适配器。消息体严格限制为
+  `schema_version/job_id/submission_id/generation`，配置、指标、Artifact 和摘要始终从
+  CockroachDB 重新读取。
+* 增加事务 Outbox Dispatcher：事务内租约领取，事务外发布，第二个事务写发布回执。
+  发送成功但回执落库前崩溃时允许重复发送，由 generation 和持久化游标消除副作用。
+* 新增 `experiment-guardian-worker` 单并发入口。Worker 使用 20 秒长轮询、120 秒 SQS
+  可见性和数据库租约；SQS 只在摘要已持久化后删除。成功消息重复投递不会再次调用
+  Bedrock。
+* 摘要 Job 默认最多五次，按 `min(30 * 4^(attempt-1), 3600)` 退避。依赖失败进入
+  `RETRYABLE_FAILURE`；达到上限进入 `DEAD_LETTER` 并保留消息供外部 DLQ/redrive；上游
+  快照损坏进入不可重试 `FAILED/TERMINAL_FAILURE`。
+* 增加 Bedrock Runtime Converse 适配器，连接/读取超时和 SDK 重试可配置。模型只返回
+  纯文本；空输出、超过 3000 字、工具调用、未知内容块、权限/限流/网络错误都按可重试
+  依赖故障处理。
+* 摘要输入使用 Intent objective、Manifest 运行条件、result 指标/状态和已持久化风险。
+  HIGH/CRITICAL 风险优先且不得遗漏，MEDIUM/LOW 按稳定顺序在 32 KiB 上限内选择；不读取
+  LOG/NOTE。提示词把所有事实标为不可信数据，要求跟随 Intent 语言并保持指标、路径、
+  hash 和模型标识原样。
+* `generated_summary` 保存 schema、纯文本、model ID、prompt version、source hash、语言
+  策略、生成时间、token usage 和 disclaimer。模型摘要是解释性产物，不标记为
+  `CLOUD_VERIFIED`，也不写入或修改 `submission_risks`。
+* 新增第七个 MCP 工具 `submission_get_status` 和 `submission:read` scope。状态工具只允许
+  原提交者或项目 Owner，动态返回 Submission、Job、风险统计和摘要，不触发处理。
+* `submission_finalize` 新 key 支持恢复：R11 尚未完成时只恢复确定性前缀，不提前创建
+  摘要 Job；摘要 retryable/dead 时增加 generation、重置次数并创建新 Outbox；活跃或成功
+  Job 不重复。恢复不重新 HEAD/GET S3，并审计 Token ID、source Agent、actor/recovery mode。
+* `.env.example` 增加 Queue、可见性、租约、最大尝试、Bedrock model 和 timeout 配置；
+  本轮不创建 Queue、DLQ、IAM、KMS 或 Bedrock access policy。
+
+### 修复的问题
+
+* 外部 Bedrock 调用不再发生在 finalize 请求或数据库事务内，避免请求超时和长事务。
+* 风险分析完成与队列任务创建不再存在双写丢失窗口；Outbox 是 CockroachDB 事务的一部分。
+* SQS Standard 的重复、延迟、旧 generation 和 Worker 崩溃不会产生多个数据库摘要。
+* 模型输出不能改变风险等级、阻断状态、审批权限或正式记录；失败只会暂停摘要步骤。
+* 同一 finalize key 的上传快照保持不可变，但分析状态继续动态读取，不返回过时状态。
+* 新 finalize key 不会把 R11 中途的 retryable Submission 误当成摘要任务；只有风险前缀已
+  完成或已有 Job 时才进入 R12a 调度。
+* revision 08 downgrade 会把所有带 Job/摘要步骤的 Submission 退回 R11 可理解的
+  `PROCESSING/AWAITING_ENRICHMENT/RISK_ANALYSIS`，清除瞬时错误，再删除 Job/Outbox/摘要。
+
+### 验证结果
+
+* 默认严格 Fake 覆盖 Job/Outbox 唯一性、升级遗留对账、SQS 发布失败、发送后崩溃重复、
+  重复/旧 generation、可见性租约、Bedrock 响应提交前崩溃、空/超长/工具响应、重试、
+  死信、新 key 恢复、状态权限、source hash/提示词边界和 revision 08 有数据降级。
+* 可选 `RUN_SQS_INTEGRATION=1` 与 `RUN_BEDROCK_INTEGRATION=1` 真实 AWS 验收默认跳过，
+  本轮没有访问真实 AWS。
+* 全量收集 144 项测试，默认执行 140 项全部通过；真实 CockroachDB、S3、SQS 和
+  Bedrock 四项外部验收默认跳过。
+* 真实 CockroachDB 隔离库验收显式执行通过：revision 08 完整升级、Plan/审批/Manifest/
+  prepare/finalize/R11 风险与 R12a Job/Outbox 事务、含数据降级回升及最终降至 base 均通过。
+* Ruff format/check、mypy（51 个源文件）和 `git diff --check` 全部通过。
+* 开发 CockroachDB 已从 `20260722_07` 升级至 `20260722_08 (head)`。
+* 更新后的 FastAPI 已在 `127.0.0.1:8790` 重启；health 返回 200，capabilities 返回七个
+  MCP 工具并包含 `submission_get_status`。未配置 Queue URL 时 Worker 按设计明确拒绝启动。
+
+### 已知遗留项
+
+* R12a 成功只到 `PROCESSING/AWAITING_ENRICHMENT/SUMMARY_GENERATION`。embedding、短审核
+  回执和 `NEEDS_REVIEW` 明确留给 R12b。
+* SQS Queue、DLQ/redrive policy、IAM Role、KMS、CloudWatch 和生产部署属于 R14；Worker
+  在缺少 Queue URL 或 summary model ID 时会明确拒绝启动。
+* 摘要是非确定性的解释性文本。Worker 在模型返回后、数据库提交前崩溃时可能再次调用
+  模型，但只有一个持久化结果；这不构成 exactly-once 外部调用承诺。
+* 正式 Experiment/Metric/Memory、`experiments_query`、人工确认和 Web 仍未实现。
+
 ## 新日志模板
 
 ```text

@@ -119,6 +119,7 @@ class WorkflowStatus(StrEnum):
 
     NOT_STARTED = "NOT_STARTED"
     RUNNING = "RUNNING"
+    QUEUED = "QUEUED"
     RETRYABLE_FAILURE = "RETRYABLE_FAILURE"
     TERMINAL_FAILURE = "TERMINAL_FAILURE"
     AWAITING_ENRICHMENT = "AWAITING_ENRICHMENT"
@@ -133,6 +134,30 @@ class WorkflowStep(StrEnum):
     SUMMARY_GENERATION = "SUMMARY_GENERATION"
     EMBEDDING_GENERATION = "EMBEDDING_GENERATION"
     NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
+class WorkflowJobType(StrEnum):
+    """R12a 只调度提交摘要，后续任务类型必须显式扩展。"""
+
+    SUBMISSION_SUMMARY = "SUBMISSION_SUMMARY"
+
+
+class WorkflowJobStatus(StrEnum):
+    """数据库 Job 的生命周期独立于 Submission 的业务状态。"""
+
+    PENDING_DISPATCH = "PENDING_DISPATCH"
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    RETRYABLE_FAILURE = "RETRYABLE_FAILURE"
+    SUCCEEDED = "SUCCEEDED"
+    DEAD_LETTER = "DEAD_LETTER"
+    FAILED = "FAILED"
+
+
+class OutboxStatus(StrEnum):
+    PENDING = "PENDING"
+    PUBLISHING = "PUBLISHING"
+    PUBLISHED = "PUBLISHED"
 
 
 class ExperimentStatus(StrEnum):

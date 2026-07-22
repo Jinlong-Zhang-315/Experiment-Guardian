@@ -46,8 +46,14 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     s3_bucket: str = ""
     s3_presign_expires_seconds: int = Field(default=900, ge=60, le=3600)
-    bedrock_model_id: str = ""
-    embedding_dimension: int = Field(default=1536, gt=0)
+    sqs_submission_queue_url: str = ""
+    sqs_wait_time_seconds: int = Field(default=20, ge=0, le=20)
+    sqs_visibility_timeout_seconds: int = Field(default=120, ge=30, le=43200)
+    worker_lease_seconds: int = Field(default=120, ge=30, le=3600)
+    worker_max_attempts: int = Field(default=5, ge=1, le=20)
+    bedrock_summary_model_id: str = ""
+    bedrock_connect_timeout_seconds: int = Field(default=5, ge=1, le=60)
+    bedrock_read_timeout_seconds: int = Field(default=60, ge=1, le=300)
 
     @field_validator("log_level", mode="before")
     @classmethod

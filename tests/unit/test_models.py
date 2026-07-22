@@ -80,7 +80,7 @@ def test_approval_and_manifest_are_immutable_by_schema() -> None:
     assert {"schema_version", "config_document_hash"} <= set(manifest.columns.keys())
 
 
-def test_submission_schema_keeps_r11_analysis_narrow() -> None:
+def test_submission_schema_keeps_r12a_summary_narrow() -> None:
     submission = Base.metadata.tables["experiment_submissions"]
     artifact = Base.metadata.tables["artifacts"]
     risk = Base.metadata.tables["submission_risks"]
@@ -97,8 +97,10 @@ def test_submission_schema_keeps_r11_analysis_narrow() -> None:
         "processing_step",
         "processing_error",
         "analysis_snapshot",
+        "generated_summary",
     } <= set(submission.columns.keys())
-    assert "generated_summary" not in submission.columns
+    assert "embedding" not in submission.columns
+    assert "review_receipt" not in submission.columns
     assert "fk_artifacts_experiment_id_experiments" not in {
         constraint.name for constraint in artifact.constraints
     }
@@ -112,6 +114,20 @@ def test_submission_schema_keeps_r11_analysis_narrow() -> None:
     assert "risk_fingerprint" in risk.columns
     assert "uq_submission_risks_submission_fingerprint" in {
         constraint.name for constraint in risk.constraints
+    }
+    job = Base.metadata.tables["workflow_jobs"]
+    outbox = Base.metadata.tables["outbox_events"]
+    assert {
+        "generation",
+        "attempt_count",
+        "max_attempts",
+        "lease_owner",
+        "lease_expires_at",
+        "last_error",
+    } <= set(job.columns.keys())
+    assert "uq_workflow_jobs_submission_type" in {constraint.name for constraint in job.constraints}
+    assert "uq_outbox_events_job_generation" in {
+        constraint.name for constraint in outbox.constraints
     }
 
 

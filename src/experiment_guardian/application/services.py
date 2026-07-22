@@ -12,6 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from experiment_guardian.application.async_summary import (
+    SUMMARY_DISCLAIMER,
+    SubmissionSummaryScheduler,
+)
 from experiment_guardian.application.errors import (
     AuthorizationError,
     ConflictError,
@@ -38,6 +42,7 @@ from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanResult,
     ExperimentQueryCommand,
     ExperimentQueryResult,
+    GeneratedSummary,
     PlanEvaluationInput,
     ProjectContextBundle,
     RunManifestResult,
@@ -46,6 +51,8 @@ from experiment_guardian.domain.contracts import (
     SubmissionFinalizeResult,
     SubmissionPrepareCommand,
     SubmissionPrepareResult,
+    SubmissionStatusResult,
+    WorkflowJobReceipt,
 )
 from experiment_guardian.domain.enums import (
     ApprovalDecision,
@@ -66,6 +73,9 @@ from experiment_guardian.domain.enums import (
     TeamRole,
     UploadVerificationResult,
     VerificationStatus,
+    WorkflowJobStatus,
+    WorkflowStatus,
+    WorkflowStep,
 )
 from experiment_guardian.domain.plan_check import (
     ConfigurationError,
@@ -85,12 +95,14 @@ from experiment_guardian.infrastructure.models import (
     ProjectContext,
     ProtectedParameter,
     RunManifest,
+    WorkflowJob,
 )
 from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyGovernanceRepository,
     SqlAlchemyPlanCheckRepository,
     SqlAlchemyProjectRepository,
     SqlAlchemySubmissionRepository,
+    SqlAlchemyWorkflowRepository,
 )
 
 INITIALIZE_OPERATION = "project.initialize"
@@ -99,6 +111,7 @@ RUN_MANIFEST_OPERATION = "run_manifest.create"
 SUBMISSION_PREPARE_OPERATION = "submission.prepare"
 SUBMISSION_FINALIZE_OPERATION = "submission.finalize"
 SUBMISSION_FINALIZE_FAILURE_ACTION = "submission.finalize.failed"
+SUBMISSION_ANALYSIS_RESUME_ACTION = "submission.analysis.resume"
 RISK_PRIORITY = {
     RiskSeverity.LOW: 0,
     RiskSeverity.MEDIUM: 1,
@@ -168,6 +181,8 @@ class GuardianApplication:
         submission_repository: SqlAlchemySubmissionRepository | None = None,
         artifact_storage: ArtifactStorage | None = None,
         upload_url_ttl_seconds: int = 900,
+        workflow_repository: SqlAlchemyWorkflowRepository | None = None,
+        worker_max_attempts: int = 5,
     ) -> None:
         self._session_factory = session_factory
         self._projects = project_repository
@@ -176,8 +191,19 @@ class GuardianApplication:
         self._submissions = submission_repository or SqlAlchemySubmissionRepository()
         self._artifact_storage = artifact_storage
         self._upload_url_ttl_seconds = upload_url_ttl_seconds
+        self._workflows = workflow_repository or SqlAlchemyWorkflowRepository()
+        self._summary_scheduler = SubmissionSummaryScheduler(
+            session_factory,
+            self._workflows,
+            max_attempts=worker_max_attempts,
+        )
         self._submission_analysis = (
-            SubmissionAnalysisService(session_factory, self._submissions, artifact_storage)
+            SubmissionAnalysisService(
+                session_factory,
+                self._submissions,
+                artifact_storage,
+                self._summary_scheduler,
+            )
             if artifact_storage is not None
             else None
         )
@@ -851,6 +877,54 @@ class GuardianApplication:
         )
         return self._attach_submission_analysis(verified)
 
+    def submission_get_status(
+        self, *, submission_id: UUID, identity: RequestIdentity
+    ) -> SubmissionStatusResult:
+        """返回动态工作流状态；读取不会触发调度或模型调用。"""
+
+        if "submission:read" not in identity.scopes:
+            raise AuthorizationError("Token 缺少 submission:read scope")
+        with self._session_factory() as session:
+            submission = self._submissions.get_submission(session, submission_id)
+            if submission is None:
+                raise ResourceNotFoundError("Submission 不存在")
+            self._authorize_submission_status(session, submission, identity)
+            job = self._workflows.get_summary_job(session, submission.id)
+            risks = self._submissions.list_risks(session, submission.id)
+            severities = [item.severity for item in risks]
+            highest = max(severities, key=RISK_PRIORITY.__getitem__) if severities else None
+            summary = (
+                GeneratedSummary.model_validate(submission.generated_summary)
+                if isinstance(submission.generated_summary, dict)
+                else None
+            )
+            job_receipt = self._job_receipt(job) if job is not None else None
+            retryable = bool(
+                submission.workflow_status is WorkflowStatus.RETRYABLE_FAILURE
+                and job is not None
+                and job.status
+                in {
+                    WorkflowJobStatus.RETRYABLE_FAILURE,
+                    WorkflowJobStatus.DEAD_LETTER,
+                }
+            )
+            return SubmissionStatusResult(
+                submission_id=submission.id,
+                project_id=submission.project_id,
+                run_manifest_id=submission.run_manifest_id,
+                submission_status=submission.status,
+                workflow_status=submission.workflow_status,
+                processing_step=submission.processing_step,
+                retryable=retryable,
+                processing_error=submission.processing_error,
+                job=job_receipt,
+                risk_count=len(risks),
+                highest_risk=highest,
+                generated_summary=summary,
+                updated_at=submission.updated_at,
+                disclaimer=SUMMARY_DISCLAIMER,
+            )
+
     def _attach_submission_analysis(
         self, result: SubmissionFinalizeResult
     ) -> SubmissionFinalizeResult:
@@ -891,6 +965,20 @@ class GuardianApplication:
                 if existing.operation_status is IdempotencyOperationStatus.IN_PROGRESS:
                     raise ConflictError("相同 Idempotency-Key 的 finalize 操作仍在处理")
 
+            if (
+                submission.status is SubmissionStatus.PROCESSING
+                and submission.upload_verified_at is not None
+            ):
+                if existing is not None:
+                    raise ConflictError("恢复提交分析必须使用新的 Idempotency-Key")
+                return self._resume_verified_analysis(
+                    session=session,
+                    submission=submission,
+                    identity=identity,
+                    command=command,
+                    request_hash=request_hash,
+                )
+
             if submission.status is not SubmissionStatus.RECEIVED:
                 raise ConflictError("当前 Submission 状态不允许 finalize")
             artifacts = self._submissions.list_artifacts(session, submission.id)
@@ -901,6 +989,90 @@ class GuardianApplication:
                 declaration_hash=self._artifact_declaration_hash(prepared),
                 artifacts=prepared,
             )
+
+    def _resume_verified_analysis(
+        self,
+        *,
+        session: Session,
+        submission: ExperimentSubmission,
+        identity: RequestIdentity,
+        command: SubmissionFinalizeCommand,
+        request_hash: str,
+    ) -> SubmissionFinalizeResult:
+        """使用已存上传证据恢复摘要，不重新访问 S3。"""
+
+        snapshot = submission.upload_verification_snapshot
+        if not isinstance(snapshot, dict):
+            raise ConflictError("Submission 缺少可重放的上传验证快照")
+        try:
+            result = SubmissionFinalizeResult.model_validate(snapshot)
+        except Exception as exc:
+            raise ConflictError("Submission 上传验证快照已损坏") from exc
+
+        project = self._projects.require_project_member(
+            session,
+            project_id=submission.project_id,
+            user_id=identity.user_id,
+            team_id=identity.team_id,
+        )
+        previous_workflow_status = submission.workflow_status.value
+        previous_job = self._workflows.get_summary_job(session, submission.id)
+        previous_job_status = previous_job.status.value if previous_job is not None else None
+        risk_prefix_complete = submission.processing_step in {
+            WorkflowStep.RISK_ANALYSIS,
+            WorkflowStep.SUMMARY_GENERATION,
+        }
+        if previous_job is not None or risk_prefix_complete:
+            job, rearmed = self._summary_scheduler.rearm_in_session(session, submission)
+            job_id = str(job.id)
+            job_status = job.status.value
+            generation = job.generation
+            recovery_mode = "R12A_SUMMARY_REARM" if rearmed else "R12A_SUMMARY_ACTIVE"
+        else:
+            # R11 仍在确定性前缀中失败时，只重放前缀，不得提前创建摘要 Job。
+            rearmed = False
+            job_id = None
+            job_status = None
+            generation = None
+            recovery_mode = "R11_PREFIX_RESUME"
+        response = result.model_dump(mode="json", exclude={"analysis"})
+        session.add(
+            IdempotencyRecord(
+                actor_id=identity.user_id,
+                operation=SUBMISSION_FINALIZE_OPERATION,
+                idempotency_key=command.idempotency_key,
+                request_hash=request_hash,
+                response_snapshot=response,
+                operation_status=IdempotencyOperationStatus.COMPLETED,
+                expires_at=datetime.now(UTC) + timedelta(days=7),
+            )
+        )
+        session.add(
+            AuditLog(
+                team_id=project.team_id,
+                project_id=submission.project_id,
+                actor_type="USER",
+                actor_id=identity.user_id,
+                action=SUBMISSION_ANALYSIS_RESUME_ACTION,
+                target_type="EXPERIMENT_SUBMISSION",
+                target_id=submission.id,
+                before_value={
+                    "workflow_status": previous_workflow_status,
+                    "job_status": previous_job_status,
+                },
+                after_value={
+                    "rearmed": rearmed,
+                    "job_id": job_id,
+                    "job_status": job_status,
+                    "generation": generation,
+                    "token_id": str(identity.token_id),
+                    "source_agent": submission.source_agent,
+                    "actor_mode": self._finalizer_mode(submission, identity),
+                    "recovery_mode": recovery_mode,
+                },
+            )
+        )
+        return result
 
     def _inspect_submission_artifacts(
         self, snapshot: _FinalizeSnapshot
@@ -1268,6 +1440,40 @@ class GuardianApplication:
         if submission.submitted_by != identity.user_id and role is not TeamRole.OWNER:
             raise AuthorizationError("只有 Submission 原提交者或项目 Owner 可以 finalize")
         return project
+
+    def _authorize_submission_status(
+        self, session: Session, submission: ExperimentSubmission, identity: RequestIdentity
+    ) -> Project:
+        if identity.project_id != submission.project_id:
+            raise AuthorizationError("MCP Token 未绑定 Submission 所属项目")
+        project = self._projects.require_project_member(
+            session,
+            project_id=submission.project_id,
+            user_id=identity.user_id,
+            team_id=identity.team_id,
+        )
+        role = self._projects.require_member(
+            session,
+            user_id=identity.user_id,
+            team_id=project.team_id,
+        )
+        if submission.submitted_by != identity.user_id and role is not TeamRole.OWNER:
+            raise AuthorizationError("只有 Submission 原提交者或项目 Owner 可以读取状态")
+        return project
+
+    @staticmethod
+    def _job_receipt(job: WorkflowJob) -> WorkflowJobReceipt:
+        return WorkflowJobReceipt(
+            id=job.id,
+            status=job.status,
+            generation=job.generation,
+            attempt_count=job.attempt_count,
+            max_attempts=job.max_attempts,
+            available_at=job.available_at,
+            started_at=job.started_at,
+            completed_at=job.completed_at,
+            last_error=job.last_error,
+        )
 
     @staticmethod
     def _finalizer_mode(submission: ExperimentSubmission, identity: RequestIdentity) -> str:

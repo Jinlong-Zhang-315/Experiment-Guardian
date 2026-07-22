@@ -22,6 +22,11 @@ class SubmissionWorkflowState(TypedDict, total=False):
     """
 
     submission_id: str
+    job_id: str
+    generation: int
+    lease_owner: str
+    message_action: str
+    retry_delay_seconds: int
     processing_step: str
     artifact_ids: list[str]
     parsed_config: dict[str, Any]
@@ -46,6 +51,7 @@ WORKFLOW_ORDER = (
     WorkflowStep.NEEDS_REVIEW,
 )
 R11_WORKFLOW_ORDER = WORKFLOW_ORDER[:5]
+R12A_WORKFLOW_ORDER = WORKFLOW_ORDER[:6]
 
 
 def build_submission_workflow(

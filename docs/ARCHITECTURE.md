@@ -1,7 +1,7 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-22
-对应数据库 revision：`20260722_07`
+对应数据库 revision：`20260722_08`
 
 本文档维护当前仓库的实际框架。状态标记：
 
@@ -21,7 +21,7 @@
        v                                                              v
 +----------------------+                                  +----------------------+
 | admin_cli.py         |                                  | mcp_server/server.py |
-| [DONE]               |                                  | 6 tools exposed      |
+| [DONE]               |                                  | 7 tools exposed      |
 | - bootstrap Owner    |                                  | [DONE protocol]      |
 | - issue MCP token    |                                  +----------+-----------+
 | - revoke token       |                                             |
@@ -35,7 +35,7 @@
            |                                                           v
            |        Browser / API Client                    +------------------------+
            |                 |                              | GuardianApplication    |
-           |                 v                              | [PARTIAL: 5/6]         |
+           |                 v                              | [PARTIAL: 6/7]         |
            |      +------------------------+                | project_get_context    |
            |      | FastAPI                |                | experiment_check_plan  |
            |      | /health [DONE]         |                |   [DONE]               |
@@ -44,6 +44,8 @@
            |      | [DONE]                 |                | submission_prepare     |
            |      | /projects/initialize   |                | submission_finalize    |
            |      | [DONE]                 |                |   [DONE]               |
+           |      |                        |                | submission_get_status  |
+           |      |                        |                |   [DONE]               |
            |      |                        |                | query [SCAFFOLD]       |
            |      +-----------+------------+                            |
            |                  | Bearer auth                             |
@@ -67,6 +69,7 @@
                   | - safe reupload key rotation  |
                   | - Owner finalize recovery     |
                   | - R11 analysis orchestration  |
+                  | - R12a summary scheduling     |
                   | - stable application errors   |
                   +---------------+---------------+
                                   |
@@ -83,6 +86,7 @@
                   | - submission/artifact replay  |
                   | - finalize row locks/evidence |
                   | - analysis cursor/risk query  |
+                  | - Job/Outbox generation/lease |
                   +---------------+---------------+
                                   |
                                   v
@@ -94,7 +98,7 @@
                   | audit_logs, idempotency_records, plan_checks  |
                   | approval_records, run_manifests               |
                   | experiment_submissions, artifacts             |
-                  | submission_risks                              |
+                  | submission_risks, workflow_jobs, outbox_events|
                   +-----------------------------------------------+
 ```
 
@@ -105,7 +109,7 @@
 | Interface Layer                                                          |
 |                                                                          |
 |  FastAPI routes                 MCP tools                 Admin CLI       |
-|  [DONE partial API]             [DONE 5/6 use cases]      [DONE]          |
+|  [DONE partial API]             [DONE 6/7 use cases]      [DONE]          |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -114,6 +118,7 @@
 |  container.py       identity.py       ports.py       services.py         |
 |  dependency wiring  trusted identity  use-case API   transactions/auth   |
 |  submission_analysis.py [DONE R11 five-node persisted analysis]          |
+|  async_summary.py [DONE R12a scheduler/outbox/lease/retry/summary]        |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -132,7 +137,7 @@
 |  database.py      models/         repositories/        security.py       |
 |  SQLAlchemy       ORM schema      project/plan/governance repositories   |
 |                                                                          |
-|  S3 PUT/HEAD [DONE]  exact VersionId GET [DONE]  Bedrock [PLANNED]         |
+|  S3 PUT/HEAD/GET [DONE]  SQS [DONE adapter]  Bedrock Converse [DONE]      |
 +--------------------------------------------------------------------------+
 ```
 
@@ -179,6 +184,7 @@ User
   |                                  |          +---- UPLOAD_VERIFIED audit snapshot
   |                                  |          +---- workflow status/last completed step
   |                                  |          +---- bounded analysis snapshot
+  |                                  |          +---- generated_summary (LLM interpretation)
   |                                  |          +----< SubmissionRisk
   |                                  |          |        +---- unique risk fingerprint
   |                                  |          |        +---- severity/evidence/blocking
@@ -186,6 +192,10 @@ User
   |                                  |                   +---- declared hash/size/S3 key
   |                                  |                   +---- cloud metadata/evidence/time
   |                                  |                   +---- immutable S3 VersionId
+  |                                  |          +----1 WorkflowJob (SUBMISSION_SUMMARY)
+  |                                  |                   +---- generation/status/attempts
+  |                                  |                   +---- lease/error/SQS message ID
+  |                                  |                   +----< OutboxEvent per generation
   |                                  |
   |                                  +----< AuditLog
   |
@@ -270,8 +280,26 @@ Experiment -> ExperimentMetric -> Memory
       same run conditions LOW; duplicate candidates are restricted to the same project
    -> transient S3 failure: PROCESSING/RETRYABLE_FAILURE; same finalize key resumes
    -> invalid immutable content: FAILED/TERMINAL_FAILURE; create a new Submission
-   -> completed prefix: PROCESSING/AWAITING_ENRICHMENT at RISK_ANALYSIS
+   -> completed risk prefix: PROCESSING/QUEUED at RISK_ANALYSIS
+   -> same risk transaction creates unique WorkflowJob + OutboxEvent
    -> successful replay skips completed HEAD, GET and analysis nodes
+
+10. experiment-guardian-worker
+   -> startup reconciles revision 07 AWAITING_ENRICHMENT rows that lack a Job
+   -> leases pending Outbox row, publishes minimal generation envelope to SQS outside transaction
+   -> crash after send may duplicate a Standard Queue message; generation/cursor makes it harmless
+   -> leases matching Job and runs the six-node graph prefix; first five nodes are cursor no-ops
+   -> builds a bounded structured source from Intent, Manifest, result metrics and existing risks
+   -> Bedrock Converse returns plain text only; no LOG/NOTE payload is sent
+   -> success persists one generated_summary, then deletes SQS receipt
+   -> retryable dependency failure uses 30s/120s/480s/... capped at 3600s
+   -> fifth failure marks DEAD_LETTER; original submitter or Owner can use a new finalize key
+   -> success: PROCESSING/AWAITING_ENRICHMENT at SUMMARY_GENERATION
+
+11. Local Agent calls submission_get_status(submission_id)
+   -> submission:read + project binding + membership
+   -> original submitter or Owner only
+   -> returns dynamic Submission/Job/risk/summary state; never triggers processing
 ```
 
 ## 工作流实现边界
@@ -284,11 +312,15 @@ Submission LangGraph full topology:
 UPLOAD_VERIFICATION -> CONFIG_PARSE -> MANIFEST_VALIDATION -> DUPLICATE_CHECK
 -> RISK_ANALYSIS
 
-[PLANNED R12]
--> SUMMARY_GENERATION -> EMBEDDING_GENERATION -> NEEDS_REVIEW -> END
+[DONE R12a]
+-> SUMMARY_GENERATION
 
-数据库业务表是恢复真相源，LangGraph 不保存 checkpoint。NEEDS_REVIEW 是计划中的持久化
-交接状态，不是 LangGraph interrupt；正式确认将使用独立幂等事务。
+[PLANNED R12b]
+-> EMBEDDING_GENERATION -> NEEDS_REVIEW -> END
+
+数据库业务表和 WorkflowJob 是恢复真相源，LangGraph 不保存 checkpoint。SQS 只携带
+`schema_version/job_id/submission_id/generation`。NEEDS_REVIEW 是计划中的持久化交接状态，
+不是 LangGraph interrupt；正式确认将使用独立幂等事务。
 ```
 
 ## 计划中的完整部署边界
@@ -301,13 +333,23 @@ Local Agent -> MCP Server -----+-> FastAPI/Application
              +------------------------+------------------------+
              |                        |                        |
              v                        v                        v
-       CockroachDB               Amazon S3                Bedrock
-       state/vector              artifacts                summary/risk
-       [PARTIAL]                 [PARTIAL: PUT/HEAD/GET]     [PLANNED]
+       CockroachDB               Amazon S3              SQS Standard
+       state/outbox              artifacts              summary jobs
+       [PARTIAL]                 [PARTIAL: PUT/HEAD/GET] [DONE adapter]
+             |                                                   |
+             |                                                   v
+             +-------------------------------------------> R12a Worker
+                                                               |
+                                                               v
+                                                         Bedrock Converse
+                                                         [DONE adapter]
              |
              v
        CloudWatch [PLANNED]
 ```
+
+Queue、DLQ/redrive、IAM/KMS 和 Bedrock model access 的 AWS 资源定义仍为 `[PLANNED R14]`；
+R12a 只实现应用适配器和运行协议。
 
 ## 文档更新要求
 

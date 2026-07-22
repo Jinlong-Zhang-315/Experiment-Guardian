@@ -10,10 +10,14 @@ from experiment_guardian.infrastructure.repositories.projects import SqlAlchemyP
 from experiment_guardian.infrastructure.repositories.submissions import (
     SqlAlchemySubmissionRepository,
 )
+from experiment_guardian.infrastructure.repositories.workflows import (
+    SqlAlchemyWorkflowRepository,
+)
 
 __all__ = [
     "SqlAlchemyGovernanceRepository",
     "SqlAlchemyPlanCheckRepository",
     "SqlAlchemyProjectRepository",
     "SqlAlchemySubmissionRepository",
+    "SqlAlchemyWorkflowRepository",
 ]

@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
 更新时间：2026-07-22
-当前完成轮次：R11
-下一轮：R12 摘要、embedding 与审核回执
+当前完成轮次：R12a
+下一轮：R12b embedding 与审核回执
 
 本文档维护“每轮交付了什么”和“下一轮只做什么”。详细缺陷与修复过程见
 `docs/DEVELOPMENT_LOG.md`，当前代码结构见 `docs/ARCHITECTURE.md`。
@@ -23,7 +23,8 @@
 | R9 | S3 草稿提交 | 完成 | RECEIVED 草稿、artifact 声明与短期 PUT URL |
 | R10 | 上传确认与 S3 复核 | 完成 | UPLOAD_VERIFIED 与原子云端证据 |
 | R11 | 可恢复的确定性分析前半程 | 完成 | 解析、校验、查重和风险 |
-| R12 | 摘要、embedding 与审核回执 | 下一轮 | 不属于当前轮次 |
+| R12a | 可靠异步编排与摘要 | 完成 | Outbox + SQS Worker + Bedrock 摘要 |
+| R12b | embedding 与审核回执 | 下一轮 | 不属于当前轮次 |
 | R13 | 正式实验确认、查询和向量候选 | 排队 | 不属于下一轮 |
 | R14 | Web 页面与 AWS 演示部署 | 排队 | 不属于下一轮 |
 
@@ -233,41 +234,67 @@ R10 没有下载或解析 CONFIG/RESULT，不启动 LangGraph，不生成风险�
 
 R11 没有调用 Bedrock、生成 embedding/审核回执、确认正式实验、查询向量或开发 Web。
 
-## 下一轮 R12：摘要、embedding 与审核回执
+## R12a：可靠异步编排与摘要
+
+交付：
+
+* revision `20260722_08` 只增加 `generated_summary`、`workflow_jobs` 和
+  `outbox_events`，没有提前迁移 embedding 或审核回执字段。
+* R11 风险节点在同一数据库事务内创建唯一摘要 Job 和 Outbox；升级前停在 R11 终点的
+  Submission 由 Worker 启动时对账补齐。
+* SQS Standard 消息只包含 schema、Job、Submission 和 generation；API 不直接发消息，
+  Outbox 发布允许重复但不会丢失业务意图。
+* 单并发 Worker 使用 120 秒数据库租约和 SQS 可见性超时；摘要 Job 最多尝试五次，按
+  30/120/480/... 秒退避并封顶 3600 秒，最终进入可人工重置的 `DEAD_LETTER`。
+* Bedrock Converse 输入只使用 Intent 目标、Manifest 运行条件、结果和已存在风险；不发
+  LOG/NOTE，不接收工具调用，不允许模型新增风险、修改等级、批准或断言实验正确。
+* 摘要最多 3000 字，保存 model、prompt version、source hash、生成时间、usage 和明确
+  disclaimer；它是模型解释，不被标为验证证据。
+* 新增 `submission_get_status`，因此 MCP 边界从六个工具显式扩为七个；仅原提交者或
+  Owner 可读取 Submission/Job/风险/摘要动态状态。
+* `submission_finalize` 同 key 继续动态重放；新 key 可由原提交者或 Owner 恢复 R11 前缀，
+  或对 retryable/dead 摘要 Job 增加 generation 重新入队，不重复访问 S3。
+* 摘要成功后刻意停在 `PROCESSING/AWAITING_ENRICHMENT/SUMMARY_GENERATION`，没有提前
+  生成 embedding、审核回执或进入 `NEEDS_REVIEW`。
+* 默认严格 Fake 覆盖 Outbox 发布失败、发送后崩溃、重复/旧 generation、模型提交前崩溃、
+  重试/死信/恢复、权限和降级；真实 SQS/Bedrock 验收通过环境开关显式执行。
+
+R12a 不创建 SQS/DLQ/IAM/KMS 基础设施，不实现 embedding、审核回执、正式实验、查询、
+Web、自动训练或自动改代码。
+
+## 下一轮 R12b：embedding 与审核回执
 
 ### 单一目标
 
-只将 `AWAITING_ENRICHMENT` Submission 推进至 `NEEDS_REVIEW`，形成可供 Web/API 后续
-读取的短审核回执。正式 Experiment 的创建与确认事务仍留给 R13。
+只从已持久化 `SUMMARY_GENERATION` 继续生成 embedding 和短审核回执，并将 Submission
+推进至 `NEEDS_REVIEW`。正式 Experiment 的创建与确认事务仍留给 R13。
 
 ### 本轮包含
 
-1. 从 `RISK_ANALYSIS` 游标继续实现 `SUMMARY_GENERATION`、`EMBEDDING_GENERATION` 和
-   `NEEDS_REVIEW` 三步，每步继续独立事务和可恢复游标。
-2. 摘要输入只读取 R11 已固化的结构化快照与风险；Bedrock 失败可重试，模型输出不能
-   修改风险等级、Manifest 校验结论或正式记录。
-3. embedding 保存来源文本 hash、模型标识和维度；生成结果只为 R13 查询准备，不在 R12
-   暴露向量查询，也不替代结构化过滤。
-4. 生成短审核回执，只突出目标、允许变化、关键结果和最高风险；LOW/MEDIUM 详情默认可
-   折叠，HIGH/CRITICAL 必须展开，CRITICAL 明确不可确认。
-5. 完成后原子切换为 `NEEDS_REVIEW`，重复运行从持久化结果重放，不重复调用外部模型。
+1. 冻结 embedding 输入文本与 source hash，新增可配置模型 ID 和维度，并验证返回维度、
+   有限数值和模型标识；复用现有 Job/Outbox/lease/generation 协议，不新建第二套队列。
+2. 生成确定性的短审核回执，只突出目标、运行条件、关键结果、最高风险和证据边界；
+   LLM 摘要只是其中一个展示字段，不能成为风险或权限来源。
+3. LOW/MEDIUM 详情保持可折叠数据，HIGH/CRITICAL 强制列入回执；CRITICAL 明确不可确认。
+4. embedding 与回执成功后在事务内切换为 `NEEDS_REVIEW`，重复消息直接重放持久化结果。
+5. 扩展 `submission_get_status` 返回 embedding 元数据和审核回执，但不返回原始向量。
 
 ### 明确不包含
 
 * 正式实验确认、Experiment/Metric/Memory 完整事务和 `experiments_query`。
-* Web 页面、自动训练、自动改代码和 AWS 部署。
+* Web 页面、自动训练、自动改代码和 AWS 基础设施部署。
 * LLM 自动批准、降低风险、修改配置或覆盖 Context/Intent/Constraint。
 
 ### 验收条件
 
-* 外部模型/embedding 暂时失败时从最后成功步骤恢复，已完成调用不会重复。
-* 确定性 CRITICAL 风险在摘要和回执中保持 CRITICAL，不能被模型输出覆盖。
-* 成功状态严格为 `NEEDS_REVIEW`，审核回执足够短且证据类型措辞准确。
-* R10/R11 finalize、迁移、VersionId、游标、查重和风险测试保持全量回归通过。
+* 从 R12a 成功、retryable、dead 和重复消息状态均可恢复，摘要成功结果不重复调用。
+* embedding 模型/维度/输入 hash 可追溯，异常维度或非有限值不会进入 `NEEDS_REVIEW`。
+* 确定性 CRITICAL 风险在审核回执中保持 CRITICAL，不能被模型输出覆盖。
+* R10/R11/R12a finalize、迁移、VersionId、Outbox、租约和摘要测试全量回归通过。
 
 ## 后续队列
 
-后续轮次只表示顺序，不在 R11 同时开发：
+后续轮次只表示顺序，不在 R12a 同时开发：
 
 ```text
 R13 Transactional experiment confirmation + structured/vector query

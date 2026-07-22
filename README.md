@@ -4,7 +4,8 @@ Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的
 已完成 P0 基础骨架、已认证的正式上下文读取、可持久化的训练前确定性配置检查、
 Owner 审批、不可变 Run Manifest、S3 实验草稿上传准备和上传对象复核。
 上传复核通过后会同步运行可恢复的确定性分析前半程，完成配置/结果解析、Manifest
-一致性校验、项目内查重和风险持久化。
+一致性校验、项目内查重和风险持久化；随后通过 CockroachDB 事务 Outbox、SQS Standard
+和独立 Worker 异步生成受约束的 Bedrock 摘要。
 它不保证实验一定正确，也不声称能够
 完整验证真实训练行为。
 
@@ -16,7 +17,7 @@ Owner 审批、不可变 Run Manifest、S3 实验草稿上传准备和上传对�
 * LOCKED、APPROVAL_REQUIRED、EXPERIMENT_VARIABLE 确定性判定；
 * 从项目上下文到正式实验、artifact、向量记忆和审计的 SQLAlchemy 模型；
 * FastAPI 健康/能力接口和 Owner 原子项目初始化接口；
-* 六个 P0 MCP 工具的正式接口名称；
+* 七个 P0 MCP 工具的正式接口名称，包括只读 `submission_get_status`；
 * 基于哈希 Token、scope、角色与项目绑定的 `project_get_context`；
 * 数据库驱动的 `experiment_check_plan`，保存版本、快照、证据和幂等回执；
 * Plan Check 完整保存当时 Context/baseline、Intent、约束和原始配置依据；
@@ -33,7 +34,10 @@ Owner 审批、不可变 Run Manifest、S3 实验草稿上传准备和上传对�
   SHA-256，并使用严格 YAML/JSON 规则解析，单文件上限为 1 MiB；
 * 业务表游标驱动的五节点分析前缀：上传证据、解析、Manifest 校验、结构化查重、风险；
 * 可解析的不一致保存为阻断型 CRITICAL 风险；完全重复为 MEDIUM、相同运行条件为 LOW；
-* 七个收敛的 Alembic 迁移和可信本地管理 CLI；
+* 风险完成时同事务创建唯一摘要 Job 和 Outbox，API 进程不直接调用 SQS 或 Bedrock；
+* 单并发 Worker 使用 generation、数据库租约和 SQS 可见性超时处理至少一次投递；
+* Bedrock Converse 只生成最多 3000 字的解释性纯文本，不能新增/降级风险或改变权限；
+* 八个收敛的 Alembic 迁移和可信本地管理 CLI；
 * Alembic、pytest、Ruff 和 mypy 基础配置。
 
 ## 治理边界
@@ -51,9 +55,11 @@ Owner 审批、不可变 Run Manifest、S3 实验草稿上传准备和上传对�
 
 MCP 工具不接受客户端提交的用户 UUID，调用者来自服务端验证的项目绑定 Token。当前
 `project_get_context`、`experiment_check_plan`、`run_manifest_create` 和
-`submission_prepare`、`submission_finalize` 已接入 CockroachDB；`experiments_query`
+`submission_prepare`、`submission_finalize`、`submission_get_status` 已接入 CockroachDB；
+`experiments_query`
 会明确返回尚未实现，不会伪造数据。
-Bedrock、embedding、人工审核回执、正式实验确认/查询和四个 Web 页面尚未实现。
+embedding、人工审核回执、正式实验确认/查询和四个 Web 页面尚未实现。R12a 已接入
+Bedrock 摘要适配器，但 SQS 与 Bedrock 资源由部署环境提供，本仓库尚未创建 AWS 资源。
 
 `UPLOAD_VERIFIED` 仅表示云端读取到的 S3 对象元数据与数据库声明一致；R11 分析进一步
 确认固定版本的字节哈希、语法和 Manifest 一致性，但仍不表示训练过程或实验结论正确。
@@ -61,8 +67,9 @@ Bedrock、embedding、人工审核回执、正式实验确认/查询和四个 We
 Token 恢复该操作。成功和失败审计均记录具体 Token ID、原始 Agent 标识和恢复模式。
 
 提交分析使用 `experiment_submissions.processing_step/workflow_status` 作为唯一恢复依据，
-LangGraph 只负责编排。R11 完成后停在 `PROCESSING/AWAITING_ENRICHMENT`；后续
-`NEEDS_REVIEW` 是持久化交接状态，不是 LangGraph 原生 `interrupt()`。
+LangGraph 只负责编排。R11 风险节点完成后进入 `PROCESSING/QUEUED/RISK_ANALYSIS`；
+R12a 摘要成功后停在 `PROCESSING/AWAITING_ENRICHMENT/SUMMARY_GENERATION`。后续
+`NEEDS_REVIEW` 是 R12b 的持久化交接状态，不是 LangGraph 原生 `interrupt()`。
 
 ## 本地环境
 
@@ -91,6 +98,7 @@ alembic upgrade head
 `run_manifests`，`20260721_05` 增加 `experiment_submissions` 和 `artifacts`。
 `20260722_06` 增加上传复核证据字段，并扩展 Submission 状态列。
 `20260722_07` 增加分析游标、结构化中间结果和 `submission_risks`。
+`20260722_08` 增加 `generated_summary`、`workflow_jobs` 和 `outbox_events`。
 后续表按开发阶段通过新 revision 添加，不提前冻结。
 
 ## 初始化与检查链路
@@ -123,8 +131,8 @@ experiment-guardian-admin issue-mcp-token \
 ```
 
 stdio MCP Server 从 `MCP_ACCESS_TOKEN` 环境变量读取凭据。新签发的 MCP Token 同时具备
-`project:read`、`experiment:check`、`manifest:create`、`submission:create` 和
-`submission:finalize` scope；
+`project:read`、`experiment:check`、`manifest:create`、`submission:create`、
+`submission:finalize` 和 `submission:read` scope；
 CLI 返回值会显式列出实际 scopes。旧 Token 需要重新签发。使用 `submission_prepare`
 前还需配置 `AWS_REGION`、`S3_BUCKET` 和 AWS SDK 凭据；Bucket 必须开启 Versioning，
 `submission_finalize` 使用同一配置读取对象元数据并拒绝无 VersionId 的对象。
@@ -160,6 +168,17 @@ experiment-guardian-api
 experiment-guardian-mcp
 ```
 
+R12a 摘要 Worker 需要额外配置 `SQS_SUBMISSION_QUEUE_URL` 和
+`BEDROCK_SUMMARY_MODEL_ID`。未配置时 API 仍可可靠写入待投递 Outbox，但 Worker 会以
+明确错误拒绝启动：
+
+```bash
+experiment-guardian-worker
+```
+
+队列应为带 DLQ/redrive policy 的 SQS Standard Queue；可见性超时默认 120 秒，Worker
+长轮询默认 20 秒。本轮不自动创建 Queue、DLQ、IAM Role 或 Bedrock 模型访问权限。
+
 ## 目录职责
 
 ```text
@@ -168,8 +187,9 @@ src/experiment_guardian/
 ├── application/     # 用例编排与端口定义
 ├── infrastructure/  # CockroachDB、S3、Bedrock 等适配器
 ├── api/             # FastAPI 路由与 HTTP 协议转换
-├── mcp_server/      # 面向本地 Agent 的六个 MCP 工具
-└── workflows/       # LangGraph 拓扑；R11 前五节点由业务表游标恢复
+├── mcp_server/      # 面向本地 Agent 的七个 MCP 工具
+├── worker.py        # R12a Outbox 调度、SQS 消费和摘要 Worker 入口
+└── workflows/       # LangGraph 拓扑；R12a 使用前六个连续节点
 ```
 
 项目维护文档：
@@ -200,8 +220,15 @@ RUN_COCKROACH_INTEGRATION=1 pytest -q tests/integration/test_plan_check_cockroac
 RUN_S3_INTEGRATION=1 pytest -q tests/integration/test_s3_storage.py
 ```
 
+默认严格 Fake 已覆盖 SQS/Bedrock 语义。配置专用测试资源和凭据后，可分别显式验收：
+
+```bash
+RUN_SQS_INTEGRATION=1 pytest -q tests/integration/test_async_aws.py
+RUN_BEDROCK_INTEGRATION=1 pytest -q tests/integration/test_async_aws.py
+```
+
 ## 下一开发步
 
-1. 只实现 R12 的摘要、embedding 和短审核回执，不进入正式实验事务；
-2. 从 `AWAITING_ENRICHMENT` 恢复，完成后进入 `NEEDS_REVIEW`；
+1. R12b 只实现 embedding、短审核回执和 `NEEDS_REVIEW` 交接，不进入正式实验事务；
+2. 从 `SUMMARY_GENERATION` 恢复，保持模型输出不能覆盖确定性风险；
 3. 正式实验确认、查询、Web 和 AWS 部署继续按独立轮次推进。

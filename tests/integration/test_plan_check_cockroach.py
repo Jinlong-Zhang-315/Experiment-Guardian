@@ -440,7 +440,7 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         assert finalized.verification_result is UploadVerificationResult.PASS
         assert finalized.status is SubmissionStatus.UPLOAD_VERIFIED
         assert finalized.analysis is not None
-        assert finalized.analysis.workflow_status is WorkflowStatus.AWAITING_ENRICHMENT
+        assert finalized.analysis.workflow_status is WorkflowStatus.QUEUED
         prepared_after_finalize = guardian.submission_prepare(submission_request, identity)
         assert prepared_after_finalize.status is SubmissionStatus.UPLOAD_VERIFIED
         assert prepared_after_finalize.artifact_uploads == []
@@ -452,7 +452,7 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             persisted_submission = session.get(ExperimentSubmission, submission.submission_id)
             assert persisted_submission is not None
             assert persisted_submission.status is SubmissionStatus.PROCESSING
-            assert persisted_submission.workflow_status is WorkflowStatus.AWAITING_ENRICHMENT
+            assert persisted_submission.workflow_status is WorkflowStatus.QUEUED
             assert persisted_submission.processing_step is WorkflowStep.RISK_ANALYSIS
             assert persisted_submission.upload_verification_snapshot is not None
             persisted_artifacts = session.scalars(select(Artifact)).all()

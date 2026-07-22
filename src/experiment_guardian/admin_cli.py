@@ -27,6 +27,7 @@ OWNER_MCP_SCOPES = frozenset(
         "project:read",
         "submission:create",
         "submission:finalize",
+        "submission:read",
     }
 )
 

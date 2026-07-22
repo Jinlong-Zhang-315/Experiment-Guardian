@@ -12,6 +12,7 @@ from experiment_guardian.infrastructure.models.entities import (
     ExperimentSubmission,
     IdempotencyRecord,
     Memory,
+    OutboxEvent,
     PlanCheck,
     Project,
     ProjectContext,
@@ -21,6 +22,7 @@ from experiment_guardian.infrastructure.models.entities import (
     Team,
     TeamMember,
     User,
+    WorkflowJob,
 )
 
 __all__ = [
@@ -35,6 +37,7 @@ __all__ = [
     "ExperimentSubmission",
     "IdempotencyRecord",
     "Memory",
+    "OutboxEvent",
     "PlanCheck",
     "Project",
     "ProjectContext",
@@ -44,4 +47,5 @@ __all__ = [
     "Team",
     "TeamMember",
     "User",
+    "WorkflowJob",
 ]

@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -18,7 +18,7 @@ mcp = server.mcp
 
 
 @pytest.mark.asyncio
-async def test_mcp_exposes_only_the_six_p0_tools() -> None:
+async def test_mcp_exposes_only_the_seven_p0_tools() -> None:
     tools = await mcp.list_tools()
     names = {tool.name for tool in tools}
 
@@ -28,6 +28,7 @@ async def test_mcp_exposes_only_the_six_p0_tools() -> None:
         "run_manifest_create",
         "submission_prepare",
         "submission_finalize",
+        "submission_get_status",
         "experiments_query",
     }
 
@@ -233,3 +234,37 @@ def test_submission_finalize_uses_server_identity_and_no_client_metadata(
     assert command.idempotency_key == idempotency_key
     assert captured["identity"] is identity
     assert result == {"verification_result": "PASS"}
+
+
+def test_submission_get_status_uses_server_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = RequestIdentity(
+        user_id=uuid4(),
+        team_id=uuid4(),
+        token_id=uuid4(),
+        project_id=uuid4(),
+        scopes=frozenset({"submission:read"}),
+    )
+    captured: dict[str, object] = {}
+
+    class FakeUseCases:
+        def submission_get_status(
+            self, *, submission_id: UUID, identity: RequestIdentity
+        ) -> SimpleNamespace:
+            captured["submission_id"] = submission_id
+            captured["identity"] = identity
+            return SimpleNamespace(model_dump=lambda **_: {"workflow_status": "QUEUED"})
+
+    monkeypatch.setattr(
+        server,
+        "get_identity_provider",
+        lambda: SimpleNamespace(current_identity=lambda: identity),
+    )
+    monkeypatch.setattr(server, "get_guardian_use_cases", lambda: FakeUseCases())
+    submission_id = uuid4()
+
+    result = server.submission_get_status(str(submission_id))
+
+    assert result == {"workflow_status": "QUEUED"}
+    assert captured == {"submission_id": submission_id, "identity": identity}
