@@ -53,6 +53,7 @@ from experiment_guardian.infrastructure.models import (
     ExperimentSubmission,
     PlanCheck,
     RunManifest,
+    SubmissionEmbedding,
     Team,
     TeamMember,
     User,
@@ -210,6 +211,7 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             "processing_step",
             "processing_error",
             "analysis_snapshot",
+            "review_receipt",
         } <= {
             column["name"] for column in inspect(test_engine).get_columns("experiment_submissions")
         }
@@ -460,6 +462,28 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             assert all(
                 artifact.verification_evidence is not None for artifact in persisted_artifacts
             )
+
+        with factory() as session, session.begin():
+            session.add(
+                SubmissionEmbedding(
+                    submission_id=submission.submission_id,
+                    project_id=initialized.project_id,
+                    embedding=[1.0, *([0.0] * 1023)],
+                    model_id="amazon.titan-embed-text-v2:0",
+                    dimension=1024,
+                    normalized=True,
+                    document_version="submission-search-v1",
+                    input_text="cockroach vector acceptance",
+                    input_sha256="c" * 64,
+                    input_token_count=3,
+                    generated_at=COLLECTED_AT,
+                )
+            )
+        with factory() as session:
+            persisted_embedding = session.scalar(select(SubmissionEmbedding))
+            assert persisted_embedding is not None
+            assert len(persisted_embedding.embedding) == 1024
+            assert persisted_embedding.embedding[0] == 1.0
 
         test_engine.dispose()
         test_engine = None

@@ -26,12 +26,14 @@ from experiment_guardian.domain.enums import (
     ExperimentStatus,
     IntentStatus,
     ProtectionLevel,
+    ReviewEligibility,
     RiskSeverity,
     SubmissionStatus,
     SubmittedRunStatus,
     UploadVerificationResult,
     VerificationStatus,
     WorkflowJobStatus,
+    WorkflowJobType,
     WorkflowStatus,
     WorkflowStep,
 )
@@ -305,6 +307,10 @@ class ParameterChange(ContractModel):
     constraint_status: VerificationStatus | None = None
     inference_basis: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+    decision: Literal["ALLOWED", "OWNER_APPROVED"] | None = None
+    impact: str | None = Field(default=None, max_length=2000)
+    evidence_type: EvidenceType | None = None
+    evidence_source: str | None = Field(default=None, max_length=500)
 
 
 class RiskItem(ContractModel):
@@ -317,6 +323,7 @@ class RiskItem(ContractModel):
     expected_value: Any = None
     impact: str | None = None
     blocking: bool = False
+    resolved: bool = False
     evidence_type: EvidenceType | None = EvidenceType.CLOUD_VERIFIED
     evidence_source: str | None = None
     collected_at: datetime | None = None
@@ -637,6 +644,13 @@ class SubmissionAnalysisReceipt(ContractModel):
             self.submission_status is not SubmissionStatus.FAILED or self.retryable
         ):
             raise ValueError("TERMINAL_FAILURE 必须对应不可重试的 FAILED Submission")
+        if self.workflow_status is WorkflowStatus.COMPLETED and (
+            self.submission_status is not SubmissionStatus.NEEDS_REVIEW
+            or self.processing_step is not WorkflowStep.NEEDS_REVIEW
+            or self.retryable
+            or self.error is not None
+        ):
+            raise ValueError("COMPLETED 分析必须对应无错误的 NEEDS_REVIEW 交接状态")
         if (
             self.workflow_status
             in {
@@ -708,6 +722,7 @@ class GeneratedSummary(ContractModel):
 
 class WorkflowJobReceipt(ContractModel):
     id: UUID
+    job_type: WorkflowJobType
     status: WorkflowJobStatus
     generation: int = Field(ge=1)
     attempt_count: int = Field(ge=0)
@@ -718,13 +733,27 @@ class WorkflowJobReceipt(ContractModel):
     last_error: dict[str, Any] | None = None
 
 
-class SummaryQueueEnvelope(ContractModel):
+class WorkflowQueueEnvelope(ContractModel):
     """SQS 中只保留定位信息，所有业务事实均从数据库重新加载。"""
 
     schema_version: Literal[1] = 1
     job_id: UUID
     submission_id: UUID
     generation: int = Field(ge=1)
+
+
+# R12a 客户端和测试仍可使用旧名称；wire shape 没有变化。
+SummaryQueueEnvelope = WorkflowQueueEnvelope
+
+
+class EmbeddingMetadata(ContractModel):
+    model_id: str = Field(min_length=1, max_length=500)
+    dimension: Literal[1024] = 1024
+    normalized: Literal[True] = True
+    document_version: Literal["submission-search-v1"] = "submission-search-v1"
+    input_sha256: str = Field(pattern=SHA256_PATTERN)
+    input_token_count: int | None = Field(default=None, ge=0)
+    generated_at: datetime
 
 
 class SubmissionStatusResult(ContractModel):
@@ -739,9 +768,12 @@ class SubmissionStatusResult(ContractModel):
     retryable: bool
     processing_error: dict[str, Any] | None = None
     job: WorkflowJobReceipt | None = None
+    jobs: list[WorkflowJobReceipt] = Field(default_factory=list)
     risk_count: int = Field(ge=0)
     highest_risk: RiskSeverity | None = None
     generated_summary: GeneratedSummary | None = None
+    embedding: EmbeddingMetadata | None = None
+    review_receipt: "SubmissionReceipt | None" = None
     updated_at: datetime
     disclaimer: str = Field(min_length=1, max_length=1000)
 
@@ -905,24 +937,62 @@ class ProjectContextBundle(ContractModel):
         return self
 
 
+class ReviewTrace(ContractModel):
+    project_id: UUID
+    context_id: UUID
+    context_version: int = Field(gt=0)
+    intent_id: UUID
+    intent_version: int = Field(gt=0)
+    plan_check_id: UUID
+    run_manifest_id: UUID
+    manifest_hash: str = Field(pattern=SHA256_PATTERN)
+
+
+class ReviewFact(ContractModel):
+    name: str = Field(min_length=1, max_length=200)
+    value: Any
+    evidence_type: EvidenceType
+    source: str = Field(min_length=1, max_length=500)
+    collected_at: datetime
+    collection_tool: str = Field(min_length=1, max_length=200)
+
+
 class SubmissionReceipt(ContractModel):
     """面向人工审核的短回执，低风险详情由界面默认折叠。"""
 
+    schema_version: Literal[1] = 1
     submission_id: UUID
     objective: str
+    objective_evidence: ReviewFact
+    trace: ReviewTrace
+    run_conditions: list[ReviewFact]
     allowed_changes: list[ParameterChange]
-    key_results: dict[str, Any]
-    highest_risk: RiskSeverity
+    key_results: list[ReviewFact]
+    highest_risk: RiskSeverity | None
     highlighted_risks: list[RiskItem]
     collapsed_low_risk_count: int = Field(ge=0)
+    collapsed_medium_risk_count: int = Field(ge=0)
+    evidence_counts: dict[EvidenceType, int]
+    review_eligibility: ReviewEligibility
     can_confirm: bool
     requires_owner: bool
+    summary_available: bool
+    source_hash: str = Field(pattern=SHA256_PATTERN)
+    generated_at: datetime
     disclaimer: str = "该回执提高风险可见性，不代表实验行为或结果已被完整验证。"
 
     @model_validator(mode="after")
     def critical_risk_cannot_be_confirmed(self) -> "SubmissionReceipt":
-        if self.highest_risk is RiskSeverity.CRITICAL and self.can_confirm:
-            raise ValueError("CRITICAL 风险不能通过普通确认绕过")
+        expected_can_confirm = self.review_eligibility is not ReviewEligibility.BLOCKED
+        expected_requires_owner = self.review_eligibility is ReviewEligibility.OWNER_ONLY
+        if self.can_confirm != expected_can_confirm:
+            raise ValueError("can_confirm 必须由 review_eligibility 推导")
+        if self.requires_owner != expected_requires_owner:
+            raise ValueError("requires_owner 必须由 review_eligibility 推导")
+        if self.highest_risk is RiskSeverity.CRITICAL and (
+            self.review_eligibility is not ReviewEligibility.BLOCKED
+        ):
+            raise ValueError("CRITICAL 风险必须阻断确认")
         if any(
             item.severity not in {RiskSeverity.HIGH, RiskSeverity.CRITICAL}
             for item in self.highlighted_risks

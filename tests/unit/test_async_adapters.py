@@ -1,13 +1,18 @@
 """R12a SQS/Bedrock 适配器的严格 Fake 测试，不访问真实 AWS。"""
 
 import json
+from io import BytesIO
 from uuid import uuid4
 
 import pytest
 
 from experiment_guardian.application.errors import ServiceUnavailableError
+from experiment_guardian.core.config import Settings
 from experiment_guardian.domain.contracts import SummaryQueueEnvelope
-from experiment_guardian.infrastructure.bedrock import BedrockSummaryGenerator
+from experiment_guardian.infrastructure.bedrock import (
+    BedrockSummaryGenerator,
+    BedrockTitanV2EmbeddingGenerator,
+)
 from experiment_guardian.infrastructure.queue import SqsSubmissionQueue
 
 
@@ -54,6 +59,19 @@ class FakeBedrockClient:
         if self.error is not None:
             raise self.error
         return self.response
+
+
+class FakeEmbeddingBedrockClient:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+        self.calls: list[dict[str, object]] = []
+        self.error: Exception | None = None
+
+    def invoke_model(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return {"body": BytesIO(json.dumps(self.payload).encode("utf-8"))}
 
 
 def test_sqs_adapter_uses_minimal_envelope_and_visibility_contract() -> None:
@@ -134,3 +152,68 @@ def test_cloud_adapters_fail_fast_when_required_configuration_is_missing() -> No
         SqsSubmissionQueue(queue_url="", region="us-east-1")
     with pytest.raises(ValueError, match="BEDROCK_SUMMARY_MODEL_ID"):
         BedrockSummaryGenerator(model_id="", region="us-east-1")
+
+
+def test_titan_v2_embedding_adapter_sends_fixed_normalized_contract() -> None:
+    vector = [1.0, *([0.0] * 1023)]
+    client = FakeEmbeddingBedrockClient({"embedding": vector, "inputTextTokenCount": 9})
+    generator = BedrockTitanV2EmbeddingGenerator(
+        model_id="amazon.titan-embed-text-v2:0",
+        region="us-east-1",
+        client=client,
+    )
+
+    result = generator.embed("stable facts")
+
+    assert result.vector == vector
+    assert result.input_tokens == 9
+    request = json.loads(str(client.calls[0]["body"]))
+    assert request == {
+        "inputText": "stable facts",
+        "dimensions": 1024,
+        "normalize": True,
+        "embeddingTypes": ["float"],
+    }
+
+
+@pytest.mark.parametrize(
+    "vector",
+    [
+        [1.0, *([0.0] * 1022)],
+        [True, *([0.0] * 1023)],
+        [0.5, *([0.0] * 1023)],
+    ],
+)
+def test_titan_v2_embedding_adapter_rejects_invalid_vectors(vector: list[object]) -> None:
+    generator = BedrockTitanV2EmbeddingGenerator(
+        model_id="amazon.titan-embed-text-v2:0",
+        region="us-east-1",
+        client=FakeEmbeddingBedrockClient({"embedding": vector}),
+    )
+    with pytest.raises(ValueError, match="embedding"):
+        generator.embed("stable facts")
+
+
+def test_titan_v2_embedding_dependency_errors_are_retryable() -> None:
+    client = FakeEmbeddingBedrockClient({"embedding": [1.0, *([0.0] * 1023)]})
+    client.error = PermissionError("access denied")
+    generator = BedrockTitanV2EmbeddingGenerator(
+        model_id="amazon.titan-embed-text-v2:0",
+        region="us-east-1",
+        client=client,
+    )
+    with pytest.raises(ServiceUnavailableError, match="暂时不可用"):
+        generator.embed("stable facts")
+
+
+def test_titan_v2_embedding_configuration_is_fixed_for_r12b() -> None:
+    with pytest.raises(ValueError, match="BEDROCK_EMBEDDING_MODEL_ID"):
+        BedrockTitanV2EmbeddingGenerator(model_id="other-model", region="us-east-1")
+    with pytest.raises(ValueError, match="1024"):
+        BedrockTitanV2EmbeddingGenerator(
+            model_id="amazon.titan-embed-text-v2:0",
+            region="us-east-1",
+            dimension=512,
+        )
+    with pytest.raises(ValueError, match="EMBEDDING_DIMENSION"):
+        Settings(embedding_dimension=512)

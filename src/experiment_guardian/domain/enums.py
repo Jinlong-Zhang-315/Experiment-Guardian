@@ -123,6 +123,7 @@ class WorkflowStatus(StrEnum):
     RETRYABLE_FAILURE = "RETRYABLE_FAILURE"
     TERMINAL_FAILURE = "TERMINAL_FAILURE"
     AWAITING_ENRICHMENT = "AWAITING_ENRICHMENT"
+    COMPLETED = "COMPLETED"
 
 
 class WorkflowStep(StrEnum):
@@ -137,9 +138,18 @@ class WorkflowStep(StrEnum):
 
 
 class WorkflowJobType(StrEnum):
-    """R12a 只调度提交摘要，后续任务类型必须显式扩展。"""
+    """异步提交分析任务；每类任务在一个 Submission 下保持单例。"""
 
     SUBMISSION_SUMMARY = "SUBMISSION_SUMMARY"
+    SUBMISSION_REVIEW_PREPARATION = "SUBMISSION_REVIEW_PREPARATION"
+
+
+class ReviewEligibility(StrEnum):
+    """审核回执计算出的确认权限，不等同于用户当前的实际角色。"""
+
+    RESEARCHER_OR_OWNER = "RESEARCHER_OR_OWNER"
+    OWNER_ONLY = "OWNER_ONLY"
+    BLOCKED = "BLOCKED"
 
 
 class WorkflowJobStatus(StrEnum):

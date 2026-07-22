@@ -20,7 +20,12 @@ from experiment_guardian.infrastructure.models import (
 )
 
 SUMMARY_EVENT_TYPE = "SUBMISSION_SUMMARY_REQUESTED"
-SUMMARY_SCHEMA_VERSION = 1
+REVIEW_EVENT_TYPE = "SUBMISSION_REVIEW_PREPARATION_REQUESTED"
+QUEUE_SCHEMA_VERSION = 1
+EVENT_TYPES = {
+    WorkflowJobType.SUBMISSION_SUMMARY: SUMMARY_EVENT_TYPE,
+    WorkflowJobType.SUBMISSION_REVIEW_PREPARATION: REVIEW_EVENT_TYPE,
+}
 
 
 class SqlAlchemyWorkflowRepository:
@@ -30,13 +35,49 @@ class SqlAlchemyWorkflowRepository:
     def get_summary_job(
         session: Session, submission_id: UUID, *, for_update: bool = False
     ) -> WorkflowJob | None:
+        return SqlAlchemyWorkflowRepository.get_job_by_type(
+            session,
+            submission_id,
+            WorkflowJobType.SUBMISSION_SUMMARY,
+            for_update=for_update,
+        )
+
+    @staticmethod
+    def get_review_job(
+        session: Session, submission_id: UUID, *, for_update: bool = False
+    ) -> WorkflowJob | None:
+        return SqlAlchemyWorkflowRepository.get_job_by_type(
+            session,
+            submission_id,
+            WorkflowJobType.SUBMISSION_REVIEW_PREPARATION,
+            for_update=for_update,
+        )
+
+    @staticmethod
+    def get_job_by_type(
+        session: Session,
+        submission_id: UUID,
+        job_type: WorkflowJobType,
+        *,
+        for_update: bool = False,
+    ) -> WorkflowJob | None:
         statement = select(WorkflowJob).where(
             WorkflowJob.submission_id == submission_id,
-            WorkflowJob.job_type == WorkflowJobType.SUBMISSION_SUMMARY,
+            WorkflowJob.job_type == job_type,
         )
         if for_update:
             statement = statement.with_for_update()
         return session.scalar(statement)
+
+    @staticmethod
+    def list_jobs(session: Session, submission_id: UUID) -> list[WorkflowJob]:
+        return list(
+            session.scalars(
+                select(WorkflowJob)
+                .where(WorkflowJob.submission_id == submission_id)
+                .order_by(WorkflowJob.created_at, WorkflowJob.id)
+            ).all()
+        )
 
     @staticmethod
     def get_job(session: Session, job_id: UUID, *, for_update: bool = False) -> WorkflowJob | None:
@@ -64,13 +105,46 @@ class SqlAlchemyWorkflowRepository:
     ) -> tuple[WorkflowJob, bool]:
         """在风险事务内创建唯一 Job/Outbox；已存在时只修复缺失 Outbox。"""
 
+        return self._ensure_job(
+            session,
+            submission,
+            WorkflowJobType.SUBMISSION_SUMMARY,
+            max_attempts=max_attempts,
+            now=now,
+        )
+
+    def ensure_review_job(
+        self,
+        session: Session,
+        submission: ExperimentSubmission,
+        *,
+        max_attempts: int,
+        now: datetime | None = None,
+    ) -> tuple[WorkflowJob, bool]:
+        return self._ensure_job(
+            session,
+            submission,
+            WorkflowJobType.SUBMISSION_REVIEW_PREPARATION,
+            max_attempts=max_attempts,
+            now=now,
+        )
+
+    def _ensure_job(
+        self,
+        session: Session,
+        submission: ExperimentSubmission,
+        job_type: WorkflowJobType,
+        *,
+        max_attempts: int,
+        now: datetime | None,
+    ) -> tuple[WorkflowJob, bool]:
         current_time = now or datetime.now(UTC)
-        job = self.get_summary_job(session, submission.id, for_update=True)
+        job = self.get_job_by_type(session, submission.id, job_type, for_update=True)
         created = False
         if job is None:
             job = WorkflowJob(
                 submission_id=submission.id,
-                job_type=WorkflowJobType.SUBMISSION_SUMMARY,
+                job_type=job_type,
                 status=WorkflowJobStatus.PENDING_DISPATCH,
                 generation=1,
                 attempt_count=0,
@@ -94,11 +168,48 @@ class SqlAlchemyWorkflowRepository:
     ) -> tuple[WorkflowJob, bool]:
         """仅失败或死信 Job 可增加 generation；活跃 Job 保持单例。"""
 
+        return self._rearm_job(
+            session,
+            submission,
+            WorkflowJobType.SUBMISSION_SUMMARY,
+            max_attempts=max_attempts,
+            now=now,
+        )
+
+    def rearm_review_job(
+        self,
+        session: Session,
+        submission: ExperimentSubmission,
+        *,
+        max_attempts: int,
+        now: datetime | None = None,
+    ) -> tuple[WorkflowJob, bool]:
+        return self._rearm_job(
+            session,
+            submission,
+            WorkflowJobType.SUBMISSION_REVIEW_PREPARATION,
+            max_attempts=max_attempts,
+            now=now,
+        )
+
+    def _rearm_job(
+        self,
+        session: Session,
+        submission: ExperimentSubmission,
+        job_type: WorkflowJobType,
+        *,
+        max_attempts: int,
+        now: datetime | None,
+    ) -> tuple[WorkflowJob, bool]:
         current_time = now or datetime.now(UTC)
-        job = self.get_summary_job(session, submission.id, for_update=True)
+        job = self.get_job_by_type(session, submission.id, job_type, for_update=True)
         if job is None:
-            return self.ensure_summary_job(
-                session, submission, max_attempts=max_attempts, now=current_time
+            return self._ensure_job(
+                session,
+                submission,
+                job_type,
+                max_attempts=max_attempts,
+                now=current_time,
             )
         if job.status not in {
             WorkflowJobStatus.RETRYABLE_FAILURE,
@@ -132,9 +243,9 @@ class SqlAlchemyWorkflowRepository:
         event = OutboxEvent(
             workflow_job_id=job.id,
             generation=job.generation,
-            event_type=SUMMARY_EVENT_TYPE,
+            event_type=EVENT_TYPES[job.job_type],
             payload={
-                "schema_version": SUMMARY_SCHEMA_VERSION,
+                "schema_version": QUEUE_SCHEMA_VERSION,
                 "job_id": str(job.id),
                 "submission_id": str(job.submission_id),
                 "generation": job.generation,
@@ -162,6 +273,32 @@ class SqlAlchemyWorkflowRepository:
                     .where(
                         WorkflowJob.submission_id == ExperimentSubmission.id,
                         WorkflowJob.job_type == WorkflowJobType.SUBMISSION_SUMMARY,
+                    )
+                    .exists(),
+                )
+                .order_by(ExperimentSubmission.updated_at, ExperimentSubmission.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            ).all()
+        )
+
+    @staticmethod
+    def list_review_reconciliation_submissions(
+        session: Session, *, limit: int = 100
+    ) -> list[ExperimentSubmission]:
+        """找到已有摘要但尚未创建 Review Job 的 R12a 历史记录。"""
+
+        return list(
+            session.scalars(
+                select(ExperimentSubmission)
+                .where(
+                    ExperimentSubmission.generated_summary.is_not(None),
+                    ExperimentSubmission.review_receipt.is_(None),
+                    ExperimentSubmission.processing_step == WorkflowStep.SUMMARY_GENERATION,
+                    ~select(WorkflowJob.id)
+                    .where(
+                        WorkflowJob.submission_id == ExperimentSubmission.id,
+                        WorkflowJob.job_type == WorkflowJobType.SUBMISSION_REVIEW_PREPARATION,
                     )
                     .exists(),
                 )

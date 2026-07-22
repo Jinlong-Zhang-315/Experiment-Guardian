@@ -8,7 +8,7 @@ from botocore.config import Config  # type: ignore[import-untyped]
 
 from experiment_guardian.application.errors import ServiceUnavailableError
 from experiment_guardian.application.ports import QueueDelivery, SubmissionQueue
-from experiment_guardian.domain.contracts import SummaryQueueEnvelope
+from experiment_guardian.domain.contracts import WorkflowQueueEnvelope
 
 
 class SqsSubmissionQueue(SubmissionQueue):
@@ -32,7 +32,7 @@ class SqsSubmissionQueue(SubmissionQueue):
             config=Config(retries={"max_attempts": 2, "mode": "standard"}),
         )
 
-    def send(self, envelope: SummaryQueueEnvelope) -> str:
+    def send(self, envelope: WorkflowQueueEnvelope) -> str:
         try:
             response = self._client.send_message(
                 QueueUrl=self._queue_url,

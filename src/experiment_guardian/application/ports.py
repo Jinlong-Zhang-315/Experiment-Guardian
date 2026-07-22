@@ -24,7 +24,7 @@ from experiment_guardian.domain.contracts import (
     SubmissionPrepareCommand,
     SubmissionPrepareResult,
     SubmissionStatusResult,
-    SummaryQueueEnvelope,
+    WorkflowQueueEnvelope,
 )
 
 
@@ -109,8 +109,14 @@ class SummaryModelOutput:
     output_tokens: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class EmbeddingModelOutput:
+    vector: list[float]
+    input_tokens: int | None = None
+
+
 class SubmissionQueue(Protocol):
-    def send(self, envelope: SummaryQueueEnvelope) -> str: ...
+    def send(self, envelope: WorkflowQueueEnvelope) -> str: ...
 
     def receive(self, *, max_messages: int = 1) -> Sequence[QueueDelivery]: ...
 
@@ -126,3 +132,15 @@ class SummaryTextGenerator(Protocol):
     def model_id(self) -> str: ...
 
     def generate(self, *, system_prompt: str, user_prompt: str) -> SummaryModelOutput: ...
+
+
+class EmbeddingGenerator(Protocol):
+    """只负责将冻结的检索文档转换成固定维度向量。"""
+
+    @property
+    def model_id(self) -> str: ...
+
+    @property
+    def dimension(self) -> int: ...
+
+    def embed(self, input_text: str) -> EmbeddingModelOutput: ...

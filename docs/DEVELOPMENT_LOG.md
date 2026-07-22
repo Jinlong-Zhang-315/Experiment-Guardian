@@ -686,6 +686,84 @@
   模型，但只有一个持久化结果；这不构成 exactly-once 外部调用承诺。
 * 正式 Experiment/Metric/Memory、`experiments_query`、人工确认和 Web 仍未实现。
 
+## R12b：Embedding 与确定性审核回执
+
+版本：`working tree`，当前实现轮次。
+
+### 更新内容
+
+* 新增 Alembic revision `20260722_09`：Submission 增加 `review_receipt`，新增独立
+  `submission_embeddings` 表；每个 Submission 只有一个草稿向量，保存 `VECTOR(1024)`、
+  project、模型、维度、归一化标志、冻结输入、输入 SHA-256、token 数和生成时间。
+* 扩展 Job/Outbox 数据库约束，新增 `SUBMISSION_REVIEW_PREPARATION` 和对应 requested
+  event；消息 wire shape 仍为 `schema_version/job_id/submission_id/generation`。
+* 摘要持久化、Summary Job 成功以及 Review Job/Outbox 创建现在处于同一数据库事务。
+  Worker 启动同时对账 R11 缺 Summary Job 和 R12a 有摘要但缺 Review Job 的历史记录。
+* 增加通用队列 Job 路由；Summary 和 Review Job 共用 Queue、Outbox、lease、generation、
+  退避和死信协议，没有新建第二套异步基础设施。
+* 新增 Titan Text Embeddings V2 适配器，固定模型
+  `amazon.titan-embed-text-v2:0`、1024 维和 `normalize=true`；响应必须包含恰好 1024 个
+  非布尔有限数值且范数满足容差。
+* 冻结 `submission-search-v1` 检索文档。来源只使用历史 Intent、Manifest、Plan Check
+  变化、解析结果和持久化风险；不使用生成摘要、LOG、NOTE 或配置全文。自由文本/复杂值
+  使用有界预览和完整值 hash，必要事实不得被静默丢弃。
+* embedding 外部调用发生在事务外。向量单独提交并推进到 `EMBEDDING_GENERATION`；回执
+  在下一节点提交，因此向量落库后崩溃可以直接恢复，不重复调用 Bedrock。
+* 扩展未启用的 `SubmissionReceipt` 契约，保存完整 Context/Intent/Plan Check/Manifest
+  追溯、证据化运行条件、实际允许或 Owner 批准的变化、关键结果和风险摘要。
+* 审核权限由确定性规则生成：未解决 blocking/CRITICAL 为 `BLOCKED`，HIGH 为
+  `OWNER_ONLY`，LOW/MEDIUM 或无风险为 `RESEARCHER_OR_OWNER`。LLM 摘要只通过
+  `summary_available` 标记存在，不参与权限计算。
+* 最终事务原子写入回执、完成 Review Job，并切换到
+  `NEEDS_REVIEW/COMPLETED/NEEDS_REVIEW`。CRITICAL 仍进入可查看回执，但不能确认。
+* `submission_get_status` 保留旧 `job`，新增有序 `jobs`、embedding 元数据和审核回执；
+  明确不返回原始向量或冻结输入。Finalize 同 key 的动态重放可以看到最终状态。
+* `submission_finalize` 新 key 按游标恢复正确阶段：摘要未完成时恢复 Summary Job，已有
+  摘要时创建或重置 Review Job；恢复不重复访问 S3。
+* `VectorType` 增加严格 bind/result 处理，拒绝错误维度、布尔值和非有限数值，并在真实
+  CockroachDB 中完成 1024 维写入/读回验收。
+* 尚未迁移的 Memory ORM scaffold 同步为 1024 维，保证 R13 可以复用草稿向量；本轮没有
+  创建正式 Memory 表或向量索引。
+
+### 修复的问题
+
+* 修复摘要完成后 Job 链路可能存在的双写缺口；Review 任务与摘要结果现在原子生成。
+* 修复 embedding 已提交但审核回执尚未提交时重启会重复调用模型的问题；数据库向量与
+  输入 hash 成为恢复判断依据。
+* 修复状态接口只能展示 Summary Job、无法区分当前阶段和完整历史的问题，同时保持旧
+  `job` 字段兼容。
+* 修复 `CRITICAL` 只能被技术失败表示的语义混淆；它现在是成功分析出的业务阻断回执。
+* 修复迟到的 Outbox 发布回执可能把已 `SUCCEEDED/RUNNING` 的 Job 倒退为 `QUEUED` 的
+  竞态；只有 `PENDING_DISPATCH` 可以转换为 `QUEUED`。
+* revision 09 有数据降级会删除 Review Job/Outbox/草稿向量，并把 Submission 恢复为
+  R12a 可理解的 `PROCESSING/AWAITING_ENRICHMENT/SUMMARY_GENERATION`，不污染摘要结果。
+
+### 验证结果
+
+* 默认收集 159 项测试，154 项执行全部通过，5 项真实 AWS/CockroachDB 验收默认跳过。
+* R12b Fake 覆盖完整两阶段 Job、稳定输入/hash、错误向量、HIGH/CRITICAL 权限、状态脱敏、
+  provider 死信/新 key 恢复、embedding 提交后崩溃恢复和重复消息幂等。
+* revision 09 SQLite 测试覆盖完整升降级及带真实 Summary/Review Job、向量和回执的数据。
+* CockroachDB 隔离库验收显式执行通过，包括 revision 09 升降级、`VECTOR(1024)` 真实
+  写入/读回以及原有 Plan/审批/Manifest/Submission 链路。
+* Ruff check、mypy（52 个源文件）、全量 pytest 和开发数据库升级均通过；开发数据库为
+  `20260722_09 (head)`。
+* FastAPI 已使用 R12b 代码在 `127.0.0.1:8790` 重启，health 与 capabilities 均返回 200；
+  Worker 因本地未配置专用 SQS/Bedrock 资源而未启动。
+* 新增 `RUN_BEDROCK_EMBEDDING_INTEGRATION=1` 真实 Titan V2 opt-in 验收；当前未配置专用
+  AWS 凭据，本轮没有实际调用 SQS、S3 或 Bedrock。
+
+### 已知遗留项
+
+* R12b 只保存草稿 embedding；不迁移正式 Experiment/Metric/Memory，也不创建向量索引。
+  R13 确认事务再复制或关联正式记忆，并实现结构化过滤优先的查询。
+* `NEEDS_REVIEW` 是分析完成后的数据库交接，不是 LangGraph `interrupt()`；确认、拒绝和
+  正式实验事务均属于 R13。
+* Worker 仍为单并发，并依赖外部提供的 SQS/DLQ、IAM 和 Bedrock 模型权限；生产 AWS
+  资源、监控、Web 和最终演示部署属于 R14。
+* Bedrock 外部调用后、数据库向量提交前崩溃可能再次调用模型；系统只承诺数据库副作用
+  幂等和至少一次外部调用，不声称端到端 exactly-once。
+
 ## 新日志模板
 
 ```text

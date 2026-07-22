@@ -80,7 +80,7 @@ def test_approval_and_manifest_are_immutable_by_schema() -> None:
     assert {"schema_version", "config_document_hash"} <= set(manifest.columns.keys())
 
 
-def test_submission_schema_keeps_r12a_summary_narrow() -> None:
+def test_submission_schema_keeps_r12b_embedding_separate() -> None:
     submission = Base.metadata.tables["experiment_submissions"]
     artifact = Base.metadata.tables["artifacts"]
     risk = Base.metadata.tables["submission_risks"]
@@ -100,7 +100,24 @@ def test_submission_schema_keeps_r12a_summary_narrow() -> None:
         "generated_summary",
     } <= set(submission.columns.keys())
     assert "embedding" not in submission.columns
-    assert "review_receipt" not in submission.columns
+    assert "review_receipt" in submission.columns
+    embedding = Base.metadata.tables["submission_embeddings"]
+    assert {
+        "submission_id",
+        "project_id",
+        "embedding",
+        "model_id",
+        "dimension",
+        "normalized",
+        "document_version",
+        "input_text",
+        "input_sha256",
+        "input_token_count",
+        "generated_at",
+    } <= set(embedding.columns.keys())
+    assert "uq_submission_embeddings_submission_id" in {
+        constraint.name for constraint in embedding.constraints
+    }
     assert "fk_artifacts_experiment_id_experiments" not in {
         constraint.name for constraint in artifact.constraints
     }
@@ -143,6 +160,7 @@ def test_memory_has_structured_vector_filters() -> None:
         "experiment_status",
         "current_valid",
     } <= set(memory.columns.keys())
+    assert memory.columns["embedding"].type.dimension == 1024
 
 
 def test_exploratory_experiment_cannot_be_baseline() -> None:

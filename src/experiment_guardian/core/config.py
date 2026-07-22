@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     worker_lease_seconds: int = Field(default=120, ge=30, le=3600)
     worker_max_attempts: int = Field(default=5, ge=1, le=20)
     bedrock_summary_model_id: str = ""
+    bedrock_embedding_model_id: str = "amazon.titan-embed-text-v2:0"
+    embedding_dimension: int = Field(default=1024, ge=1)
     bedrock_connect_timeout_seconds: int = Field(default=5, ge=1, le=60)
     bedrock_read_timeout_seconds: int = Field(default=60, ge=1, le=300)
 
@@ -61,6 +63,13 @@ class Settings(BaseSettings):
         """允许环境变量使用 ``info`` 等小写形式，内部始终保留标准大写值。"""
 
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator("embedding_dimension")
+    @classmethod
+    def require_r12b_embedding_dimension(cls, value: int) -> int:
+        if value != 1024:
+            raise ValueError("R12b 的 EMBEDDING_DIMENSION 必须为 1024")
+        return value
 
 
 @lru_cache(maxsize=1)

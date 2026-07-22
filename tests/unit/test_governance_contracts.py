@@ -14,14 +14,19 @@ from experiment_guardian.domain.contracts import (
     ParameterConstraint,
     ProjectContextBundle,
     ProjectContextReference,
+    ReviewFact,
+    ReviewTrace,
+    RiskItem,
     SubmissionReceipt,
 )
 from experiment_guardian.domain.enums import (
     ConstraintSource,
+    EvidenceType,
     ExperimentMode,
     ExperimentStatus,
     IntentStatus,
     ProtectionLevel,
+    ReviewEligibility,
     RiskSeverity,
     VerificationStatus,
 )
@@ -116,13 +121,45 @@ def test_critical_receipt_cannot_be_confirmed() -> None:
         SubmissionReceipt(
             submission_id=INTENT_ID,
             objective="测试融合系数",
+            objective_evidence=ReviewFact(
+                name="objective",
+                value="测试融合系数",
+                evidence_type=EvidenceType.USER_PROVIDED,
+                source="intent",
+                collected_at=NOW,
+                collection_tool="test",
+            ),
+            trace=ReviewTrace(
+                project_id=PROJECT_ID,
+                context_id=CONTEXT_ID,
+                context_version=1,
+                intent_id=INTENT_ID,
+                intent_version=1,
+                plan_check_id=USER_ID,
+                run_manifest_id=USER_ID,
+                manifest_hash="a" * 64,
+            ),
+            run_conditions=[],
             allowed_changes=[],
-            key_results={"top1": 46.7},
+            key_results=[],
             highest_risk=RiskSeverity.CRITICAL,
-            highlighted_risks=[],
+            highlighted_risks=[
+                RiskItem(
+                    code="BLOCKED",
+                    severity=RiskSeverity.CRITICAL,
+                    message="critical",
+                    blocking=True,
+                )
+            ],
             collapsed_low_risk_count=0,
+            collapsed_medium_risk_count=0,
+            evidence_counts={item: 0 for item in EvidenceType},
+            review_eligibility=ReviewEligibility.RESEARCHER_OR_OWNER,
             can_confirm=True,
-            requires_owner=True,
+            requires_owner=False,
+            summary_available=True,
+            source_hash="b" * 64,
+            generated_at=NOW,
         )
 
 

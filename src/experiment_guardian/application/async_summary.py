@@ -16,12 +16,13 @@ from experiment_guardian.application.ports import (
     SummaryTextGenerator,
 )
 from experiment_guardian.application.transactions import run_with_serialization_retry
-from experiment_guardian.domain.contracts import GeneratedSummary, SummaryQueueEnvelope
+from experiment_guardian.domain.contracts import GeneratedSummary, WorkflowQueueEnvelope
 from experiment_guardian.domain.enums import (
     OutboxStatus,
     RiskSeverity,
     SubmissionStatus,
     WorkflowJobStatus,
+    WorkflowJobType,
     WorkflowStatus,
     WorkflowStep,
 )
@@ -136,6 +137,57 @@ class SubmissionSummaryScheduler:
         return run_with_serialization_retry(persist)
 
 
+class SubmissionReviewScheduler:
+    """摘要持久化后创建或重新武装唯一审核准备 Job。"""
+
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        repository: SqlAlchemyWorkflowRepository,
+        *,
+        max_attempts: int = 5,
+    ) -> None:
+        self._session_factory = session_factory
+        self._repository = repository
+        self._max_attempts = max_attempts
+
+    def ensure_in_session(
+        self, session: Session, submission: ExperimentSubmission
+    ) -> tuple[WorkflowJob, bool]:
+        job, created = self._repository.ensure_review_job(
+            session, submission, max_attempts=self._max_attempts
+        )
+        if job.status is not WorkflowJobStatus.SUCCEEDED:
+            submission.status = SubmissionStatus.PROCESSING
+            submission.workflow_status = WorkflowStatus.QUEUED
+            submission.processing_error = None
+        return job, created
+
+    def rearm_in_session(
+        self, session: Session, submission: ExperimentSubmission
+    ) -> tuple[WorkflowJob, bool]:
+        job, rearmed = self._repository.rearm_review_job(
+            session, submission, max_attempts=self._max_attempts
+        )
+        if rearmed:
+            submission.status = SubmissionStatus.PROCESSING
+            submission.workflow_status = WorkflowStatus.QUEUED
+            submission.processing_error = None
+        return job, rearmed
+
+    def reconcile(self, *, limit: int = 100) -> int:
+        def persist() -> int:
+            with self._session_factory() as session, session.begin():
+                submissions = self._repository.list_review_reconciliation_submissions(
+                    session, limit=limit
+                )
+                for submission in submissions:
+                    self.ensure_in_session(session, submission)
+                return len(submissions)
+
+        return run_with_serialization_retry(persist)
+
+
 class OutboxDispatcher:
     """先租约领取、事务外发 SQS、再记录发布回执，允许崩溃窗口产生重复消息。"""
 
@@ -159,7 +211,7 @@ class OutboxDispatcher:
         if claim is None:
             return False
         try:
-            envelope = SummaryQueueEnvelope.model_validate(claim.payload)
+            envelope = WorkflowQueueEnvelope.model_validate(claim.payload)
             message_id = self._queue.send(envelope)
         except (ValidationError, ValueError, ServiceUnavailableError) as exc:
             error = exc
@@ -204,10 +256,26 @@ class OutboxDispatcher:
             job = self._repository.get_job(session, claim.job_id, for_update=True)
             if job is None or job.generation != claim.generation:
                 return
+            if job.status is not WorkflowJobStatus.PENDING_DISPATCH:
+                # 首次发送后的消息可能已经完成；迟到的 Outbox 回执不能倒退 Job 状态。
+                return
             job.status = WorkflowJobStatus.QUEUED
             job.sqs_message_id = message_id
             submission = session.get(ExperimentSubmission, job.submission_id, with_for_update=True)
-            if submission is not None and submission.generated_summary is None:
+            job_incomplete = bool(
+                submission is not None
+                and (
+                    (
+                        job.job_type is WorkflowJobType.SUBMISSION_SUMMARY
+                        and submission.generated_summary is None
+                    )
+                    or (
+                        job.job_type is WorkflowJobType.SUBMISSION_REVIEW_PREPARATION
+                        and submission.review_receipt is None
+                    )
+                )
+            )
+            if submission is not None and job_incomplete:
                 submission.status = SubmissionStatus.PROCESSING
                 submission.workflow_status = WorkflowStatus.QUEUED
                 submission.processing_error = None
@@ -245,6 +313,7 @@ class SubmissionSummaryProcessor:
         workflow_repository: SqlAlchemyWorkflowRepository,
         queue: SubmissionQueue,
         generator: SummaryTextGenerator,
+        review_scheduler: SubmissionReviewScheduler,
         *,
         worker_id: str,
         lease_seconds: int = 120,
@@ -254,6 +323,7 @@ class SubmissionSummaryProcessor:
         self._workflows = workflow_repository
         self._queue = queue
         self._generator = generator
+        self._review_scheduler = review_scheduler
         self._worker_id = worker_id
         self._lease_seconds = lease_seconds
         handlers = {step: self._noop for step in R12A_WORKFLOW_ORDER[:-1]}
@@ -262,7 +332,7 @@ class SubmissionSummaryProcessor:
 
     def process_delivery(self, delivery: QueueDelivery) -> bool:
         try:
-            envelope = SummaryQueueEnvelope.model_validate_json(delivery.body)
+            envelope = WorkflowQueueEnvelope.model_validate_json(delivery.body)
         except (ValidationError, ValueError):
             # 无法定位 Job 的毒消息不会通过反复接收变得有效。
             self._queue.delete(delivery.receipt_handle)
@@ -305,13 +375,14 @@ class SubmissionSummaryProcessor:
     def _noop(state: SubmissionWorkflowState) -> SubmissionWorkflowState:
         return state
 
-    def _claim(self, envelope: SummaryQueueEnvelope) -> _ClaimResult:
+    def _claim(self, envelope: WorkflowQueueEnvelope) -> _ClaimResult:
         with self._session_factory() as session, session.begin():
             job = self._workflows.get_job(session, envelope.job_id, for_update=True)
             if (
                 job is None
                 or job.submission_id != envelope.submission_id
                 or job.generation != envelope.generation
+                or job.job_type is not WorkflowJobType.SUBMISSION_SUMMARY
             ):
                 return _ClaimResult("DELETE")
             submission = self._submissions.get_submission_for_update(
@@ -324,6 +395,7 @@ class SubmissionSummaryProcessor:
             if submission.generated_summary is not None:
                 job.status = WorkflowJobStatus.SUCCEEDED
                 job.completed_at = datetime.now(UTC)
+                self._review_scheduler.ensure_in_session(session, submission)
                 return _ClaimResult("DELETE")
             if job.status is WorkflowJobStatus.DEAD_LETTER:
                 return _ClaimResult("KEEP")
@@ -511,6 +583,7 @@ class SubmissionSummaryProcessor:
             job.lease_owner = None
             job.lease_expires_at = None
             job.last_error = None
+            self._review_scheduler.ensure_in_session(session, submission)
 
     def _persist_failure(
         self, claim: _JobClaim, error: Exception, *, retryable: bool

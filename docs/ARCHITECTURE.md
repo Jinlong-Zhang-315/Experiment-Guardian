@@ -1,7 +1,7 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-22
-对应数据库 revision：`20260722_08`
+对应数据库 revision：`20260722_09`
 
 本文档维护当前仓库的实际框架。状态标记：
 
@@ -70,6 +70,7 @@
                   | - Owner finalize recovery     |
                   | - R11 analysis orchestration  |
                   | - R12a summary scheduling     |
+                  | - R12b embedding/review       |
                   | - stable application errors   |
                   +---------------+---------------+
                                   |
@@ -86,7 +87,7 @@
                   | - submission/artifact replay  |
                   | - finalize row locks/evidence |
                   | - analysis cursor/risk query  |
-                  | - Job/Outbox generation/lease |
+                  | - two-stage Job/Outbox lease  |
                   +---------------+---------------+
                                   |
                                   v
@@ -98,7 +99,8 @@
                   | audit_logs, idempotency_records, plan_checks  |
                   | approval_records, run_manifests               |
                   | experiment_submissions, artifacts             |
-                  | submission_risks, workflow_jobs, outbox_events|
+                  | submission_risks, submission_embeddings       |
+                  | workflow_jobs, outbox_events                   |
                   +-----------------------------------------------+
 ```
 
@@ -119,6 +121,7 @@
 |  dependency wiring  trusted identity  use-case API   transactions/auth   |
 |  submission_analysis.py [DONE R11 five-node persisted analysis]          |
 |  async_summary.py [DONE R12a scheduler/outbox/lease/retry/summary]        |
+|  async_review.py  [DONE R12b embedding/review receipt/recovery]           |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -137,7 +140,7 @@
 |  database.py      models/         repositories/        security.py       |
 |  SQLAlchemy       ORM schema      project/plan/governance repositories   |
 |                                                                          |
-|  S3 PUT/HEAD/GET [DONE]  SQS [DONE adapter]  Bedrock Converse [DONE]      |
+|  S3 PUT/HEAD/GET [DONE]  SQS [DONE adapter]  Bedrock summary/Titan [DONE] |
 +--------------------------------------------------------------------------+
 ```
 
@@ -185,6 +188,10 @@ User
   |                                  |          +---- workflow status/last completed step
   |                                  |          +---- bounded analysis snapshot
   |                                  |          +---- generated_summary (LLM interpretation)
+  |                                  |          +---- review_receipt (deterministic)
+  |                                  |          +----0..1 SubmissionEmbedding
+  |                                  |          |        +---- VECTOR(1024), model/input hash
+  |                                  |          |        +---- frozen submission-search-v1 input
   |                                  |          +----< SubmissionRisk
   |                                  |          |        +---- unique risk fingerprint
   |                                  |          |        +---- severity/evidence/blocking
@@ -192,7 +199,8 @@ User
   |                                  |                   +---- declared hash/size/S3 key
   |                                  |                   +---- cloud metadata/evidence/time
   |                                  |                   +---- immutable S3 VersionId
-  |                                  |          +----1 WorkflowJob (SUBMISSION_SUMMARY)
+  |                                  |          +----< WorkflowJob
+  |                                  |                   +---- SUMMARY or REVIEW_PREPARATION
   |                                  |                   +---- generation/status/attempts
   |                                  |                   +---- lease/error/SQS message ID
   |                                  |                   +----< OutboxEvent per generation
@@ -285,21 +293,28 @@ Experiment -> ExperimentMetric -> Memory
    -> successful replay skips completed HEAD, GET and analysis nodes
 
 10. experiment-guardian-worker
-   -> startup reconciles revision 07 AWAITING_ENRICHMENT rows that lack a Job
+   -> startup reconciles revision 07 rows missing Summary Job and R12a rows missing Review Job
    -> leases pending Outbox row, publishes minimal generation envelope to SQS outside transaction
    -> crash after send may duplicate a Standard Queue message; generation/cursor makes it harmless
-   -> leases matching Job and runs the six-node graph prefix; first five nodes are cursor no-ops
+   -> routes by persisted Job type; the same queue never carries business payloads
+   -> Summary Job runs the six-node prefix; first five nodes are cursor no-ops
    -> builds a bounded structured source from Intent, Manifest, result metrics and existing risks
    -> Bedrock Converse returns plain text only; no LOG/NOTE payload is sent
-   -> success persists one generated_summary, then deletes SQS receipt
+   -> summary success atomically persists generated_summary and creates Review Job/Outbox
+   -> Review Job runs the full graph; first six nodes are cursor no-ops
+   -> builds frozen submission-search-v1 input without generated_summary, LOG or NOTE
+   -> Titan V2 returns normalized VECTOR(1024); input text/hash/model/token metadata are persisted
+   -> next node deterministically creates the short review receipt without another LLM call
+   -> HIGH/CRITICAL are expanded; unresolved blocking/CRITICAL makes eligibility BLOCKED
    -> retryable dependency failure uses 30s/120s/480s/... capped at 3600s
    -> fifth failure marks DEAD_LETTER; original submitter or Owner can use a new finalize key
-   -> success: PROCESSING/AWAITING_ENRICHMENT at SUMMARY_GENERATION
+   -> success: NEEDS_REVIEW/COMPLETED at NEEDS_REVIEW
 
 11. Local Agent calls submission_get_status(submission_id)
    -> submission:read + project binding + membership
    -> original submitter or Owner only
-   -> returns dynamic Submission/Job/risk/summary state; never triggers processing
+   -> returns dynamic Submission/Job history/risk/summary/embedding metadata/review receipt
+   -> never returns raw vector or frozen embedding input; never triggers processing
 ```
 
 ## 工作流实现边界
@@ -315,11 +330,11 @@ UPLOAD_VERIFICATION -> CONFIG_PARSE -> MANIFEST_VALIDATION -> DUPLICATE_CHECK
 [DONE R12a]
 -> SUMMARY_GENERATION
 
-[PLANNED R12b]
+[DONE R12b]
 -> EMBEDDING_GENERATION -> NEEDS_REVIEW -> END
 
 数据库业务表和 WorkflowJob 是恢复真相源，LangGraph 不保存 checkpoint。SQS 只携带
-`schema_version/job_id/submission_id/generation`。NEEDS_REVIEW 是计划中的持久化交接状态，
+`schema_version/job_id/submission_id/generation`。NEEDS_REVIEW 是持久化交接状态，
 不是 LangGraph interrupt；正式确认将使用独立幂等事务。
 ```
 
@@ -334,22 +349,22 @@ Local Agent -> MCP Server -----+-> FastAPI/Application
              |                        |                        |
              v                        v                        v
        CockroachDB               Amazon S3              SQS Standard
-       state/outbox              artifacts              summary jobs
+       state/outbox              artifacts              summary/review jobs
        [PARTIAL]                 [PARTIAL: PUT/HEAD/GET] [DONE adapter]
              |                                                   |
              |                                                   v
-             +-------------------------------------------> R12a Worker
+             +-------------------------------------------> R12b Worker
                                                                |
                                                                v
-                                                         Bedrock Converse
-                                                         [DONE adapter]
+                                                         Bedrock Converse + Titan V2
+                                                         [DONE adapters]
              |
              v
        CloudWatch [PLANNED]
 ```
 
 Queue、DLQ/redrive、IAM/KMS 和 Bedrock model access 的 AWS 资源定义仍为 `[PLANNED R14]`；
-R12a 只实现应用适配器和运行协议。
+R12b 只实现应用适配器和运行协议，不创建上述 AWS 资源。
 
 ## 文档更新要求
 

@@ -7,7 +7,10 @@ import pytest
 
 from experiment_guardian.core.config import Settings
 from experiment_guardian.domain.contracts import SummaryQueueEnvelope
-from experiment_guardian.infrastructure.bedrock import BedrockSummaryGenerator
+from experiment_guardian.infrastructure.bedrock import (
+    BedrockSummaryGenerator,
+    BedrockTitanV2EmbeddingGenerator,
+)
 from experiment_guardian.infrastructure.queue import SqsSubmissionQueue
 
 
@@ -60,3 +63,22 @@ def test_real_bedrock_converse_returns_plain_text() -> None:
         user_prompt="Objective: verify the configured Bedrock summary model is callable.",
     )
     assert result.text.strip()
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_BEDROCK_EMBEDDING_INTEGRATION") != "1",
+    reason="设置 RUN_BEDROCK_EMBEDDING_INTEGRATION=1 后才执行真实 embedding 验收",
+)
+def test_real_titan_v2_embedding_has_fixed_normalized_dimension() -> None:
+    settings = Settings()
+    generator = BedrockTitanV2EmbeddingGenerator(
+        model_id=settings.bedrock_embedding_model_id,
+        region=settings.aws_region,
+        dimension=settings.embedding_dimension,
+        connect_timeout_seconds=settings.bedrock_connect_timeout_seconds,
+        read_timeout_seconds=settings.bedrock_read_timeout_seconds,
+    )
+    result = generator.embed(
+        "Experiment objective: verify the configured Titan V2 embedding model."
+    )
+    assert len(result.vector) == 1024

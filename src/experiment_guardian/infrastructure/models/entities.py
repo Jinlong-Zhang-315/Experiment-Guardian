@@ -442,15 +442,47 @@ class ExperimentSubmission(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     processing_error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     analysis_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     generated_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    review_receipt: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class SubmissionEmbedding(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """R12b 草稿检索向量；正式确认后由 R13 复制或关联到 Memory。"""
+
+    __tablename__ = "submission_embeddings"
+    __table_args__ = (
+        UniqueConstraint("submission_id", name="uq_submission_embeddings_submission_id"),
+        CheckConstraint("dimension = 1024", name="submission_embedding_dimension_1024"),
+        CheckConstraint("normalized", name="submission_embedding_normalized"),
+        CheckConstraint(
+            "length(input_sha256) = 64", name="submission_embedding_input_sha256_length"
+        ),
+    )
+
+    submission_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_submissions.id"), nullable=False
+    )
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(VectorType(1024), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    normalized: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    document_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    input_text: Mapped[str] = mapped_column(Text, nullable=False)
+    input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_token_count: Mapped[int | None] = mapped_column(Integer)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class WorkflowJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """可租约执行的异步工作项；每个 Submission 在 R12a 只有一个摘要 Job。"""
+    """可租约执行的异步工作项；每种类型在一个 Submission 下保持单例。"""
 
     __tablename__ = "workflow_jobs"
     __table_args__ = (
         UniqueConstraint("submission_id", "job_type", name="uq_workflow_jobs_submission_type"),
-        CheckConstraint("job_type = 'SUBMISSION_SUMMARY'", name="workflow_job_type_summary_only"),
+        CheckConstraint(
+            "job_type IN ('SUBMISSION_SUMMARY', 'SUBMISSION_REVIEW_PREPARATION')",
+            name="workflow_job_type_valid",
+        ),
         CheckConstraint(
             "status IN ('PENDING_DISPATCH', 'QUEUED', 'RUNNING', 'RETRYABLE_FAILURE', "
             "'SUCCEEDED', 'DEAD_LETTER', 'FAILED')",
@@ -490,8 +522,9 @@ class OutboxEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("workflow_job_id", "generation", name="uq_outbox_events_job_generation"),
         CheckConstraint(
-            "event_type = 'SUBMISSION_SUMMARY_REQUESTED'",
-            name="outbox_event_type_summary_only",
+            "event_type IN ('SUBMISSION_SUMMARY_REQUESTED', "
+            "'SUBMISSION_REVIEW_PREPARATION_REQUESTED')",
+            name="outbox_event_type_valid",
         ),
         CheckConstraint(
             "status IN ('PENDING', 'PUBLISHING', 'PUBLISHED')",
@@ -679,7 +712,7 @@ class Memory(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     current_valid: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     memory_type: Mapped[str] = mapped_column(String(100), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(VectorType(1536), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(VectorType(1024), nullable=False)
     verification_status: Mapped[VerificationStatus] = mapped_column(
         enum_column(VerificationStatus, "memory_verification_status"), nullable=False
     )

@@ -12,8 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from experiment_guardian.application.async_review import REVIEW_DISCLAIMER
 from experiment_guardian.application.async_summary import (
     SUMMARY_DISCLAIMER,
+    SubmissionReviewScheduler,
     SubmissionSummaryScheduler,
 )
 from experiment_guardian.application.errors import (
@@ -38,6 +40,7 @@ from experiment_guardian.domain.contracts import (
     ArtifactUploadTarget,
     ArtifactVerificationIssue,
     ArtifactVerificationReceipt,
+    EmbeddingMetadata,
     ExperimentCheckPlanCommand,
     ExperimentCheckPlanResult,
     ExperimentQueryCommand,
@@ -51,6 +54,7 @@ from experiment_guardian.domain.contracts import (
     SubmissionFinalizeResult,
     SubmissionPrepareCommand,
     SubmissionPrepareResult,
+    SubmissionReceipt,
     SubmissionStatusResult,
     WorkflowJobReceipt,
 )
@@ -193,6 +197,11 @@ class GuardianApplication:
         self._upload_url_ttl_seconds = upload_url_ttl_seconds
         self._workflows = workflow_repository or SqlAlchemyWorkflowRepository()
         self._summary_scheduler = SubmissionSummaryScheduler(
+            session_factory,
+            self._workflows,
+            max_attempts=worker_max_attempts,
+        )
+        self._review_scheduler = SubmissionReviewScheduler(
             session_factory,
             self._workflows,
             max_attempts=worker_max_attempts,
@@ -889,13 +898,39 @@ class GuardianApplication:
             if submission is None:
                 raise ResourceNotFoundError("Submission 不存在")
             self._authorize_submission_status(session, submission, identity)
-            job = self._workflows.get_summary_job(session, submission.id)
+            jobs = self._workflows.list_jobs(session, submission.id)
+            stage_order = {
+                "SUBMISSION_SUMMARY": 0,
+                "SUBMISSION_REVIEW_PREPARATION": 1,
+            }
+            jobs.sort(key=lambda item: stage_order[item.job_type.value])
+            incomplete = [item for item in jobs if item.status is not WorkflowJobStatus.SUCCEEDED]
+            job = incomplete[-1] if incomplete else jobs[-1] if jobs else None
             risks = self._submissions.list_risks(session, submission.id)
             severities = [item.severity for item in risks]
             highest = max(severities, key=RISK_PRIORITY.__getitem__) if severities else None
             summary = (
                 GeneratedSummary.model_validate(submission.generated_summary)
                 if isinstance(submission.generated_summary, dict)
+                else None
+            )
+            embedding_record = self._submissions.get_embedding(session, submission.id)
+            embedding = (
+                EmbeddingMetadata(
+                    model_id=embedding_record.model_id,
+                    dimension=embedding_record.dimension,
+                    normalized=embedding_record.normalized,
+                    document_version=embedding_record.document_version,
+                    input_sha256=embedding_record.input_sha256,
+                    input_token_count=embedding_record.input_token_count,
+                    generated_at=embedding_record.generated_at,
+                )
+                if embedding_record is not None
+                else None
+            )
+            review_receipt = (
+                SubmissionReceipt.model_validate(submission.review_receipt)
+                if isinstance(submission.review_receipt, dict)
                 else None
             )
             job_receipt = self._job_receipt(job) if job is not None else None
@@ -918,11 +953,16 @@ class GuardianApplication:
                 retryable=retryable,
                 processing_error=submission.processing_error,
                 job=job_receipt,
+                jobs=[self._job_receipt(item) for item in jobs],
                 risk_count=len(risks),
                 highest_risk=highest,
                 generated_summary=summary,
+                embedding=embedding,
+                review_receipt=review_receipt,
                 updated_at=submission.updated_at,
-                disclaimer=SUMMARY_DISCLAIMER,
+                disclaimer=(
+                    REVIEW_DISCLAIMER if review_receipt is not None else SUMMARY_DISCLAIMER
+                ),
             )
 
     def _attach_submission_analysis(
@@ -1016,13 +1056,33 @@ class GuardianApplication:
             team_id=identity.team_id,
         )
         previous_workflow_status = submission.workflow_status.value
-        previous_job = self._workflows.get_summary_job(session, submission.id)
+        review_stage = bool(
+            submission.generated_summary is not None
+            or submission.processing_step
+            in {
+                WorkflowStep.SUMMARY_GENERATION,
+                WorkflowStep.EMBEDDING_GENERATION,
+                WorkflowStep.NEEDS_REVIEW,
+            }
+        )
+        previous_job = (
+            self._workflows.get_review_job(session, submission.id)
+            if review_stage
+            else self._workflows.get_summary_job(session, submission.id)
+        )
         previous_job_status = previous_job.status.value if previous_job is not None else None
         risk_prefix_complete = submission.processing_step in {
             WorkflowStep.RISK_ANALYSIS,
             WorkflowStep.SUMMARY_GENERATION,
+            WorkflowStep.EMBEDDING_GENERATION,
         }
-        if previous_job is not None or risk_prefix_complete:
+        if review_stage:
+            job, rearmed = self._review_scheduler.rearm_in_session(session, submission)
+            job_id = str(job.id)
+            job_status = job.status.value
+            generation = job.generation
+            recovery_mode = "R12B_REVIEW_REARM" if rearmed else "R12B_REVIEW_ACTIVE"
+        elif previous_job is not None or risk_prefix_complete:
             job, rearmed = self._summary_scheduler.rearm_in_session(session, submission)
             job_id = str(job.id)
             job_status = job.status.value
@@ -1465,6 +1525,7 @@ class GuardianApplication:
     def _job_receipt(job: WorkflowJob) -> WorkflowJobReceipt:
         return WorkflowJobReceipt(
             id=job.id,
+            job_type=job.job_type,
             status=job.status,
             generation=job.generation,
             attempt_count=job.attempt_count,

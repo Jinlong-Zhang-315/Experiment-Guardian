@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
 更新时间：2026-07-22
-当前完成轮次：R12a
-下一轮：R12b embedding 与审核回执
+当前完成轮次：R12b
+下一轮：R13 正式实验确认与结构化/向量查询
 
 本文档维护“每轮交付了什么”和“下一轮只做什么”。详细缺陷与修复过程见
 `docs/DEVELOPMENT_LOG.md`，当前代码结构见 `docs/ARCHITECTURE.md`。
@@ -24,8 +24,8 @@
 | R10 | 上传确认与 S3 复核 | 完成 | UPLOAD_VERIFIED 与原子云端证据 |
 | R11 | 可恢复的确定性分析前半程 | 完成 | 解析、校验、查重和风险 |
 | R12a | 可靠异步编排与摘要 | 完成 | Outbox + SQS Worker + Bedrock 摘要 |
-| R12b | embedding 与审核回执 | 下一轮 | 不属于当前轮次 |
-| R13 | 正式实验确认、查询和向量候选 | 排队 | 不属于下一轮 |
+| R12b | embedding 与审核回执 | 完成 | VECTOR(1024) + 确定性回执 + NEEDS_REVIEW |
+| R13 | 正式实验确认、查询和向量候选 | 下一轮 | 不属于当前轮次 |
 | R14 | Web 页面与 AWS 演示部署 | 排队 | 不属于下一轮 |
 
 ## 已完成轮次
@@ -262,39 +262,53 @@ R11 没有调用 Bedrock、生成 embedding/审核回执、确认正式实验、
 R12a 不创建 SQS/DLQ/IAM/KMS 基础设施，不实现 embedding、审核回执、正式实验、查询、
 Web、自动训练或自动改代码。
 
-## 下一轮 R12b：embedding 与审核回执
+## R12b：embedding 与审核回执
+
+交付：
+
+* revision `20260722_09` 增加独立 `submission_embeddings`、Submission 审核回执字段，
+  并扩展 Job/Outbox 类型；正式 Experiment/Memory Schema 保持未迁移。
+* 摘要成功事务原子创建 `SUBMISSION_REVIEW_PREPARATION` Job 与 Outbox；Worker 启动会为
+  revision 08 已有摘要补建缺失任务，两类 Job 继续共用同一 SQS Standard Queue。
+* 固定使用 Titan Text Embeddings V2、1024 维和归一化输出；严格拒绝错误维度、布尔值、
+  NaN/Infinity 与非归一化向量。
+* `submission-search-v1` 输入只来自历史 Intent、Manifest、Plan Check 变化、结果和风险，
+  不包含生成摘要、LOG、NOTE 或原始配置全文；输入文本、SHA-256、模型和 token 数可追溯。
+* embedding 独立提交后再生成确定性短回执。该恢复边界保证回执提交前崩溃不会再次调用
+  embedding 模型；外部调用后、向量提交前仍只承诺至少一次。
+* 回执展示目标、版本追溯、关键运行条件、允许/审批变化、关键结果和证据边界；所有
+  HIGH/CRITICAL 强制展开，LOW/MEDIUM 只保存折叠计数。
+* 未解决 blocking 或 CRITICAL 风险得到 `BLOCKED`；HIGH 得到 `OWNER_ONLY`；其余得到
+  `RESEARCHER_OR_OWNER`。风险权限完全由确定性数据计算，不读取摘要结论。
+* 成功终态为 `NEEDS_REVIEW/COMPLETED/NEEDS_REVIEW`。该状态是数据库交接，不是
+  LangGraph 原生人工中断。
+* `submission_get_status` 向后兼容保留 `job`，新增有序 `jobs`、embedding 元数据和审核
+  回执；不返回原始向量或冻结输入全文。
+* `submission_finalize` 新 key 会按当前阶段恢复 Summary 或 Review Job；同 key 重放继续
+  动态返回最新分析状态，不再次访问 S3。
+
+R12b 不实现正式实验确认、`experiments_query`、Web、AWS 资源创建、自动训练或自动改代码。
+
+## 下一轮 R13：正式实验确认与查询
 
 ### 单一目标
 
-只从已持久化 `SUMMARY_GENERATION` 继续生成 embedding 和短审核回执，并将 Submission
-推进至 `NEEDS_REVIEW`。正式 Experiment 的创建与确认事务仍留给 R13。
+在不调用外部模型的数据库事务中确认一个 `NEEDS_REVIEW` Submission，并让团队成员通过
+结构化条件和向量候选查询正式 Experiment。
 
 ### 本轮包含
 
-1. 冻结 embedding 输入文本与 source hash，新增可配置模型 ID 和维度，并验证返回维度、
-   有限数值和模型标识；复用现有 Job/Outbox/lease/generation 协议，不新建第二套队列。
-2. 生成确定性的短审核回执，只突出目标、运行条件、关键结果、最高风险和证据边界；
-   LLM 摘要只是其中一个展示字段，不能成为风险或权限来源。
-3. LOW/MEDIUM 详情保持可折叠数据，HIGH/CRITICAL 强制列入回执；CRITICAL 明确不可确认。
-4. embedding 与回执成功后在事务内切换为 `NEEDS_REVIEW`，重复消息直接重放持久化结果。
-5. 扩展 `submission_get_status` 返回 embedding 元数据和审核回执，但不返回原始向量。
-
-### 明确不包含
-
-* 正式实验确认、Experiment/Metric/Memory 完整事务和 `experiments_query`。
-* Web 页面、自动训练、自动改代码和 AWS 基础设施部署。
-* LLM 自动批准、降低风险、修改配置或覆盖 Context/Intent/Constraint。
-
-### 验收条件
-
-* 从 R12a 成功、retryable、dead 和重复消息状态均可恢复，摘要成功结果不重复调用。
-* embedding 模型/维度/输入 hash 可追溯，异常维度或非有限值不会进入 `NEEDS_REVIEW`。
-* 确定性 CRITICAL 风险在审核回执中保持 CRITICAL，不能被模型输出覆盖。
-* R10/R11/R12a finalize、迁移、VersionId、Outbox、租约和摘要测试全量回归通过。
+1. 按 R12b `review_eligibility` 和调用者角色执行 Researcher/Owner/阻断权限门禁。
+2. 一个 CockroachDB 事务创建 Experiment、Metrics、artifact 关联、摘要和向量记忆，
+   更新 Submission 并写入审计与确认幂等结果；事务内禁止调用 Bedrock/S3。
+3. 正式记录完整追溯 Submission、Manifest、Plan Check、Intent 和 Context 版本。
+4. `experiments_query` 先强制 project、确认状态、实验状态和 protocol 过滤，再使用向量
+   相似度生成候选；DEPRECATED/SUPERSEDED 明确标记且默认不返回。
+5. 只实现服务/MCP/数据库链路，不同时开发四个 Web 页面和 AWS 部署。
 
 ## 后续队列
 
-后续轮次只表示顺序，不在 R12a 同时开发：
+后续轮次只表示顺序，不在 R12b 同时开发：
 
 ```text
 R13 Transactional experiment confirmation + structured/vector query

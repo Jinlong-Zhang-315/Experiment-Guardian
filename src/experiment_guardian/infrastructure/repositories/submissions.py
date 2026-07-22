@@ -10,6 +10,7 @@ from experiment_guardian.infrastructure.models import (
     Artifact,
     ExperimentSubmission,
     RunManifest,
+    SubmissionEmbedding,
     SubmissionRisk,
 )
 
@@ -90,3 +91,14 @@ class SqlAlchemySubmissionRepository:
                 .order_by(SubmissionRisk.created_at, SubmissionRisk.id)
             ).all()
         )
+
+    @staticmethod
+    def get_embedding(
+        session: Session, submission_id: UUID, *, for_update: bool = False
+    ) -> SubmissionEmbedding | None:
+        statement = select(SubmissionEmbedding).where(
+            SubmissionEmbedding.submission_id == submission_id
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return session.scalar(statement)

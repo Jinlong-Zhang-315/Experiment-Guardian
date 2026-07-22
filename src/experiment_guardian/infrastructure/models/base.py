@@ -1,5 +1,8 @@
 """SQLAlchemy 声明基类和可复用字段。"""
 
+import json
+import math
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -52,3 +55,45 @@ class VectorType(UserDefinedType[Any]):
 
     def get_col_spec(self, **_: object) -> str:
         return f"VECTOR({self.dimension})"
+
+    def bind_processor(self, dialect: Any) -> Any:
+        del dialect
+
+        def process(value: object) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+                raise ValueError("VECTOR 值必须是浮点数序列")
+            vector: list[float] = []
+            for item in value:
+                if isinstance(item, bool) or not isinstance(item, (int, float)):
+                    raise ValueError("VECTOR 元素必须是有限浮点数")
+                number = float(item)
+                if not math.isfinite(number):
+                    raise ValueError("VECTOR 元素必须是有限浮点数")
+                vector.append(number)
+            if len(vector) != self.dimension:
+                raise ValueError(f"VECTOR 维度必须为 {self.dimension}")
+            return json.dumps(vector, separators=(",", ":"), allow_nan=False)
+
+        return process
+
+    def result_processor(self, dialect: Any, coltype: object) -> Any:
+        del dialect, coltype
+
+        def process(value: object) -> list[float] | None:
+            if value is None:
+                return None
+            raw: object = value
+            if isinstance(value, bytes):
+                raw = value.decode("utf-8")
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+                raise ValueError("数据库返回了无效 VECTOR")
+            vector = [float(item) for item in raw]
+            if len(vector) != self.dimension or any(not math.isfinite(item) for item in vector):
+                raise ValueError("数据库返回了无效 VECTOR")
+            return vector
+
+        return process

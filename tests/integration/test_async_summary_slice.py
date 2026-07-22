@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from experiment_guardian.application.async_summary import (
     OutboxDispatcher,
+    SubmissionReviewScheduler,
     SubmissionSummaryProcessor,
     SubmissionSummaryScheduler,
 )
@@ -25,6 +26,7 @@ from experiment_guardian.domain.enums import (
     SubmissionStatus,
     TeamRole,
     WorkflowJobStatus,
+    WorkflowJobType,
     WorkflowStatus,
     WorkflowStep,
 )
@@ -101,6 +103,7 @@ def build_async_components(
 ) -> tuple[OutboxDispatcher, SubmissionSummaryProcessor, SubmissionSummaryScheduler]:
     workflows = SqlAlchemyWorkflowRepository()
     scheduler = SubmissionSummaryScheduler(factory, workflows, max_attempts=5)
+    review_scheduler = SubmissionReviewScheduler(factory, workflows, max_attempts=5)
     return (
         OutboxDispatcher(
             factory,
@@ -115,6 +118,7 @@ def build_async_components(
             workflows,
             queue,
             generator,
+            review_scheduler,
             worker_id="test-worker",
             lease_seconds=120,
         ),
@@ -142,11 +146,13 @@ def test_outbox_dispatch_and_summary_are_idempotent(
 
     with plan_check_session_factory() as session:
         submission = session.get(ExperimentSubmission, command.submission_id)
-        job = session.scalar(select(WorkflowJob))
+        job = session.scalar(
+            select(WorkflowJob).where(WorkflowJob.job_type == WorkflowJobType.SUBMISSION_SUMMARY)
+        )
         event = session.scalar(select(OutboxEvent))
         assert submission is not None and job is not None and event is not None
         assert submission.status is SubmissionStatus.PROCESSING
-        assert submission.workflow_status is WorkflowStatus.AWAITING_ENRICHMENT
+        assert submission.workflow_status is WorkflowStatus.QUEUED
         assert submission.processing_step is WorkflowStep.SUMMARY_GENERATION
         assert submission.generated_summary["text"] == generator.text
         assert submission.generated_summary["model_id"] == generator.model_id
@@ -163,7 +169,7 @@ def test_outbox_dispatch_and_summary_are_idempotent(
 
     replay = service.submission_finalize(command, finalize_identity(owner, project_id))
     assert replay.analysis is not None
-    assert replay.analysis.workflow_status is WorkflowStatus.AWAITING_ENRICHMENT
+    assert replay.analysis.workflow_status is WorkflowStatus.QUEUED
     assert replay.analysis.processing_step is WorkflowStep.SUMMARY_GENERATION
 
     # Standard Queue 允许重复投递；成功记录不得再次调用 Bedrock。
@@ -367,6 +373,31 @@ def test_outbox_publish_failure_is_persisted_and_retried(
         assert event.status is OutboxStatus.PUBLISHED
 
 
+def test_late_outbox_receipt_does_not_regress_completed_job(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    owner, project_id, storage, service, command, _ = prepare_draft(plan_check_session_factory)
+    storage.accept_declared_uploads()
+    service.submission_finalize(command, finalize_identity(owner, project_id))
+    queue = FakeQueue()
+    dispatcher, processor, _ = build_async_components(
+        plan_check_session_factory, queue, FakeSummaryGenerator()
+    )
+    claim = dispatcher._claim()
+    assert claim is not None
+    queue.send(SummaryQueueEnvelope.model_validate(claim.payload))
+    assert processor.process_delivery(queue.delivery(receipt="first-delivery"))
+
+    dispatcher._mark_published(claim, "late-message-id")
+
+    with plan_check_session_factory() as session:
+        summary_job = session.scalar(
+            select(WorkflowJob).where(WorkflowJob.job_type == WorkflowJobType.SUBMISSION_SUMMARY)
+        )
+        assert summary_job is not None
+        assert summary_job.status is WorkflowJobStatus.SUCCEEDED
+
+
 def test_crash_after_model_output_can_repeat_generation_but_persists_one_summary(
     plan_check_session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
@@ -400,7 +431,7 @@ def test_crash_after_model_output_can_repeat_generation_but_persists_one_summary
         submission = session.get(ExperimentSubmission, command.submission_id)
         assert submission is not None
         assert submission.generated_summary["text"] == generator.text
-        assert session.scalar(select(func.count()).select_from(WorkflowJob)) == 1
+        assert session.scalar(select(func.count()).select_from(WorkflowJob)) == 2
 
 
 def test_submission_status_requires_submitter_or_owner(

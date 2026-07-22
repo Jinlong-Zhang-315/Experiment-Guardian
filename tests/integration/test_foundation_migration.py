@@ -5,11 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import sessionmaker
 
 from experiment_guardian.domain.enums import WorkflowStatus, WorkflowStep
-from experiment_guardian.infrastructure.models import ExperimentSubmission
+from experiment_guardian.infrastructure.models import ExperimentSubmission, WorkflowJob
 from migrations.scope import (
     FOUNDATION_TABLES,
     GOVERNANCE_TABLES,
@@ -18,7 +18,11 @@ from migrations.scope import (
     SUBMISSION_ANALYSIS_TABLES,
     SUBMISSION_PREPARE_TABLES,
 )
-from tests.integration.test_submission_finalize_slice import finalize_identity, prepare_draft
+from tests.integration.test_async_review_slice import (
+    FakeEmbeddingGenerator,
+    build_review_processor,
+    prepare_summary,
+)
 
 
 def test_foundation_and_plan_check_migrations_are_independently_reversible(
@@ -101,7 +105,12 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         "processing_error",
         "analysis_snapshot",
         "generated_summary",
+        "review_receipt",
     } <= {item["name"] for item in inspector.get_columns("experiment_submissions")}
+    assert "submission_embeddings" in inspector.get_table_names()
+    assert "uq_submission_embeddings_submission_id" in {
+        item["name"] for item in inspector.get_unique_constraints("submission_embeddings")
+    }
     assert "uq_submission_risks_submission_fingerprint" in {
         item["name"] for item in inspector.get_unique_constraints("submission_risks")
     }
@@ -113,12 +122,47 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     }
     engine.dispose()
 
+    # revision 09 降级保留摘要与 Summary Job，但删除 R12b 的向量、回执和 Review Job。
+    engine = create_engine(database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    _, _, _, r12b_command, queue = prepare_summary(factory)
+    processor = build_review_processor(factory, queue, FakeEmbeddingGenerator())
+    assert processor.process_delivery(queue.delivery(receipt="migration-review"))
+    engine.dispose()
+
+    run_alembic("downgrade", "20260722_08")
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    assert "submission_embeddings" not in inspector.get_table_names()
+    assert "review_receipt" not in {
+        item["name"] for item in inspector.get_columns("experiment_submissions")
+    }
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT status, workflow_status, processing_step, processing_error "
+                "FROM experiment_submissions WHERE id = :submission_id"
+            ),
+            {"submission_id": r12b_command.submission_id.hex},
+        ).one()
+        assert tuple(row) == (
+            "PROCESSING",
+            "AWAITING_ENRICHMENT",
+            "SUMMARY_GENERATION",
+            None,
+        )
+    factory = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    with factory() as session:
+        assert {item.job_type.value for item in session.scalars(select(WorkflowJob)).all()} == {
+            "SUBMISSION_SUMMARY"
+        }
+    engine.dispose()
+    run_alembic("upgrade", "head")
+
     # revision 08 降级必须保留 R11 风险游标，并清除 R12a 的瞬时失败状态。
     engine = create_engine(database_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
-    owner, project_id, storage, service, finalize, _ = prepare_draft(factory)
-    storage.accept_declared_uploads()
-    service.submission_finalize(finalize, finalize_identity(owner, project_id))
+    finalize = r12b_command
     with factory() as session, session.begin():
         submission = session.get(ExperimentSubmission, finalize.submission_id)
         assert submission is not None
