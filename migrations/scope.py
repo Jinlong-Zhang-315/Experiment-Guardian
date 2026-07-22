@@ -20,12 +20,14 @@ SUBMISSION_PREPARE_TABLES = frozenset({"experiment_submissions", "artifacts"})
 SUBMISSION_ANALYSIS_TABLES = frozenset(
     {"submission_risks", "workflow_jobs", "outbox_events", "submission_embeddings"}
 )
+FORMAL_EXPERIMENT_TABLES = frozenset({"experiments", "experiment_metrics", "memories"})
 MIGRATED_TABLES = (
     FOUNDATION_TABLES
     | PLAN_CHECK_TABLES
     | GOVERNANCE_TABLES
     | SUBMISSION_PREPARE_TABLES
     | SUBMISSION_ANALYSIS_TABLES
+    | FORMAL_EXPERIMENT_TABLES
 )
 
 

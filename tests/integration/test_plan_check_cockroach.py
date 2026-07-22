@@ -15,7 +15,9 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from experiment_guardian.application.errors import ConflictError, InputValidationError
+from experiment_guardian.application.experiments import ExperimentQueryService
 from experiment_guardian.application.identity import RequestIdentity
+from experiment_guardian.application.ports import EmbeddingModelOutput
 from experiment_guardian.application.services import (
     GuardianApplication,
     PlanApprovalService,
@@ -29,7 +31,9 @@ from experiment_guardian.domain.administration import (
 from experiment_guardian.domain.contracts import (
     ConfigurationDocument,
     ExperimentCheckPlanCommand,
+    ExperimentQueryCommand,
     FieldEvidence,
+    GeneratedSummary,
     LocalAttestation,
     LocalEnvironment,
     PresignedUpload,
@@ -39,18 +43,23 @@ from experiment_guardian.domain.contracts import (
 )
 from experiment_guardian.domain.enums import (
     ApprovalDecision,
+    ApprovalTargetType,
     ConfigFormat,
     EvidenceType,
+    ExperimentStatus,
     SubmissionStatus,
     TeamRole,
     UploadVerificationResult,
+    VerificationStatus,
     WorkflowStatus,
     WorkflowStep,
 )
 from experiment_guardian.infrastructure.models import (
     ApprovalRecord,
     Artifact,
+    Experiment,
     ExperimentSubmission,
+    Memory,
     PlanCheck,
     RunManifest,
     SubmissionEmbedding,
@@ -69,6 +78,14 @@ RUN_COCKROACH_INTEGRATION = os.getenv("RUN_COCKROACH_INTEGRATION") == "1"
 COLLECTED_AT = datetime(2026, 7, 21, tzinfo=UTC)
 GIT_COMMIT = "a1b2c3d4"
 RUN_COMMAND = "python train.py --config config.yaml"
+
+
+class _QueryEmbeddingGenerator:
+    model_id = "amazon.titan-embed-text-v2:0"
+
+    @staticmethod
+    def embed(_: str) -> EmbeddingModelOutput:
+        return EmbeddingModelOutput(vector=[1.0, *([0.0] * 1023)], input_tokens=3)
 
 
 class _FakeStorage:
@@ -484,6 +501,99 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             assert persisted_embedding is not None
             assert len(persisted_embedding.embedding) == 1024
             assert persisted_embedding.embedding[0] == 1.0
+
+        with factory() as session, session.begin():
+            submission_approval = ApprovalRecord(
+                project_id=initialized.project_id,
+                target_type=ApprovalTargetType.EXPERIMENT_SUBMISSION,
+                target_id=submission.submission_id,
+                approval_type="EXPERIMENT_SUBMISSION_REVIEW",
+                status=ApprovalDecision.APPROVED,
+                requested_by=user_id,
+                decided_by=user_id,
+                request_reason="cockroach vector acceptance",
+                decision_reason=None,
+                decided_at=COLLECTED_AT,
+            )
+            session.add(submission_approval)
+            session.flush()
+            experiment = Experiment(
+                project_id=initialized.project_id,
+                intent_id=intent.intent_id,
+                run_manifest_id=manifest.manifest_id,
+                submission_id=submission.submission_id,
+                project_context_id=manifest.context_id,
+                project_context_version=manifest.context_version,
+                intent_version=manifest.intent_version,
+                approval_record_id=submission_approval.id,
+                experiment_mode=manifest.experiment_mode,
+                eligible_as_baseline=False,
+                name="Cockroach query acceptance",
+                model_name="shift-gcn",
+                dataset=manifest.dataset,
+                protocol=manifest.protocol,
+                seed=manifest.seed,
+                status=ExperimentStatus.COMPLETED,
+                config_hash=manifest.config_hash,
+                git_commit=manifest.git_commit,
+                checkpoint=manifest.checkpoint,
+                command=manifest.command,
+                summary_snapshot=GeneratedSummary(
+                    text="CockroachDB 正式实验向量查询验收。",
+                    model_id="test-summary-model",
+                    source_hash="d" * 64,
+                    generated_at=COLLECTED_AT,
+                    disclaimer="测试摘要不代表实验行为已被完整验证。",
+                ).model_dump(mode="json"),
+                review_receipt_snapshot={},
+                confirmed_by=user_id,
+                confirmed_at=COLLECTED_AT,
+            )
+            session.add(experiment)
+            session.flush()
+            session.add(
+                Memory(
+                    project_id=initialized.project_id,
+                    experiment_id=experiment.id,
+                    protocol=manifest.protocol,
+                    model_name="shift-gcn",
+                    seed=manifest.seed,
+                    experiment_status=ExperimentStatus.COMPLETED,
+                    current_valid=True,
+                    memory_type="EXPERIMENT_REVIEW_V1",
+                    content="cockroach vector acceptance",
+                    embedding=[1.0, *([0.0] * 1023)],
+                    embedding_model_id="amazon.titan-embed-text-v2:0",
+                    embedding_dimension=1024,
+                    embedding_normalized=True,
+                    document_version="submission-search-v1",
+                    content_sha256="c" * 64,
+                    verification_status=VerificationStatus.CONFIRMED,
+                    source_type="SUBMISSION_EMBEDDING",
+                    source_id=submission.submission_id,
+                )
+            )
+
+        query_result = ExperimentQueryService(
+            factory,
+            projects,
+            _QueryEmbeddingGenerator(),
+        ).query(
+            ExperimentQueryCommand(
+                project_id=initialized.project_id,
+                query="cockroach vector acceptance",
+                protocol=manifest.protocol,
+            ),
+            RequestIdentity(
+                user_id=user_id,
+                team_id=team_id,
+                token_id=uuid4(),
+                project_id=initialized.project_id,
+                scopes=frozenset({"experiment:query"}),
+            ),
+        )
+        assert len(query_result) == 1
+        assert query_result[0].vector_similarity == pytest.approx(1.0)
 
         test_engine.dispose()
         test_engine = None

@@ -1,7 +1,7 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-22
-对应数据库 revision：`20260722_09`
+对应数据库 revision：`20260722_10`
 
 本文档维护当前仓库的实际框架。状态标记：
 
@@ -23,7 +23,8 @@
 | admin_cli.py         |                                  | mcp_server/server.py |
 | [DONE]               |                                  | 7 tools exposed      |
 | - bootstrap Owner    |                                  | [DONE protocol]      |
-| - issue MCP token    |                                  +----------+-----------+
+| - add Researcher     |                                  |                      |
+| - issue API/MCP token |                                 +----------+-----------+
 | - revoke token       |                                             |
 +----------+-----------+                                             v
            |                                              +-------------------------+
@@ -35,7 +36,7 @@
            |                                                           v
            |        Browser / API Client                    +------------------------+
            |                 |                              | GuardianApplication    |
-           |                 v                              | [PARTIAL: 6/7]         |
+           |                 v                              | [DONE: 7/7]            |
            |      +------------------------+                | project_get_context    |
            |      | FastAPI                |                | experiment_check_plan  |
            |      | /health [DONE]         |                |   [DONE]               |
@@ -44,9 +45,10 @@
            |      | [DONE]                 |                | submission_prepare     |
            |      | /projects/initialize   |                | submission_finalize    |
            |      | [DONE]                 |                |   [DONE]               |
-           |      |                        |                | submission_get_status  |
+           |      | /submission decision  |                | submission_get_status  |
+           |      | [DONE]                 |                |   [DONE]               |
+           |      |                        |                | experiments_query      |
            |      |                        |                |   [DONE]               |
-           |      |                        |                | query [SCAFFOLD]       |
            |      +-----------+------------+                            |
            |                  | Bearer auth                             |
            |                  v                                         |
@@ -71,6 +73,7 @@
                   | - R11 analysis orchestration  |
                   | - R12a summary scheduling     |
                   | - R12b embedding/review       |
+                  | - R13 formal decision/query   |
                   | - stable application errors   |
                   +---------------+---------------+
                                   |
@@ -88,6 +91,7 @@
                   | - finalize row locks/evidence |
                   | - analysis cursor/risk query  |
                   | - two-stage Job/Outbox lease  |
+                  | - formal experiment query     |
                   +---------------+---------------+
                                   |
                                   v
@@ -101,6 +105,7 @@
                   | experiment_submissions, artifacts             |
                   | submission_risks, submission_embeddings       |
                   | workflow_jobs, outbox_events                   |
+                  | experiments, experiment_metrics, memories     |
                   +-----------------------------------------------+
 ```
 
@@ -111,7 +116,7 @@
 | Interface Layer                                                          |
 |                                                                          |
 |  FastAPI routes                 MCP tools                 Admin CLI       |
-|  [DONE partial API]             [DONE 6/7 use cases]      [DONE]          |
+|  [DONE P0 API]                  [DONE 7/7 use cases]      [DONE]          |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -122,6 +127,7 @@
 |  submission_analysis.py [DONE R11 five-node persisted analysis]          |
 |  async_summary.py [DONE R12a scheduler/outbox/lease/retry/summary]        |
 |  async_review.py  [DONE R12b embedding/review receipt/recovery]           |
+|  experiments.py   [DONE R13 decision transaction/vector query]           |
 +------------------------------------+-------------------------------------+
                                      |
 +------------------------------------v-------------------------------------+
@@ -206,6 +212,13 @@ User
   |                                  |                   +----< OutboxEvent per generation
   |                                  |
   |                                  +----< AuditLog
+  |                                  |
+  |                                  +----< Experiment
+  |                                             +---- submission/manifest/intent/context trace
+  |                                             +---- approval + summary/review snapshots
+  |                                             +----< ExperimentMetric
+  |                                             +----< Memory VECTOR(1024)
+  |                                             +----< Artifact association
   |
   +----< AccessToken
   |       API: team scope
@@ -215,13 +228,8 @@ User
           unique(actor_id, operation, idempotency_key)
 ```
 
-以下对象已有 ORM 模型但尚未进入迁移，状态为 `[SCAFFOLD]`：
-
-```text
-Experiment -> ExperimentMetric -> Memory
-```
-
-这一区分是刻意的：没有业务服务和验收测试的表不提前加入 Alembic revision。
+`Experiment -> ExperimentMetric -> Memory` 已由 revision `20260722_10` 正式迁移；草稿
+`SubmissionEmbedding` 保留不变，确认事务复制其冻结内容、向量和模型来源，便于审计。
 
 ## 当前可用链路
 
@@ -315,12 +323,27 @@ Experiment -> ExperimentMetric -> Memory
    -> original submitter or Owner only
    -> returns dynamic Submission/Job history/risk/summary/embedding metadata/review receipt
    -> never returns raw vector or frozen embedding input; never triggers processing
+
+12. User calls POST /projects/{project}/submissions/{submission}/decision
+   -> API Token + submission:review + membership
+   -> Researcher only own draft; Owner any project draft
+   -> recomputes eligibility/source/document hashes from persisted facts
+   -> APPROVED creates Experiment/Metric/Memory and Artifact links in one DB transaction
+   -> REJECTED creates no formal experiment; both paths persist approval/audit/idempotency
+   -> no S3 or Bedrock call inside the transaction
+
+13. Local Agent calls experiments_query
+   -> experiment:query + project binding + membership
+   -> exact detail by experiment_id without Bedrock, or query+protocol candidate mode
+   -> project/protocol/status/CONFIRMED/current filters before Titan query embedding
+   -> exact cosine scan over at most 200 compatible memories; no vector index in P0
+   -> vector results remain CANDIDATE_EVIDENCE
 ```
 
 ## 工作流实现边界
 
 ```text
-experiments_query           [SCAFFOLD: query contract/model only]
+experiments_query           [DONE R13: structured filter + exact vector candidates]
 
 Submission LangGraph full topology:
 [DONE R11]
@@ -335,7 +358,7 @@ UPLOAD_VERIFICATION -> CONFIG_PARSE -> MANIFEST_VALIDATION -> DUPLICATE_CHECK
 
 数据库业务表和 WorkflowJob 是恢复真相源，LangGraph 不保存 checkpoint。SQS 只携带
 `schema_version/job_id/submission_id/generation`。NEEDS_REVIEW 是持久化交接状态，
-不是 LangGraph interrupt；正式确认将使用独立幂等事务。
+不是 LangGraph interrupt；正式确认使用 R13 独立幂等事务。
 ```
 
 ## 计划中的完整部署边界
@@ -364,7 +387,7 @@ Local Agent -> MCP Server -----+-> FastAPI/Application
 ```
 
 Queue、DLQ/redrive、IAM/KMS 和 Bedrock model access 的 AWS 资源定义仍为 `[PLANNED R14]`；
-R12b 只实现应用适配器和运行协议，不创建上述 AWS 资源。
+R13 只实现应用适配器和运行协议，不创建上述 AWS 资源。
 
 ## 文档更新要求
 

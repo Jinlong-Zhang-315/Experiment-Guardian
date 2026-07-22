@@ -60,7 +60,7 @@ class GuardianUseCases(Protocol):
     ) -> SubmissionStatusResult: ...
 
     def experiments_query(
-        self, command: ExperimentQueryCommand
+        self, command: ExperimentQueryCommand, identity: RequestIdentity
     ) -> Sequence[ExperimentQueryResult]: ...
 
 

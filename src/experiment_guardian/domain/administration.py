@@ -7,7 +7,12 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from experiment_guardian.domain.contracts import ContractModel, ProjectContextBundle
-from experiment_guardian.domain.enums import ApprovalDecision, ProtectionLevel
+from experiment_guardian.domain.enums import (
+    ApprovalDecision,
+    ProtectionLevel,
+    ReviewEligibility,
+    SubmissionStatus,
+)
 
 
 class InitialProjectInput(ContractModel):
@@ -133,4 +138,54 @@ class PlanCheckDecisionResult(ContractModel):
     def validate_manifest_eligibility(self) -> "PlanCheckDecisionResult":
         if self.can_create_manifest is not (self.decision is ApprovalDecision.APPROVED):
             raise ValueError("can_create_manifest 必须与审批决定一致")
+        return self
+
+
+class SubmissionDecisionRequest(ContractModel):
+    """用户对一个待审核 Submission 作出的不可逆决定。"""
+
+    decision: ApprovalDecision
+    decision_reason: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("decision_reason")
+    @classmethod
+    def normalize_submission_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def rejection_requires_reason(self) -> "SubmissionDecisionRequest":
+        if self.decision is ApprovalDecision.REJECTED and self.decision_reason is None:
+            raise ValueError("拒绝 Submission 时必须填写 decision_reason")
+        return self
+
+
+class SubmissionDecisionResult(ContractModel):
+    approval_record_id: UUID
+    project_id: UUID
+    submission_id: UUID
+    experiment_id: UUID | None = None
+    decision: ApprovalDecision
+    submission_status: SubmissionStatus
+    review_eligibility: ReviewEligibility
+    requested_by: UUID
+    decided_by: UUID
+    decided_at: datetime
+    decision_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_decision_result(self) -> "SubmissionDecisionResult":
+        if self.decision is ApprovalDecision.APPROVED:
+            if (
+                self.experiment_id is None
+                or self.submission_status is not SubmissionStatus.APPROVED
+            ):
+                raise ValueError("批准结果必须关联正式 Experiment")
+        elif (
+            self.experiment_id is not None
+            or self.submission_status is not SubmissionStatus.REJECTED
+        ):
+            raise ValueError("拒绝结果不能关联正式 Experiment")
         return self

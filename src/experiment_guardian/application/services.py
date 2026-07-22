@@ -21,11 +21,11 @@ from experiment_guardian.application.async_summary import (
 from experiment_guardian.application.errors import (
     AuthorizationError,
     ConflictError,
-    FeatureUnavailableError,
     InputValidationError,
     ResourceNotFoundError,
     ServiceUnavailableError,
 )
+from experiment_guardian.application.experiments import ExperimentQueryService
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.ports import ArtifactStorage
 from experiment_guardian.application.submission_analysis import SubmissionAnalysisService
@@ -187,6 +187,7 @@ class GuardianApplication:
         upload_url_ttl_seconds: int = 900,
         workflow_repository: SqlAlchemyWorkflowRepository | None = None,
         worker_max_attempts: int = 5,
+        experiment_query_service: ExperimentQueryService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._projects = project_repository
@@ -206,6 +207,7 @@ class GuardianApplication:
             self._workflows,
             max_attempts=worker_max_attempts,
         )
+        self._experiment_queries = experiment_query_service
         self._submission_analysis = (
             SubmissionAnalysisService(
                 session_factory,
@@ -1663,9 +1665,12 @@ class GuardianApplication:
                 return self._replay_finalize(record, request_hash)
             return None
 
-    @staticmethod
-    def experiments_query(_: ExperimentQueryCommand) -> Sequence[ExperimentQueryResult]:
-        raise FeatureUnavailableError("experiments_query 当前阶段尚未实现")
+    def experiments_query(
+        self, command: ExperimentQueryCommand, identity: RequestIdentity
+    ) -> Sequence[ExperimentQueryResult]:
+        if self._experiment_queries is None:
+            raise RuntimeError("experiments_query 服务未装配")
+        return self._experiment_queries.query(command, identity)
 
 
 class PlanApprovalService:

@@ -19,10 +19,15 @@ from experiment_guardian.infrastructure.database import get_session_factory
 from experiment_guardian.infrastructure.models import Project, Team, TeamMember, User
 from experiment_guardian.infrastructure.security import IssuedToken
 
-OWNER_API_SCOPES = frozenset({"plan:approve", "project:initialize"})
+OWNER_API_SCOPES = frozenset(
+    {"plan:approve", "project:initialize", "submission:review"}
+)
+OWNER_PROJECT_API_SCOPES = frozenset({"plan:approve", "submission:review"})
+RESEARCHER_API_SCOPES = frozenset({"submission:review"})
 OWNER_MCP_SCOPES = frozenset(
     {
         "experiment:check",
+        "experiment:query",
         "manifest:create",
         "project:read",
         "submission:create",
@@ -30,6 +35,7 @@ OWNER_MCP_SCOPES = frozenset(
         "submission:read",
     }
 )
+RESEARCHER_MCP_SCOPES = OWNER_MCP_SCOPES
 
 
 def _token_output(kind: str, issued: IssuedToken, *, scopes: frozenset[str]) -> dict[str, Any]:
@@ -89,15 +95,29 @@ def _bootstrap_owner(args: argparse.Namespace) -> dict[str, Any]:
 def _issue_mcp_token(args: argparse.Namespace) -> dict[str, Any]:
     factory = get_session_factory()
     with factory() as session, session.begin():
-        user = session.scalar(
+        owner = session.scalar(
             select(User).where(func.lower(User.email) == args.owner_email.strip().lower())
         )
         project = session.get(Project, UUID(args.project_id))
-        if user is None or project is None:
+        if owner is None or project is None:
             raise ConflictError("Owner 或项目不存在")
-        member = session.get(TeamMember, {"team_id": project.team_id, "user_id": user.id})
-        if member is None or member.role is not TeamRole.OWNER:
+        owner_member = session.get(
+            TeamMember, {"team_id": project.team_id, "user_id": owner.id}
+        )
+        if owner_member is None or owner_member.role is not TeamRole.OWNER:
             raise AuthorizationError("只有项目团队 Owner 可以签发 MCP Token")
+        member_email = (getattr(args, "member_email", None) or args.owner_email).strip().lower()
+        user = session.scalar(select(User).where(func.lower(User.email) == member_email))
+        member = (
+            session.get(TeamMember, {"team_id": project.team_id, "user_id": user.id})
+            if user is not None
+            else None
+        )
+        if user is None or member is None:
+            raise ConflictError("目标用户不是项目团队成员")
+        scopes = (
+            OWNER_MCP_SCOPES if member.role is TeamRole.OWNER else RESEARCHER_MCP_SCOPES
+        )
         issued = get_token_service().issue(
             session,
             user_id=user.id,
@@ -105,13 +125,102 @@ def _issue_mcp_token(args: argparse.Namespace) -> dict[str, Any]:
             project_id=project.id,
             audience=TokenAudience.MCP,
             name=args.token_name,
-            scopes=set(OWNER_MCP_SCOPES),
+            scopes=set(scopes),
             lifetime_days=args.ttl_days,
-            created_by=user.id,
+            created_by=owner.id,
         )
         return {
             "project_id": str(project.id),
-            **_token_output("MCP", issued, scopes=OWNER_MCP_SCOPES),
+            "user_id": str(user.id),
+            "role": member.role.value,
+            **_token_output("MCP", issued, scopes=scopes),
+        }
+
+
+def _add_researcher(args: argparse.Namespace) -> dict[str, Any]:
+    factory = get_session_factory()
+    with factory() as session, session.begin():
+        owner = session.scalar(
+            select(User).where(func.lower(User.email) == args.owner_email.strip().lower())
+        )
+        project = session.get(Project, UUID(args.project_id))
+        if owner is None or project is None:
+            raise ConflictError("Owner 或项目不存在")
+        owner_member = session.get(
+            TeamMember, {"team_id": project.team_id, "user_id": owner.id}
+        )
+        if owner_member is None or owner_member.role is not TeamRole.OWNER:
+            raise AuthorizationError("只有项目团队 Owner 可以添加 Researcher")
+
+        email = args.email.strip().lower()
+        user = session.scalar(select(User).where(func.lower(User.email) == email))
+        if user is None:
+            user = User(name=args.name.strip(), email=email)
+            session.add(user)
+            session.flush()
+        member = session.get(TeamMember, {"team_id": project.team_id, "user_id": user.id})
+        if member is None:
+            member = TeamMember(
+                team_id=project.team_id,
+                user_id=user.id,
+                role=TeamRole.RESEARCHER,
+            )
+            session.add(member)
+        elif member.role is not TeamRole.RESEARCHER:
+            raise ConflictError("目标用户已是 Owner，不能改为 Researcher")
+        return {
+            "project_id": str(project.id),
+            "user_id": str(user.id),
+            "email": user.email,
+            "role": TeamRole.RESEARCHER.value,
+        }
+
+
+def _issue_api_token(args: argparse.Namespace) -> dict[str, Any]:
+    factory = get_session_factory()
+    with factory() as session, session.begin():
+        owner = session.scalar(
+            select(User).where(func.lower(User.email) == args.owner_email.strip().lower())
+        )
+        project = session.get(Project, UUID(args.project_id))
+        if owner is None or project is None:
+            raise ConflictError("Owner 或项目不存在")
+        owner_member = session.get(
+            TeamMember, {"team_id": project.team_id, "user_id": owner.id}
+        )
+        if owner_member is None or owner_member.role is not TeamRole.OWNER:
+            raise AuthorizationError("只有项目团队 Owner 可以签发 API Token")
+        user = session.scalar(
+            select(User).where(func.lower(User.email) == args.member_email.strip().lower())
+        )
+        member = (
+            session.get(TeamMember, {"team_id": project.team_id, "user_id": user.id})
+            if user is not None
+            else None
+        )
+        if user is None or member is None:
+            raise ConflictError("目标用户不是项目团队成员")
+        scopes = (
+            OWNER_PROJECT_API_SCOPES
+            if member.role is TeamRole.OWNER
+            else RESEARCHER_API_SCOPES
+        )
+        issued = get_token_service().issue(
+            session,
+            user_id=user.id,
+            team_id=project.team_id,
+            project_id=project.id,
+            audience=TokenAudience.API,
+            name=args.token_name,
+            scopes=set(scopes),
+            lifetime_days=args.ttl_days,
+            created_by=owner.id,
+        )
+        return {
+            "project_id": str(project.id),
+            "user_id": str(user.id),
+            "role": member.role.value,
+            **_token_output("API", issued, scopes=scopes),
         }
 
 
@@ -138,9 +247,25 @@ def build_parser() -> argparse.ArgumentParser:
     issue = subparsers.add_parser("issue-mcp-token")
     issue.add_argument("--owner-email", required=True)
     issue.add_argument("--project-id", required=True)
+    issue.add_argument("--member-email")
     issue.add_argument("--token-name", default="local-agent")
     issue.add_argument("--ttl-days", type=int, default=30)
     issue.set_defaults(handler=_issue_mcp_token)
+
+    add_researcher = subparsers.add_parser("add-researcher")
+    add_researcher.add_argument("--owner-email", required=True)
+    add_researcher.add_argument("--project-id", required=True)
+    add_researcher.add_argument("--email", required=True)
+    add_researcher.add_argument("--name", required=True)
+    add_researcher.set_defaults(handler=_add_researcher)
+
+    issue_api = subparsers.add_parser("issue-api-token")
+    issue_api.add_argument("--owner-email", required=True)
+    issue_api.add_argument("--project-id", required=True)
+    issue_api.add_argument("--member-email", required=True)
+    issue_api.add_argument("--token-name", default="review-client")
+    issue_api.add_argument("--ttl-days", type=int, default=7)
+    issue_api.set_defaults(handler=_issue_api_token)
 
     revoke = subparsers.add_parser("revoke-token")
     revoke.add_argument("--token-id", required=True)

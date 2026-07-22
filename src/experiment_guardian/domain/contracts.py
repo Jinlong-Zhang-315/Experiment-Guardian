@@ -1010,10 +1010,10 @@ class ExperimentQueryCommand(ContractModel):
     """结构化过滤先于向量相似度的实验查询命令。"""
 
     project_id: UUID
-    actor_id: UUID
-    query: str = Field(min_length=1)
-    protocol: str = Field(min_length=1)
-    model_name: str | None = None
+    experiment_id: UUID | None = None
+    query: str | None = Field(default=None, min_length=1, max_length=2000)
+    protocol: str | None = Field(default=None, min_length=1, max_length=200)
+    model_name: str | None = Field(default=None, min_length=1, max_length=300)
     seed: int | None = None
     statuses: set[ExperimentStatus] = Field(
         default_factory=lambda: {ExperimentStatus.COMPLETED, ExperimentStatus.FAILED}
@@ -1029,27 +1029,67 @@ class ExperimentQueryCommand(ContractModel):
         historical = {ExperimentStatus.DEPRECATED, ExperimentStatus.SUPERSEDED}
         if not self.include_historical and self.statuses & historical:
             raise ValueError("DEPRECATED/SUPERSEDED 结果必须显式启用 include_historical")
+        if self.experiment_id is None:
+            if self.query is None or self.protocol is None:
+                raise ValueError("向量候选查询必须同时提供 query 和 protocol")
+        elif self.query is not None or self.protocol is not None:
+            raise ValueError("experiment_id 详情模式不能同时提供 query 或 protocol")
         return self
+
+
+class ExperimentMetricView(ContractModel):
+    name: str
+    value: float
+    split: str
+    aggregation_type: str
+    epoch: int | None = None
+    is_primary: bool
+
+
+class ExperimentArtifactView(ContractModel):
+    artifact_id: UUID
+    filename: str
+    mime_type: str
+    size_bytes: int = Field(gt=0)
+    sha256: str = Field(pattern=SHA256_PATTERN)
+    artifact_type: ArtifactType
+    s3_version_id: str
+    evidence_type: Literal[EvidenceType.CLOUD_VERIFIED] = EvidenceType.CLOUD_VERIFIED
 
 
 class ExperimentQueryResult(ContractModel):
     """查询结果必须显示结构化状态；向量相似度只表示候选证据。"""
 
     experiment_id: UUID
+    submission_id: UUID
+    name: str
+    experiment_mode: ExperimentMode
     status: ExperimentStatus
+    dataset: str
     protocol: str
     model_name: str
     seed: int
     current_valid: bool
     verification_status: VerificationStatus
     manifest_id: UUID
+    manifest_hash: str = Field(pattern=SHA256_PATTERN)
+    plan_check_id: UUID
     context_id: UUID
     context_version: int = Field(gt=0)
     intent_id: UUID
     intent_version: int = Field(gt=0)
-    retrieval_role: Literal["CANDIDATE_EVIDENCE"] = "CANDIDATE_EVIDENCE"
-    vector_similarity: float | None = None
-    payload: dict[str, Any]
+    retrieval_role: Literal["CANDIDATE_EVIDENCE", "STRUCTURED_RECORD"]
+    detail_level: Literal["SUMMARY", "FULL"]
+    vector_similarity: float | None = Field(default=None, ge=-1.0, le=1.0)
+    summary: GeneratedSummary
+    metrics: list[ExperimentMetricView]
+    config_hash: str = Field(pattern=SHA256_PATTERN)
+    config_snapshot: dict[str, Any] | None = None
+    git_branch: str | None = None
+    git_commit: str
+    command: str | None = None
+    checkpoint: str | None = None
+    artifacts: list[ExperimentArtifactView] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def label_historical_and_unconfirmed_results(self) -> "ExperimentQueryResult":
@@ -1060,4 +1100,13 @@ class ExperimentQueryResult(ContractModel):
             and self.current_valid
         ):
             raise ValueError("DEPRECATED/SUPERSEDED 结果不能标记为当前有效")
+        if self.detail_level == "FULL":
+            if self.config_snapshot is None or self.command is None:
+                raise ValueError("FULL 查询结果必须包含配置和运行命令")
+            if self.retrieval_role != "STRUCTURED_RECORD" or self.vector_similarity is not None:
+                raise ValueError("FULL 详情必须是无向量分数的 STRUCTURED_RECORD")
+        elif self.config_snapshot is not None or self.command is not None or self.artifacts:
+            raise ValueError("SUMMARY 查询结果不能携带完整配置、命令或 Artifact")
+        elif self.retrieval_role != "CANDIDATE_EVIDENCE":
+            raise ValueError("SUMMARY 查询结果必须标记为 CANDIDATE_EVIDENCE")
         return self

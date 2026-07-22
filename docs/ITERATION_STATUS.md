@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
 更新时间：2026-07-22
-当前完成轮次：R12b
-下一轮：R13 正式实验确认与结构化/向量查询
+当前完成轮次：R13
+下一轮：R14 四个 Web 页面、AWS 演示部署与最终演示
 
 本文档维护“每轮交付了什么”和“下一轮只做什么”。详细缺陷与修复过程见
 `docs/DEVELOPMENT_LOG.md`，当前代码结构见 `docs/ARCHITECTURE.md`。
@@ -25,8 +25,8 @@
 | R11 | 可恢复的确定性分析前半程 | 完成 | 解析、校验、查重和风险 |
 | R12a | 可靠异步编排与摘要 | 完成 | Outbox + SQS Worker + Bedrock 摘要 |
 | R12b | embedding 与审核回执 | 完成 | VECTOR(1024) + 确定性回执 + NEEDS_REVIEW |
-| R13 | 正式实验确认、查询和向量候选 | 下一轮 | 不属于当前轮次 |
-| R14 | Web 页面与 AWS 演示部署 | 排队 | 不属于下一轮 |
+| R13 | 正式实验确认、查询和向量候选 | 完成 | 单事务确认 + 结构化过滤精确向量查询 |
+| R14 | Web 页面与 AWS 演示部署 | 下一轮 | 不属于当前轮次 |
 
 ## 已完成轮次
 
@@ -289,29 +289,47 @@ Web、自动训练或自动改代码。
 
 R12b 不实现正式实验确认、`experiments_query`、Web、AWS 资源创建、自动训练或自动改代码。
 
-## 下一轮 R13：正式实验确认与查询
+## R13：正式实验确认与查询
+
+交付：
+
+* revision `20260722_10` 正式迁移 Experiment、ExperimentMetric 和 Memory，并为 Artifact
+  增加正式实验外键；Memory 保存模型、维度、归一化、文档版本和内容哈希。
+* 新增 Submission decision REST API 和 `submission:review` scope；Researcher 只能决定
+  自己的草稿，Owner 可决定项目内任意草稿。
+* 批准前重新计算风险权限、回执来源哈希和 embedding 文档哈希。LOW/MEDIUM 可由原
+  Researcher 或 Owner 批准，HIGH 仅 Owner，CRITICAL/blocking 不能批准但可拒绝。
+* 批准在单个 CockroachDB 事务内创建 Experiment、Metric、CONFIRMED Memory、Artifact
+  关联、ApprovalRecord、AuditLog 和幂等回执；事务内不调用 S3/Bedrock。
+* 拒绝只写最终决定、Submission 状态、审计和幂等结果，不创建部分正式记录。
+* `experiments_query` 已接入服务端身份和 `experiment:query` scope；向量模式先强制 project、
+  protocol、状态、CONFIRMED/current、模型版本过滤，再对最多 200 条记录精确排序。
+* 指定 `experiment_id` 返回完整结构化记录，不调用 Bedrock；向量结果标记为
+  `CANDIDATE_EVIDENCE`，历史记录默认隐藏。
+* 可信 CLI 增加 Researcher 创建和项目绑定 API Token 签发，并可为 Researcher 签发 MCP
+  Token；没有增加邀请流或 Web 成员管理。
+
+R13 不创建向量索引，不实现 baseline 晋升、文件下载、Web、AWS 资源、自动训练或自动改代码。
+
+## 下一轮 R14：Web 与最终演示
 
 ### 单一目标
 
-在不调用外部模型的数据库事务中确认一个 `NEEDS_REVIEW` Submission，并让团队成员通过
-结构化条件和向量候选查询正式 Experiment。
+在不改动 R13 治理语义的前提下，为已有 API/MCP 链路实现四个收敛页面并完成 AWS 演示
+部署与 Owner/Researcher 纵向演示。
 
 ### 本轮包含
 
-1. 按 R12b `review_eligibility` 和调用者角色执行 Researcher/Owner/阻断权限门禁。
-2. 一个 CockroachDB 事务创建 Experiment、Metrics、artifact 关联、摘要和向量记忆，
-   更新 Submission 并写入审计与确认幂等结果；事务内禁止调用 Bedrock/S3。
-3. 正式记录完整追溯 Submission、Manifest、Plan Check、Intent 和 Context 版本。
-4. `experiments_query` 先强制 project、确认状态、实验状态和 protocol 过滤，再使用向量
-   相似度生成候选；DEPRECATED/SUPERSEDED 明确标记且默认不返回。
-5. 只实现服务/MCP/数据库链路，不同时开发四个 Web 页面和 AWS 部署。
+1. 项目设置、计划审批、实验审核和实验查询四个页面。
+2. 页面只调用已有确认/查询契约，不在前端重新计算风险或权限。
+3. 配置演示所需的 CockroachDB、S3、SQS/DLQ、IAM、Bedrock 和应用进程运行资源。
+4. 完成双角色主线演示、最小监控和部署验收。
 
 ## 后续队列
 
-后续轮次只表示顺序，不在 R12b 同时开发：
+后续轮次只表示顺序，不在 R13 同时开发：
 
 ```text
-R13 Transactional experiment confirmation + structured/vector query
 R14 Four Web pages + AWS deployment + final demonstration
 ```
 

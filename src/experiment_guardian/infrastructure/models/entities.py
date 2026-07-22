@@ -567,8 +567,7 @@ class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     submission_id: Mapped[UUID] = mapped_column(
         ForeignKey("experiment_submissions.id"), nullable=False
     )
-    # experiments 表尚未迁移；R9 始终写 NULL，正式实验切片再补数据库外键。
-    experiment_id: Mapped[UUID | None] = mapped_column()
+    experiment_id: Mapped[UUID | None] = mapped_column(ForeignKey("experiments.id"))
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(200), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -651,6 +650,9 @@ class Experiment(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     project_context_version: Mapped[int] = mapped_column(Integer, nullable=False)
     intent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    approval_record_id: Mapped[UUID] = mapped_column(
+        ForeignKey("approval_records.id"), nullable=False
+    )
     experiment_mode: Mapped[ExperimentMode] = mapped_column(
         enum_column(ExperimentMode, "experiment_mode"), nullable=False
     )
@@ -667,6 +669,8 @@ class Experiment(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     git_commit: Mapped[str] = mapped_column(String(64), nullable=False)
     checkpoint: Mapped[str | None] = mapped_column(String(1500))
     command: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    review_receipt_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     confirmed_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -676,7 +680,7 @@ class Experiment(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 class ExperimentMetric(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "experiment_metrics"
     __table_args__ = (
-        UniqueConstraint("experiment_id", "name", "split", "aggregation_type", "epoch"),
+        UniqueConstraint("experiment_id", "name", name="uq_experiment_metrics_name"),
     )
 
     experiment_id: Mapped[UUID] = mapped_column(ForeignKey("experiments.id"), nullable=False)
@@ -691,6 +695,12 @@ class ExperimentMetric(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 class Memory(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "memories"
     __table_args__ = (
+        UniqueConstraint("experiment_id", "memory_type", name="uq_memories_experiment_type"),
+        CheckConstraint(
+            "embedding_dimension = 1024", name="memory_embedding_dimension_1024"
+        ),
+        CheckConstraint("embedding_normalized", name="memory_embedding_normalized"),
+        CheckConstraint("length(content_sha256) = 64", name="memory_content_sha256_length"),
         Index(
             "ix_memory_structured_filter",
             "project_id",
@@ -713,6 +723,11 @@ class Memory(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     memory_type: Mapped[str] = mapped_column(String(100), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(VectorType(1024), nullable=False)
+    embedding_model_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding_normalized: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    document_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     verification_status: Mapped[VerificationStatus] = mapped_column(
         enum_column(VerificationStatus, "memory_verification_status"), nullable=False
     )

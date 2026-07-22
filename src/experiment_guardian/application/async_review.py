@@ -488,16 +488,11 @@ class SubmissionReviewProcessor:
             )
             for name in metric_names
         )
-        risk_items = [_risk_item(item) for item in risks]
+        risk_items = [risk_item_from_model(item) for item in risks]
         unresolved = [item for item in risks if not item.resolved]
         severities = [item.severity for item in unresolved]
         highest = max(severities, key=RISK_RANK.__getitem__) if severities else None
-        if any(item.blocking or item.severity is RiskSeverity.CRITICAL for item in unresolved):
-            eligibility = ReviewEligibility.BLOCKED
-        elif any(item.severity is RiskSeverity.HIGH for item in unresolved):
-            eligibility = ReviewEligibility.OWNER_ONLY
-        else:
-            eligibility = ReviewEligibility.RESEARCHER_OR_OWNER
+        eligibility = review_eligibility_for_risks(risks)
         highlighted = [
             item
             for item in risk_items
@@ -612,7 +607,7 @@ class SubmissionReviewProcessor:
             (item.code, item.field_path, item.message) for item in receipt.highlighted_risks
         }
         lower_risks = [
-            _risk_item(item).model_dump(mode="json")
+            risk_item_from_model(item).model_dump(mode="json")
             for item in sorted(
                 risks,
                 key=lambda item: (
@@ -843,7 +838,7 @@ def _fact(name: str, value: Any, evidence_type: EvidenceType, collected_at: date
     )
 
 
-def _risk_item(item: SubmissionRisk) -> RiskItem:
+def risk_item_from_model(item: SubmissionRisk) -> RiskItem:
     return RiskItem(
         code=item.risk_type,
         severity=item.severity,
@@ -866,6 +861,46 @@ def _risk_item(item: SubmissionRisk) -> RiskItem:
         constraint_candidates=item.constraint_candidates,
         recommendation=_bounded_text(item.recommendation) if item.recommendation else None,
     )
+
+
+def review_eligibility_for_risks(risks: list[SubmissionRisk]) -> ReviewEligibility:
+    """只依据未解决风险计算确认门禁，不能被已存回执覆盖。"""
+
+    unresolved = [item for item in risks if not item.resolved]
+    if any(item.blocking or item.severity is RiskSeverity.CRITICAL for item in unresolved):
+        return ReviewEligibility.BLOCKED
+    if any(item.severity is RiskSeverity.HIGH for item in unresolved):
+        return ReviewEligibility.OWNER_ONLY
+    return ReviewEligibility.RESEARCHER_OR_OWNER
+
+
+def review_receipt_source_hash(
+    receipt: SubmissionReceipt, risks: list[SubmissionRisk]
+) -> str:
+    """按 R12b 原始字段重建回执来源哈希，发现持久化内容漂移。"""
+
+    return canonical_json_hash(
+        {
+            "submission_id": str(receipt.submission_id),
+            "objective": receipt.objective_evidence.model_dump(mode="json"),
+            "trace": receipt.trace.model_dump(mode="json"),
+            "run_conditions": [item.model_dump(mode="json") for item in receipt.run_conditions],
+            "allowed_changes": [
+                item.model_dump(mode="json") for item in receipt.allowed_changes
+            ],
+            "key_results": [item.model_dump(mode="json") for item in receipt.key_results],
+            "risks": [risk_item_from_model(item).model_dump(mode="json") for item in risks],
+            "review_eligibility": review_eligibility_for_risks(risks).value,
+        }
+    )
+
+
+def build_embedding_document(
+    receipt: SubmissionReceipt, risks: list[SubmissionRisk]
+) -> str:
+    """公开确定性文档构造器，供正式确认复算草稿 embedding 来源。"""
+
+    return SubmissionReviewProcessor._build_embedding_document(receipt, risks)
 
 
 def _bounded_value(value: Any) -> Any:

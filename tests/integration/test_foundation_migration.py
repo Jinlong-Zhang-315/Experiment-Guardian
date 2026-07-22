@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from experiment_guardian.domain.enums import WorkflowStatus, WorkflowStep
 from experiment_guardian.infrastructure.models import ExperimentSubmission, WorkflowJob
 from migrations.scope import (
+    FORMAL_EXPERIMENT_TABLES,
     FOUNDATION_TABLES,
     GOVERNANCE_TABLES,
     MIGRATED_TABLES,
@@ -110,6 +111,22 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     assert "submission_embeddings" in inspector.get_table_names()
     assert "uq_submission_embeddings_submission_id" in {
         item["name"] for item in inspector.get_unique_constraints("submission_embeddings")
+    }
+    assert set(inspector.get_table_names()) >= FORMAL_EXPERIMENT_TABLES
+    assert {
+        "approval_record_id",
+        "summary_snapshot",
+        "review_receipt_snapshot",
+    } <= {item["name"] for item in inspector.get_columns("experiments")}
+    assert {
+        "embedding_model_id",
+        "embedding_dimension",
+        "embedding_normalized",
+        "document_version",
+        "content_sha256",
+    } <= {item["name"] for item in inspector.get_columns("memories")}
+    assert "fk_artifacts_experiment_id_experiments" in {
+        item["name"] for item in inspector.get_foreign_keys("artifacts")
     }
     assert "uq_submission_risks_submission_fingerprint" in {
         item["name"] for item in inspector.get_unique_constraints("submission_risks")

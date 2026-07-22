@@ -150,8 +150,9 @@ def submission_get_status(submission_id: str) -> dict[str, Any]:
 @mcp.tool()
 def experiments_query(
     project_id: str,
-    query: str,
-    protocol: str,
+    query: str | None = None,
+    protocol: str | None = None,
+    experiment_id: str | None = None,
     model_name: str | None = None,
     seed: int | None = None,
     include_historical: bool = False,
@@ -166,7 +167,7 @@ def experiments_query(
     identity = get_identity_provider().current_identity()
     command = ExperimentQueryCommand(
         project_id=UUID(project_id),
-        actor_id=identity.user_id,
+        experiment_id=UUID(experiment_id) if experiment_id else None,
         query=query,
         protocol=protocol,
         model_name=model_name,
@@ -175,7 +176,7 @@ def experiments_query(
         include_historical=include_historical,
         top_k=safe_top_k,
     )
-    result = get_guardian_use_cases().experiments_query(command)
+    result = get_guardian_use_cases().experiments_query(command, identity)
     return [item.model_dump(mode="json") for item in result]
 
 

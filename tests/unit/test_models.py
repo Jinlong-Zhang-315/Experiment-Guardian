@@ -118,7 +118,7 @@ def test_submission_schema_keeps_r12b_embedding_separate() -> None:
     assert "uq_submission_embeddings_submission_id" in {
         constraint.name for constraint in embedding.constraints
     }
-    assert "fk_artifacts_experiment_id_experiments" not in {
+    assert "fk_artifacts_experiment_id_experiments" in {
         constraint.name for constraint in artifact.constraints
     }
     assert {
@@ -153,14 +153,23 @@ def test_memory_has_structured_vector_filters() -> None:
 
     assert {
         "project_id",
+        "experiment_id",
         "protocol",
         "model_name",
         "seed",
         "verification_status",
         "experiment_status",
         "current_valid",
+        "embedding_model_id",
+        "embedding_dimension",
+        "embedding_normalized",
+        "document_version",
+        "content_sha256",
     } <= set(memory.columns.keys())
     assert memory.columns["embedding"].type.dimension == 1024
+    assert "uq_memories_experiment_type" in {
+        constraint.name for constraint in memory.constraints
+    }
 
 
 def test_exploratory_experiment_cannot_be_baseline() -> None:
@@ -168,6 +177,11 @@ def test_exploratory_experiment_cannot_be_baseline() -> None:
     check_names = {constraint.name for constraint in experiment.constraints}
 
     assert "ck_experiments_exploratory_not_eligible_as_baseline" in check_names
+    assert {
+        "approval_record_id",
+        "summary_snapshot",
+        "review_receipt_snapshot",
+    } <= set(experiment.columns.keys())
 
 
 def test_context_intent_and_constraint_keep_confirmation_provenance() -> None:

@@ -10,6 +10,7 @@ from experiment_guardian.domain.contracts import (
     ExperimentIntentReference,
     ExperimentQueryCommand,
     ExperimentQueryResult,
+    GeneratedSummary,
     IntentInterpretation,
     ParameterConstraint,
     ProjectContextBundle,
@@ -166,7 +167,6 @@ def test_critical_receipt_cannot_be_confirmed() -> None:
 def test_query_defaults_exclude_historical_results() -> None:
     command = ExperimentQueryCommand(
         project_id=PROJECT_ID,
-        actor_id=USER_ID,
         query="融合系数实验",
         protocol="40/20",
     )
@@ -181,16 +181,34 @@ def test_historical_query_result_cannot_be_current() -> None:
     with pytest.raises(ValidationError, match="当前有效"):
         ExperimentQueryResult(
             experiment_id=INTENT_ID,
+            submission_id=USER_ID,
+            name="fusion",
+            experiment_mode=ExperimentMode.FORMAL,
             status=ExperimentStatus.SUPERSEDED,
+            dataset="NTU60",
             protocol="40/20",
             model_name="shift-gcn",
             seed=1,
             current_valid=True,
             verification_status=VerificationStatus.CONFIRMED,
             manifest_id=USER_ID,
+            manifest_hash="a" * 64,
+            plan_check_id=USER_ID,
             context_id=CONTEXT_ID,
             context_version=2,
             intent_id=INTENT_ID,
             intent_version=3,
-            payload={"top1": 46.7},
+            retrieval_role="CANDIDATE_EVIDENCE",
+            detail_level="SUMMARY",
+            vector_similarity=0.8,
+            summary=GeneratedSummary(
+                text="历史实验摘要",
+                model_id="test-model",
+                source_hash="b" * 64,
+                generated_at=NOW,
+                disclaimer="模型摘要仅用于解释，不代表实验已经验证正确。",
+            ),
+            metrics=[],
+            config_hash="c" * 64,
+            git_commit="abcdef1",
         )

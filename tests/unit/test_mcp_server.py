@@ -9,6 +9,7 @@ import pytest
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanCommand,
+    ExperimentQueryCommand,
     SubmissionFinalizeCommand,
     SubmissionPrepareCommand,
 )
@@ -268,3 +269,44 @@ def test_submission_get_status_uses_server_identity(
 
     assert result == {"workflow_status": "QUEUED"}
     assert captured == {"submission_id": submission_id, "identity": identity}
+
+
+def test_experiments_query_uses_server_identity_and_supports_detail_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = RequestIdentity(
+        user_id=uuid4(),
+        team_id=uuid4(),
+        token_id=uuid4(),
+        project_id=uuid4(),
+        scopes=frozenset({"experiment:query"}),
+    )
+    captured: dict[str, object] = {}
+
+    class FakeUseCases:
+        def experiments_query(
+            self, command: ExperimentQueryCommand, request_identity: RequestIdentity
+        ) -> list[SimpleNamespace]:
+            captured["command"] = command
+            captured["identity"] = request_identity
+            return [SimpleNamespace(model_dump=lambda **_: {"detail_level": "FULL"})]
+
+    monkeypatch.setattr(
+        server,
+        "get_identity_provider",
+        lambda: SimpleNamespace(current_identity=lambda: identity),
+    )
+    monkeypatch.setattr(server, "get_guardian_use_cases", lambda: FakeUseCases())
+    experiment_id = uuid4()
+
+    result = server.experiments_query(
+        project_id=str(identity.project_id),
+        experiment_id=str(experiment_id),
+    )
+
+    command = captured["command"]
+    assert isinstance(command, ExperimentQueryCommand)
+    assert "actor_id" not in type(command).model_fields
+    assert command.experiment_id == experiment_id
+    assert captured["identity"] is identity
+    assert result == [{"detail_level": "FULL"}]

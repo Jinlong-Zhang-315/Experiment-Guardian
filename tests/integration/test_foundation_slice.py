@@ -223,6 +223,7 @@ def test_issue_mcp_token_cli_grants_plan_check_scope(
         {
             "project:read",
             "experiment:check",
+            "experiment:query",
             "manifest:create",
             "submission:create",
             "submission:finalize",
@@ -253,6 +254,47 @@ def test_bootstrap_owner_cli_grants_and_displays_api_scopes(
     )
     assert result["scopes"] == sorted(admin_cli.OWNER_API_SCOPES)
     assert authenticated.scopes == admin_cli.OWNER_API_SCOPES
+
+
+def test_admin_cli_adds_researcher_and_issues_project_api_token(
+    foundation_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = seed_owner(foundation_session_factory)
+    administration, _ = services(foundation_session_factory)
+    initialized = administration.initialize_project(
+        identity=identity,
+        idempotency_key=uuid4(),
+        request=initial_request(),
+    )
+    token_service = SqlAlchemyTokenService(foundation_session_factory)
+    monkeypatch.setattr(admin_cli, "get_session_factory", lambda: foundation_session_factory)
+    monkeypatch.setattr(admin_cli, "get_token_service", lambda: token_service)
+
+    added = admin_cli._add_researcher(
+        SimpleNamespace(
+            owner_email="owner@example.com",
+            project_id=str(initialized.project_id),
+            email="researcher@example.com",
+            name="Researcher",
+        )
+    )
+    token = admin_cli._issue_api_token(
+        SimpleNamespace(
+            owner_email="owner@example.com",
+            project_id=str(initialized.project_id),
+            member_email="researcher@example.com",
+            token_name="review-client",
+            ttl_days=7,
+        )
+    )
+
+    authenticated = token_service.authenticate(
+        str(token["access_token"]), audience=TokenAudience.API
+    )
+    assert added["role"] == TeamRole.RESEARCHER.value
+    assert token["scopes"] == ["submission:review"]
+    assert authenticated.project_id == initialized.project_id
+    assert authenticated.scopes == admin_cli.RESEARCHER_API_SCOPES
 
 
 def test_project_initialization_is_atomic_idempotent_and_readable(

@@ -764,6 +764,76 @@
 * Bedrock 外部调用后、数据库向量提交前崩溃可能再次调用模型；系统只承诺数据库副作用
   幂等和至少一次外部调用，不声称端到端 exactly-once。
 
+## R13：正式实验确认与结构化/向量查询
+
+版本：`working tree`，当前实现轮次。
+
+### 更新内容
+
+* 新增 Alembic revision `20260722_10`，正式迁移 `experiments`、
+  `experiment_metrics` 和 `memories`，并为 `artifacts.experiment_id` 增加数据库外键。
+* Experiment 固化确认 ApprovalRecord、Context/Intent 版本、Manifest/Submission、摘要和
+  审核回执快照；Metric 复用 R11 扁平结果格式，固定为 `REPORTED/SINGLE_RUN`。
+* Memory 复制 R12b 冻结检索文档和 `VECTOR(1024)`，同时保存模型、维度、归一化标记、
+  document version 和内容 SHA-256；不在本轮创建近似向量索引。
+* 新增 `POST /projects/{project_id}/submissions/{submission_id}/decision` 和
+  `submission:review` scope。Researcher 只能审核自己的草稿，Owner 可审核项目内任意草稿。
+* APPROVED 前重新读取并校验完整 Context/Intent/Plan/Manifest 链，重新计算风险权限、回执
+  source hash 和 embedding document hash；持久化回执不能自行降低门禁。
+* 批准事务原子创建 ApprovalRecord、Experiment、Metrics、Memory、Artifact 关联、审计、
+  幂等回执并更新 Submission；事务内没有 S3 或 Bedrock 调用。
+* REJECTED 支持 CRITICAL/blocking 草稿，必须提供原因，只写最终决定、审计、幂等结果和
+  Submission 状态，不产生部分正式记录。
+* `experiments_query` 删除客户端 `actor_id`，改用 MCP Token 身份和 `experiment:query`；
+  支持 `query+protocol` 候选模式与 `experiment_id` 完整详情模式。
+* 候选查询先过滤 project、protocol、CONFIRMED、current/status、model/seed 和 embedding
+  版本，再对最近 200 条兼容记录执行精确余弦排序；空候选不调用 Bedrock。
+* 完整详情不调用 Bedrock，返回配置、Git、命令、checkpoint、Metrics、Artifact 元数据和
+  完整版本追溯；不暴露 S3 key 或下载地址。
+* 管理 CLI 增加 `add-researcher`、`issue-api-token`，并扩展 `issue-mcp-token --member-email`；
+  新 Token 显式包含本角色需要的 review/query scopes，旧 Token 不会静默扩权。
+* MCP 依赖装配使用延迟 embedding 适配器，非查询工具启动时不会提前初始化 AWS 客户端。
+
+### 修复的问题
+
+* 修复正式确认只信任已存 `review_eligibility` 的风险：确认事务现在按未解决风险重新计算，
+  HIGH/CRITICAL/blocking 不能通过篡改回执降级。
+* 修复正式 Memory 缺少 embedding 来源信息的问题，查询只比较相同模型、维度、归一化和
+  document version 的向量。
+* 修复查询契约继续携带客户端 `actor_id` 的身份问题；身份只来自服务端验证 Token。
+* 修复真实 CockroachDB `<=>` 距离表达式继承 `VectorType` result processor、将标量距离
+  误当向量解析的问题；距离现在显式 `CAST AS FLOAT`，查询向量仍参数化为 VECTOR(1024)。
+* 修复项目绑定 Owner API Token 可能获得全局 `project:initialize` 权限的问题；项目 Token
+  只得到项目审批/审核 scope，bootstrap Owner Token 才保留初始化能力。
+* 修复历史或 `current_valid=false` Memory 可能通过 experiment ID 默认查询返回的问题；
+  历史详情必须显式启用 `include_historical`。
+* 修复 experiment ID 详情模式只校验 Token 绑定项目、未校验正式记录所属项目的问题；
+  详情加载现在强制 Experiment、Memory 和 Manifest 均属于请求项目，跨项目 UUID 返回空集。
+
+### 验证结果
+
+* 默认收集 169 项测试，164 项执行全部通过；5 项真实 AWS/CockroachDB 验收默认跳过。
+* R13 纵向测试覆盖批准、拒绝、幂等异体冲突、Researcher 最小权限、CRITICAL 阻断、
+  embedding 漂移整体回滚、空候选不调用模型、候选/详情两种查询和 REST 身份注入。
+* revision 10 SQLite 测试覆盖正式表、Memory 来源字段、Artifact 外键和完整升降级。
+* 真实 CockroachDB 隔离库验收显式通过，包括 revision 10 含数据升降级、正式 Memory
+  `VECTOR(1024)` 写入、参数化 `<=>` 精确余弦查询及原有 P0 主链。
+* SQLite `alembic check` 未检测到新升级操作；受限 `VectorType` 比较器只处理数据库无法
+  原样反射的向量类型，不关闭其他表、列或类型的漂移检测。
+* 开发 CockroachDB 已升级到 `20260722_10 (head)`；R13 FastAPI 已在
+  `127.0.0.1:8790` 启动，health、capabilities 和包含 Submission decision 的 OpenAPI
+  均完成实际请求验收。
+* Ruff check、mypy（54 个源文件）、全量 pytest 和 `git diff --check` 全部通过。
+
+### 已知遗留项
+
+* R13 精确扫描结构化过滤后的最近 200 条 Memory；P0 数据量不创建向量索引。向量索引、
+  性能压测和检索模型迁移策略应在实际数据规模证明需要后单独实施。
+* R13 不支持 baseline 晋升、Experiment 废弃/替代写操作或 Artifact 下载 URL；查询只读取
+  已有正式记录并显式标记向量结果为候选证据。
+* Web、AWS 资源创建、监控和最终 Owner/Researcher 演示属于 R14；自动训练、自动改代码和
+  复杂邀请流仍不属于 MVP。
+
 ## 新日志模板
 
 ```text
