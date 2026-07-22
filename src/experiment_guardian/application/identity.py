@@ -5,7 +5,7 @@ MCP Token 或服务端 Session 构造该对象，再由应用服务继续执行�
 """
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 
@@ -18,6 +18,12 @@ class RequestIdentity:
     token_id: UUID
     project_id: UUID | None = None
     scopes: frozenset[str] = frozenset()
+    authentication_method: Literal[
+        "API_TOKEN", "MCP_TOKEN", "WEB_SESSION", "MCP_OAUTH"
+    ] = "API_TOKEN"
+    recent_authentication: bool = True
+    subject: str | None = None
+    client_id: str | None = None
 
 
 class IdentityProvider(Protocol):

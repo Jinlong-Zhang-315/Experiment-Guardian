@@ -7,11 +7,15 @@ MCP 层只处理参数校验和协议转换，禁止在工具函数中直接拼 
 from typing import Any
 from uuid import UUID
 
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from experiment_guardian.application.container import (
     get_guardian_use_cases,
     get_identity_provider,
+    get_mcp_token_verifier,
 )
 from experiment_guardian.core.config import get_settings
 from experiment_guardian.domain.contracts import (
@@ -23,19 +27,52 @@ from experiment_guardian.domain.contracts import (
     SubmissionPrepareCommand,
 )
 from experiment_guardian.domain.enums import ConfigFormat, ExperimentStatus, SubmittedRunStatus
+from experiment_guardian.infrastructure.mcp_oauth import oauth_scope_map
 
 settings = get_settings()
-mcp = FastMCP(
-    name="experiment-guardian",
-    instructions=(
-        "读取经过用户确认的团队实验上下文、执行训练前配置一致性检查，并提交可追溯的"
-        "实验草稿。系统提高一致性、可追溯性和风险可见性，不保证实验行为或结果正确。"
-        "LOCAL_ATTESTED 字段仅代表本地 Agent 声明。"
-    ),
-    host=settings.mcp_host,
-    port=settings.mcp_port,
-    log_level=settings.log_level,
-)
+
+
+def _build_mcp() -> FastMCP:
+    kwargs: dict[str, Any] = {}
+    if settings.mcp_transport == "streamable-http":
+        if not settings.cognito_issuer_url or not settings.mcp_public_url:
+            raise RuntimeError("远程 MCP 必须配置 COGNITO_ISSUER_URL 和 MCP_PUBLIC_URL")
+        resource = settings.mcp_oauth_resource_identifier or settings.mcp_public_url
+        if resource.rstrip("/") != settings.mcp_public_url.rstrip("/"):
+            raise RuntimeError("MCP_OAUTH_RESOURCE_IDENTIFIER 必须与 MCP_PUBLIC_URL 一致")
+        scopes = sorted(oauth_scope_map(settings.mcp_oauth_scope_prefix))
+        kwargs = {
+            "token_verifier": get_mcp_token_verifier(),
+            "auth": AuthSettings(
+                issuer_url=settings.cognito_issuer_url,
+                resource_server_url=settings.mcp_public_url,
+                required_scopes=scopes,
+            ),
+            "stateless_http": True,
+            "json_response": True,
+        }
+    return FastMCP(
+        name="experiment-guardian",
+        instructions=(
+            "读取经过用户确认的团队实验上下文、执行训练前配置一致性检查，并提交可追溯的"
+            "实验草稿。系统提高一致性、可追溯性和风险可见性，不保证实验行为或结果正确。"
+            "LOCAL_ATTESTED 字段仅代表本地 Agent 声明。"
+        ),
+        host=settings.mcp_host,
+        port=settings.mcp_port,
+        log_level=settings.log_level,
+        **kwargs,
+    )
+
+
+mcp = _build_mcp()
+
+
+@mcp.custom_route("/health", methods=["GET"])  # type: ignore[untyped-decorator]
+async def health(_: Request) -> JSONResponse:
+    """仅供容器和负载均衡器探活，不返回配置或身份信息。"""
+
+    return JSONResponse({"status": "ok"})
 
 
 @mcp.tool()

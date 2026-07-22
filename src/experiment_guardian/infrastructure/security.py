@@ -68,6 +68,9 @@ class SqlAlchemyTokenService:
                     token_id=token.id,
                     project_id=token.project_id,
                     scopes=frozenset(token.scopes),
+                    authentication_method=(
+                        "MCP_TOKEN" if audience is TokenAudience.MCP else "API_TOKEN"
+                    ),
                 )
         except DBAPIError as exc:
             raise ServiceUnavailableError("Token 验证服务暂时不可用") from exc

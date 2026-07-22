@@ -219,7 +219,14 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             "experiment_submissions",
             "artifacts",
             "submission_risks",
+            "web_sessions",
+            "oidc_transactions",
+            "mcp_oauth_clients",
+            "mcp_oauth_grants",
         } <= set(inspect(test_engine).get_table_names())
+        assert "cognito_sub" in {
+            column["name"] for column in inspect(test_engine).get_columns("users")
+        }
         assert {
             "upload_verified_at",
             "upload_verified_by",
@@ -246,6 +253,18 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         _run_alembic(rendered_test_url, "downgrade", "20260721_05")
         revision_05_engine = create_engine(test_url)
         try:
+            assert not (
+                {
+                    "web_sessions",
+                    "oidc_transactions",
+                    "mcp_oauth_clients",
+                    "mcp_oauth_grants",
+                }
+                & set(inspect(revision_05_engine).get_table_names())
+            )
+            assert "cognito_sub" not in {
+                column["name"] for column in inspect(revision_05_engine).get_columns("users")
+            }
             assert not (
                 {
                     "upload_verified_at",

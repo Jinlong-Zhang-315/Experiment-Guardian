@@ -834,6 +834,129 @@
 * Web、AWS 资源创建、监控和最终 Owner/Researcher 演示属于 R14；自动训练、自动改代码和
   复杂邀请流仍不属于 MVP。
 
+## 2026-07-22 / R14：托管认证、四页 Web、OAuth MCP 与 AWS 最终部署
+
+版本：working tree，基于 `818c94d`（R13）。
+
+### R14a 更新：Cognito Web 认证
+
+* 增加 `CognitoOidcProvider`，使用 Authorization Code + PKCE S256，校验 ID Token 签名、
+  issuer、audience、nonce、auth_time、sub 和 verified email。
+* 增加一次性 `oidc_transactions`：数据库只存 state SHA-256，加密保存 PKCE verifier、nonce
+  和站内 return path，默认五分钟过期且成功后不可重用。
+* 增加 `web_sessions`：Cookie 原文仅返回 Browser，数据库保存 SHA-256；idle 8 小时、
+  absolute 7 天、recent auth 10 分钟，支持撤销原因和审计。
+* 首次登录只把 Cognito sub 绑定到管理员预建的 verified email User；未知用户和多团队用户
+  在 MVP 中被拒绝，不创建隐式成员关系。
+* FastAPI 支持 Bearer API Token 或 Web Session；Cookie 写请求统一校验 HMAC CSRF。
+* 新增 login/callback/me/logout/reauth 路由。重新认证使用 Cognito `prompt=login`，不会要求
+  应用保存密码或 Cognito Token。
+* Plan Check 最终决定、正式策略发布和 Owner High-risk Submission 批准增加近期认证门禁，返回
+  稳定 `428 RECENT_AUTHENTICATION_REQUIRED`。
+* revision 11 只增加 `User.cognito_sub`、Web Session 和 OIDC Transaction，没有任何密码列。
+
+### R14a 更新：管理 API 与正式策略版本
+
+* 增加项目列表、当前设置与 Context 历史、Plan/Submission/Experiment 分页列表和详情。
+* Owner 发布策略使用 expected Context version、Owner、scope、近期认证和 Idempotency-Key。
+* 一个事务把旧 Context 置为 SUPERSEDED、旧 Intent 置为 CLOSED、旧约束置为
+  SUPERSEDED/inactive，再创建全部 CONFIRMED 新版本及审计。
+* 约束路径、Intent allowed variables、active config 和 expected value 使用严格类型校验。
+* 已创建 Plan Check/Manifest 继续引用旧版本，不因当前策略变化被静默修改。
+* 页面读取按实时 TeamMembership 过滤：Researcher 只能看到自己的 Plan/草稿，正式实验对
+  团队成员可见。
+* Plan report 返回时动态合并当前 approval status 和 Manifest 可创建状态，避免旧报告过时。
+* 增加 Artifact 下载 URL，强制 cloud hash verified 和非空 S3 VersionId，并记录下载签发审计。
+
+### R14b 更新：四个 Web 页面
+
+* 新增 `web/` React 19 + TypeScript + Vite 应用，使用 TanStack Query、Router 和 Lucide。
+* 项目设置页展示正式 Context/Intent、约束、确认人与历史，并为 Owner 提供版本发布操作。
+* 计划审批页展示当前检查/审批状态、参数 diff、风险、命令和最终决定。
+* 实验审核页展示短回执、风险、Artifact 和决定；High/Critical 风险默认强制展开。
+* 实验查询页浏览正式记录并调用结构化过滤优先的向量候选查询。
+* 前端只保存运行时 CSRF，不保存 Cognito Token；401 显示 Managed Login，428 跳转 reauth。
+* 增加响应式桌面/移动布局、加载/空/错误/无权限状态、稳定按钮与列表尺寸。
+* 增加 Vitest 认证壳测试和 Playwright 四页导航测试；桌面 1440x960 与移动 390x844
+  视口截图确认没有页面级横向溢出或控件重叠。
+* npm audit 无已知漏洞，build、ESLint、Vitest 和 Playwright 测试通过。
+
+### R14c 更新：远程 MCP OAuth
+
+* Streamable HTTP MCP 使用 MCP SDK TokenVerifier 与 AuthSettings，自动公开 RFC 9728
+  Protected Resource Metadata 和带 metadata URL 的 Bearer challenge。
+* Cognito Access Token 必须通过 JWT 签名、issuer、resource audience、expiration、token_use、
+  client_id 和 scope 校验。
+* 增加七个 OAuth scope 到应用 scope 的明确映射；服务内部继续执行现有项目绑定和业务门禁。
+* 当前 FastMCP 将 metadata scope 同时作为全局门槛，因此 R14 CLI 只接受完整七 scope 客户端，
+  防止生成实际无法连接的子集配置；按工具最小 scope 留待 SDK 支持后评估。
+* revision 12 增加 `mcp_oauth_clients` 和 `mcp_oauth_grants`。Client 只允许绑定一个项目；
+  User 通过 Cognito sub 识别，成员关系每个请求复核。
+* 第一次有效访问创建本地可审计 Grant；Client 或 Grant 被撤销后，仍有效的 Cognito Token
+  立即失效。
+* CLI 增加 register/revoke client 和 revoke grant。R14 没有 DCR 或 Client ID Metadata。
+* 本地 stdio 环境继续支持原哈希 MCP Token；远程 HTTP 缺少 Cognito/Resource 配置会拒绝启动。
+
+### R14d 更新：AWS 和容器
+
+* 增加非 root Python 3.12 后端 Dockerfile及 Web multi-stage Dockerfile。
+* 后端镜像最初使用 `pip install .`，已改为先安装 `requirements/lock-server.txt`，再
+  `pip install --no-deps .`；实际启动进一步发现锁文件漏掉 boto3 依赖树，已补齐 boto3、
+  botocore、s3transfer、jmespath、python-dateutil 和 six 后重新构建通过。
+* Dockerfile 支持可选的 `PIP_INDEX_URL`/`NPM_CONFIG_REGISTRY` build arg；Web 构建上下文通过
+  独立 `.dockerignore` 从 176 MB 收敛到约 1.5 KB。
+* Web Nginx 将 Compose `api` 主机改为请求期解析，静态容器可独立启动；根路径和 SPA 深层
+  路由都已实际返回 200。
+* Vite 开发代理支持 `VITE_API_PROXY_TARGET`，npm 脚本显式指定 TypeScript 配置；清理了会
+  优先于 `vite.config.ts` 加载、导致代理仍指向旧端口的本地 `vite.config.js` 残留产物。
+* Terraform 创建 VPC、公私子网、NAT、CloudFront/OAC/WAF、私有 Web S3、HTTPS ALB、
+  ECS API/MCP/Worker、ECR、IAM、CloudWatch、Secrets Manager、KMS S3 Artifact、SQS/DLQ。
+* Artifact S3 强制 Versioning/KMS/Public Access Block；CloudFront 到 ALB 使用随机源站 Header。
+* Cognito 创建 Managed Login v2、管理员建用户、Web confidential client、资源服务器和
+  显式 `mcp_clients` public client map；Access Token 15 分钟，MCP Refresh 30 天 rotation。
+* Cockroach Cloud 保持外部托管，只通过 Secrets Manager 注入安全连接串。
+* 使用 Terraform 1.9.8 下载签名 Provider，AWS 6.55/Random 3.9 schema validate 成功。
+
+### R14e 更新：演示和文档
+
+* 增加公开部署验收脚本，检查 Web、API health、RFC9728、Cognito discovery、七 scope、
+  DCR 禁用和可选 Owner/Researcher Session，不输出敏感凭据。
+* 增加 BLOCKED、NEEDS_APPROVAL、result/log/note 演示素材和六场景双角色 Runbook。
+* 增加 R14 安全边界、AWS 部署手册，同步 README、当前框架图和迭代状态。
+
+### 修复的问题
+
+* 人类身份不再依赖客户端 Bearer API Token 或任何自建密码字段。
+* Session 不把 Cognito Token 暴露给前端，CSRF、idle/absolute timeout 和撤销均在服务端执行。
+* 敏感操作不会仅凭长期 Cookie 批准，必须有近期 Cognito 认证。
+* 远程 MCP 身份不能来自工具参数、未注册 client_id 或仅靠 JWT；本地授权状态可即时撤销。
+* 策略更新不会覆盖历史版本或改变旧 Manifest；页面不使用过时 report 审批状态。
+* Artifact 下载不会读取可变 latest object，只签发已验证 VersionId。
+* AWS 入口不会让 Web、API 和 MCP 以未认证的默认路径裸露；DCR 明确未部署。
+
+### 验证结果
+
+* Ruff 全仓通过；mypy 62 个源文件通过。
+* 全量 pytest 通过；新增 Web Auth、生产配置、策略版本和 MCP OAuth 集成测试覆盖登录绑定、
+  超时、CSRF、近期认证、历史保留、客户端绑定与即时撤销。
+* 本地真实 CockroachDB 完成空库 upgrade head、降级到 R5/R3 和再次升级；R14 Session/OIDC/
+  MCP OAuth 表及 `cognito_sub` 的升降级断言通过。
+* Web `npm run build`、`npm run lint`、Vitest 和 Playwright 双视口四页验收通过，npm audit 为
+  0 vulnerability。
+* Terraform `fmt -check` 和 `validate` 通过。
+* `experiment-guardian:r14` 和 `experiment-guardian-web:r14` 均实际构建并启动；后端 health、
+  Web 根路径与 SPA 深层路由均返回 200。目标 ECR 推送仍属于真实 AWS 验收。
+* 本地备用端口 `8788/5174` 实际启动通过，Vite `/api` 代理和 SPA 深层路由均返回 200。
+
+### 已知遗留项
+
+* 本轮没有目标 AWS 账号、域名、ACM、Cockroach Cloud、Bedrock access 和双角色凭据，因此
+  未执行 `terraform apply` 或真实六场景；步骤已收敛到 `R14_DEPLOYMENT.md`/`R14_DEMO.md`。
+* Cognito MFA、威胁防护和组织 IdP 策略由部署团队在 User Pool 管理，不在应用重新实现。
+* Terraform State 含敏感值，目标环境必须配置加密、版本化和锁定的远程 Backend。
+* R14 不支持动态 MCP client registration、任意第三方零配置、自动训练、自动改代码、
+  baseline 自动晋升或向量索引。
+
 ## 新日志模板
 
 ```text

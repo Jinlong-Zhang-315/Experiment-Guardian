@@ -76,6 +76,8 @@ class User(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
+    # Cognito ``sub`` 是稳定的人类身份主键；邮箱只用于首次、显式且已验证的绑定。
+    cognito_sub: Mapped[str | None] = mapped_column(String(128), unique=True)
 
 
 class Team(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -117,6 +119,80 @@ class AccessToken(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class WebSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """服务端 Web 会话；数据库只保存 Cookie 的 SHA-256，不保存原始值。"""
+
+    __tablename__ = "web_sessions"
+    __table_args__ = (
+        UniqueConstraint("session_hash"),
+        Index("ix_web_session_user_active", "user_id", "revoked_at", "absolute_expires_at"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    session_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    authenticated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reauthenticated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    absolute_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoke_reason: Mapped[str | None] = mapped_column(String(500))
+    user_agent_hash: Mapped[str | None] = mapped_column(String(64))
+
+
+class OidcTransaction(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """一次性 OIDC state/PKCE 事务；敏感内容以应用密钥加密后持久化。"""
+
+    __tablename__ = "oidc_transactions"
+    __table_args__ = (
+        UniqueConstraint("state_hash"),
+        Index("ix_oidc_transaction_expiry", "expires_at", "consumed_at"),
+        CheckConstraint("purpose IN ('LOGIN', 'REAUTH')", name="oidc_purpose_valid"),
+    )
+
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False)
+    session_id: Mapped[UUID | None] = mapped_column(ForeignKey("web_sessions.id"))
+    encrypted_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class McpOAuthClient(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """预注册 Cognito public client 与单一项目的服务端绑定。"""
+
+    __tablename__ = "mcp_oauth_clients"
+    __table_args__ = (UniqueConstraint("cognito_client_id"),)
+
+    cognito_client_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    allowed_scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoke_reason: Mapped[str | None] = mapped_column(String(500))
+
+
+class McpOAuthGrant(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """用户与预注册客户端的本地授权，可独立于 Cognito Token 立即撤销。"""
+
+    __tablename__ = "mcp_oauth_grants"
+    __table_args__ = (
+        UniqueConstraint("mcp_oauth_client_id", "user_id", name="uq_mcp_oauth_grant_principal"),
+        Index("ix_mcp_oauth_grant_active", "user_id", "revoked_at"),
+    )
+
+    mcp_oauth_client_id: Mapped[UUID] = mapped_column(
+        ForeignKey("mcp_oauth_clients.id"), nullable=False
+    )
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    granted_scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoke_reason: Mapped[str | None] = mapped_column(String(500))
 
 
 class Project(UUIDPrimaryKeyMixin, TimestampMixin, Base):

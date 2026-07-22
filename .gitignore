@@ -8,3 +8,13 @@ __pycache__/
 .coverage
 htmlcov/
 *.pyc
+web/node_modules/
+web/dist/
+web/playwright-report/
+web/test-results/
+web/*.tsbuildinfo
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfvars
+!infra/terraform/terraform.tfvars.example

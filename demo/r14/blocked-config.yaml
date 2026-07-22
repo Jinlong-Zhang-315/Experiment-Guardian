@@ -1,0 +1,6 @@
+dataset:
+  protocol: "48/12"
+model:
+  backbone: shift-gcn
+  fusion: 0.3
+seed: 1

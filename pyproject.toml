@@ -23,6 +23,8 @@ dependencies = [
   "python-multipart<1",
   "httpx<1",
   "boto3<2",
+  "cryptography<50",
+  "PyJWT[crypto]<3",
 ]
 
 [project.scripts]

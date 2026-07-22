@@ -17,6 +17,12 @@ class AuthorizationError(ApplicationError):
     code = "PERMISSION_DENIED"
 
 
+class RecentAuthenticationRequiredError(ApplicationError):
+    """敏感操作需要用户通过 Cognito 重新认证，而不是重新输入应用密码。"""
+
+    code = "RECENT_AUTHENTICATION_REQUIRED"
+
+
 class ResourceNotFoundError(ApplicationError):
     code = "RESOURCE_NOT_FOUND"
 

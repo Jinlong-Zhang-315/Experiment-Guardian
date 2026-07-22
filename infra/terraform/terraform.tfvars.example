@@ -1,0 +1,19 @@
+aws_region                    = "us-east-1"
+environment                   = "demo"
+web_domain_name               = "guardian.example.com"
+api_origin_domain_name        = "guardian-origin.example.com"
+route53_zone_id               = "Z0000000000000000000"
+cloudfront_certificate_arn    = "arn:aws:acm:us-east-1:123456789012:certificate/example"
+alb_certificate_arn           = "arn:aws:acm:us-east-1:123456789012:certificate/example"
+cognito_domain_prefix         = "experiment-guardian-demo-example"
+cockroach_database_url        = "postgresql+psycopg://user:password@cluster.example:26257/defaultdb?sslmode=verify-full"
+bedrock_summary_model_id      = "anthropic.claude-3-haiku-20240307-v1:0"
+container_image_tag           = "r14-demo"
+
+mcp_clients = {
+  codex = {
+    name          = "Codex pre-registered client"
+    callback_urls = ["http://127.0.0.1:33418/callback"]
+    logout_urls   = []
+  }
+}

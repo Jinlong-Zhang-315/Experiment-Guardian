@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -16,7 +17,16 @@ from experiment_guardian.application.errors import (
 )
 from experiment_guardian.domain.enums import TeamRole, TokenAudience
 from experiment_guardian.infrastructure.database import get_session_factory
-from experiment_guardian.infrastructure.models import Project, Team, TeamMember, User
+from experiment_guardian.infrastructure.mcp_oauth import MCP_APPLICATION_SCOPES
+from experiment_guardian.infrastructure.models import (
+    AuditLog,
+    McpOAuthClient,
+    McpOAuthGrant,
+    Project,
+    Team,
+    TeamMember,
+    User,
+)
 from experiment_guardian.infrastructure.security import IssuedToken
 
 OWNER_API_SCOPES = frozenset(
@@ -232,6 +242,147 @@ def _revoke_token(args: argparse.Namespace) -> dict[str, Any]:
     return {"token_id": str(token_id), "revoked": True}
 
 
+def _require_project_owner(session: Any, owner_email: str, project_id: str) -> tuple[User, Project]:
+    owner = session.scalar(
+        select(User).where(func.lower(User.email) == owner_email.strip().lower())
+    )
+    project = session.get(Project, UUID(project_id))
+    if owner is None or project is None:
+        raise ConflictError("Owner 或项目不存在")
+    membership = session.get(TeamMember, (project.team_id, owner.id))
+    if membership is None or membership.role is not TeamRole.OWNER:
+        raise AuthorizationError("只有项目团队 Owner 可以管理远程 MCP OAuth 客户端")
+    return owner, project
+
+
+def _register_mcp_oauth_client(args: argparse.Namespace) -> dict[str, Any]:
+    requested_scopes = {
+        item.strip() for item in args.scopes.split(",") if item.strip()
+    }
+    # FastMCP 当前把 Protected Resource Metadata 中声明的 scope 同时作为全局请求门槛。
+    # R14 因而固定使用完整七 scope；具体工具仍在应用层逐项检查，避免 CLI 产生无法登录的
+    # “子集客户端”。后续若 SDK 支持按工具声明 scope，再单独开放最小权限客户端。
+    if requested_scopes != MCP_APPLICATION_SCOPES:
+        raise ValueError("R14 预注册 MCP 客户端必须配置完整七个应用 scope")
+    client_id = args.client_id.strip()
+    if not client_id or len(client_id) > 128:
+        raise ValueError("Cognito client_id 长度无效")
+    factory = get_session_factory()
+    with factory() as session, session.begin():
+        owner, project = _require_project_owner(session, args.owner_email, args.project_id)
+        existing = session.scalar(
+            select(McpOAuthClient).where(McpOAuthClient.cognito_client_id == client_id)
+        )
+        if existing is not None:
+            raise ConflictError("该 Cognito client_id 已在 Experiment Guardian 中注册")
+        client = McpOAuthClient(
+            cognito_client_id=client_id,
+            name=args.name.strip(),
+            team_id=project.team_id,
+            project_id=project.id,
+            allowed_scopes=sorted(requested_scopes),
+            created_by=owner.id,
+        )
+        session.add(client)
+        session.flush()
+        session.add(
+            AuditLog(
+                team_id=project.team_id,
+                project_id=project.id,
+                actor_type="USER",
+                actor_id=owner.id,
+                action="mcp.oauth.client.registered",
+                target_type="MCP_OAUTH_CLIENT",
+                target_id=client.id,
+                before_value=None,
+                after_value={
+                    "cognito_client_id": client_id,
+                    "allowed_scopes": sorted(requested_scopes),
+                    "pre_registered": True,
+                },
+            )
+        )
+        return {
+            "mcp_oauth_client_id": str(client.id),
+            "cognito_client_id": client.cognito_client_id,
+            "project_id": str(project.id),
+            "allowed_scopes": client.allowed_scopes,
+            "dynamic_client_registration": False,
+        }
+
+
+def _revoke_mcp_oauth_client(args: argparse.Namespace) -> dict[str, Any]:
+    factory = get_session_factory()
+    with factory() as session, session.begin():
+        owner, project = _require_project_owner(session, args.owner_email, args.project_id)
+        client = session.scalar(
+            select(McpOAuthClient).where(
+                McpOAuthClient.cognito_client_id == args.client_id.strip(),
+                McpOAuthClient.project_id == project.id,
+            )
+        )
+        if client is None:
+            raise ConflictError("远程 MCP OAuth 客户端不存在")
+        now = datetime.now(UTC)
+        client.revoked_at = now
+        client.revoke_reason = args.reason.strip()
+        session.add(
+            AuditLog(
+                team_id=project.team_id,
+                project_id=project.id,
+                actor_type="USER",
+                actor_id=owner.id,
+                action="mcp.oauth.client.revoked",
+                target_type="MCP_OAUTH_CLIENT",
+                target_id=client.id,
+                before_value={"revoked": False},
+                after_value={"revoked": True, "reason": client.revoke_reason},
+            )
+        )
+        return {"cognito_client_id": client.cognito_client_id, "revoked": True}
+
+
+def _revoke_mcp_oauth_grant(args: argparse.Namespace) -> dict[str, Any]:
+    factory = get_session_factory()
+    with factory() as session, session.begin():
+        owner, project = _require_project_owner(session, args.owner_email, args.project_id)
+        client = session.scalar(
+            select(McpOAuthClient).where(
+                McpOAuthClient.cognito_client_id == args.client_id.strip(),
+                McpOAuthClient.project_id == project.id,
+            )
+        )
+        user = session.scalar(
+            select(User).where(func.lower(User.email) == args.member_email.strip().lower())
+        )
+        if client is None or user is None:
+            raise ConflictError("客户端或成员不存在")
+        grant = session.scalar(
+            select(McpOAuthGrant).where(
+                McpOAuthGrant.mcp_oauth_client_id == client.id,
+                McpOAuthGrant.user_id == user.id,
+            )
+        )
+        if grant is None:
+            raise ConflictError("该成员尚未建立远程 MCP OAuth Grant")
+        grant.revoked_at = datetime.now(UTC)
+        grant.revoke_reason = args.reason.strip()
+        session.add(
+            AuditLog(
+                team_id=project.team_id,
+                project_id=project.id,
+                actor_type="USER",
+                actor_id=owner.id,
+                action="mcp.oauth.grant.revoked",
+                target_type="MCP_OAUTH_GRANT",
+                target_id=grant.id,
+                before_value={"revoked": False, "user_id": str(user.id)},
+                after_value={"revoked": True, "reason": grant.revoke_reason},
+            )
+        )
+        return {"grant_id": str(grant.id), "revoked": True}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="experiment-guardian-admin")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -270,6 +421,31 @@ def build_parser() -> argparse.ArgumentParser:
     revoke = subparsers.add_parser("revoke-token")
     revoke.add_argument("--token-id", required=True)
     revoke.set_defaults(handler=_revoke_token)
+
+    register_oauth = subparsers.add_parser("register-mcp-oauth-client")
+    register_oauth.add_argument("--owner-email", required=True)
+    register_oauth.add_argument("--project-id", required=True)
+    register_oauth.add_argument("--client-id", required=True)
+    register_oauth.add_argument("--name", required=True)
+    register_oauth.add_argument(
+        "--scopes", default=",".join(sorted(MCP_APPLICATION_SCOPES))
+    )
+    register_oauth.set_defaults(handler=_register_mcp_oauth_client)
+
+    revoke_oauth = subparsers.add_parser("revoke-mcp-oauth-client")
+    revoke_oauth.add_argument("--owner-email", required=True)
+    revoke_oauth.add_argument("--project-id", required=True)
+    revoke_oauth.add_argument("--client-id", required=True)
+    revoke_oauth.add_argument("--reason", required=True)
+    revoke_oauth.set_defaults(handler=_revoke_mcp_oauth_client)
+
+    revoke_grant = subparsers.add_parser("revoke-mcp-oauth-grant")
+    revoke_grant.add_argument("--owner-email", required=True)
+    revoke_grant.add_argument("--project-id", required=True)
+    revoke_grant.add_argument("--client-id", required=True)
+    revoke_grant.add_argument("--member-email", required=True)
+    revoke_grant.add_argument("--reason", required=True)
+    revoke_grant.set_defaults(handler=_revoke_mcp_oauth_grant)
     return parser
 
 

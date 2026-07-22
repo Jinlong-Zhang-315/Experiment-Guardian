@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, status
 
-from experiment_guardian.api.dependencies import ApiIdentity
+from experiment_guardian.api.dependencies import CsrfIdentity
 from experiment_guardian.application.container import get_experiment_review_service
 from experiment_guardian.domain.administration import (
     SubmissionDecisionRequest,
@@ -24,7 +24,7 @@ async def decide_submission(
     project_id: UUID,
     submission_id: UUID,
     request: SubmissionDecisionRequest,
-    identity: ApiIdentity,
+    identity: CsrfIdentity,
     idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
 ) -> SubmissionDecisionResult:
     """批准或拒绝一个已完成云端分析的 Submission。"""

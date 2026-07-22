@@ -17,9 +17,16 @@ from experiment_guardian.application.services import (
     PlanApprovalService,
     ProjectAdministrationService,
 )
+from experiment_guardian.application.web_auth import WebAuthService
+from experiment_guardian.application.web_management import WebManagementService
 from experiment_guardian.core.config import get_settings
 from experiment_guardian.infrastructure.bedrock import BedrockTitanV2EmbeddingGenerator
+from experiment_guardian.infrastructure.cognito import CognitoOidcProvider
 from experiment_guardian.infrastructure.database import get_session_factory
+from experiment_guardian.infrastructure.mcp_oauth import (
+    CognitoMcpTokenVerifier,
+    OAuthMcpIdentityProvider,
+)
 from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyGovernanceRepository,
     SqlAlchemyPlanCheckRepository,
@@ -95,6 +102,34 @@ def get_token_service() -> SqlAlchemyTokenService:
 
 
 @lru_cache(maxsize=1)
+def get_oidc_provider() -> CognitoOidcProvider:
+    settings = get_settings()
+    secret = settings.cognito_web_client_secret
+    return CognitoOidcProvider(
+        issuer_url=settings.cognito_issuer_url,
+        managed_login_domain=settings.cognito_domain,
+        client_id=settings.cognito_web_client_id,
+        client_secret=secret.get_secret_value() if secret else None,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_web_auth_service() -> WebAuthService:
+    return WebAuthService(get_session_factory(), get_oidc_provider(), get_settings())
+
+
+@lru_cache(maxsize=1)
+def get_web_management_service() -> WebManagementService:
+    settings = get_settings()
+    return WebManagementService(
+        get_session_factory(),
+        get_project_repository(),
+        get_artifact_storage(),
+        settings.s3_presign_expires_seconds,
+    )
+
+
+@lru_cache(maxsize=1)
 def get_guardian_use_cases() -> GuardianUseCases:
     settings = get_settings()
     return GuardianApplication(
@@ -145,7 +180,15 @@ def get_experiment_review_service() -> ExperimentReviewService:
 
 @lru_cache(maxsize=1)
 def get_identity_provider() -> IdentityProvider:
-    return EnvironmentIdentityProvider(get_settings(), get_token_service())
+    settings = get_settings()
+    if settings.mcp_transport == "streamable-http":
+        return OAuthMcpIdentityProvider()
+    return EnvironmentIdentityProvider(settings, get_token_service())
+
+
+@lru_cache(maxsize=1)
+def get_mcp_token_verifier() -> CognitoMcpTokenVerifier:
+    return CognitoMcpTokenVerifier(get_session_factory(), get_settings())
 
 
 @lru_cache(maxsize=1)

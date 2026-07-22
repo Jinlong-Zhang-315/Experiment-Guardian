@@ -7,7 +7,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +40,28 @@ class Settings(BaseSettings):
     mcp_host: str = "127.0.0.1"
     mcp_port: int = Field(default=8001, ge=1, le=65535)
     mcp_access_token: SecretStr | None = None
+    # 远程 MCP 是 OAuth 受保护资源。客户端必须预先在 Cognito 和本表中注册；R14 不支持
+    # 动态客户端注册或任意第三方客户端零配置接入。
+    mcp_public_url: str = ""
+    mcp_oauth_resource_identifier: str = ""
+    mcp_oauth_scope_prefix: str = "experiment-guardian"
+
+    # 人类用户只通过 Cognito Managed Login 登录。后端完成授权码交换，浏览器仅持有
+    # HttpOnly Session Cookie，不接触 Cognito access/id/refresh token。
+    web_public_base_url: str = "http://127.0.0.1:8000"
+    web_frontend_url: str = "http://127.0.0.1:5173"
+    web_session_cookie_name: str = "eg_session"
+    web_session_idle_seconds: int = Field(default=8 * 60 * 60, ge=300)
+    web_session_absolute_seconds: int = Field(default=7 * 24 * 60 * 60, ge=3600)
+    web_recent_auth_seconds: int = Field(default=10 * 60, ge=60, le=3600)
+    oidc_transaction_ttl_seconds: int = Field(default=5 * 60, ge=60, le=900)
+    cognito_issuer_url: str = ""
+    cognito_domain: str = ""
+    cognito_web_client_id: str = ""
+    cognito_web_client_secret: SecretStr | None = None
+    # 生产环境必须显式注入两个不同的密钥。开发默认值只用于启动和本地测试。
+    web_oidc_state_key: SecretStr = SecretStr("local-only-change-oidc-state-key")
+    web_csrf_secret: SecretStr = SecretStr("local-only-change-csrf-secret")
 
     manifest_hash_algorithm: Literal["sha256"] = "sha256"
 
@@ -70,6 +92,45 @@ class Settings(BaseSettings):
         if value != 1024:
             raise ValueError("R12b 的 EMBEDDING_DIMENSION 必须为 1024")
         return value
+
+    @model_validator(mode="after")
+    def require_managed_identity_secrets_in_production(self) -> "Settings":
+        if self.app_env != "production":
+            return self
+        required = {
+            "COGNITO_ISSUER_URL": self.cognito_issuer_url,
+            "COGNITO_DOMAIN": self.cognito_domain,
+            "COGNITO_WEB_CLIENT_ID": self.cognito_web_client_id,
+            "COGNITO_WEB_CLIENT_SECRET": (
+                self.cognito_web_client_secret.get_secret_value()
+                if self.cognito_web_client_secret
+                else ""
+            ),
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError("生产环境缺少托管身份配置: " + ", ".join(missing))
+        state_key = self.web_oidc_state_key.get_secret_value()
+        csrf_secret = self.web_csrf_secret.get_secret_value()
+        if len(state_key) < 32 or len(csrf_secret) < 32 or state_key == csrf_secret:
+            raise ValueError("生产环境 OIDC state 和 CSRF 必须使用两个不同的高熵密钥")
+        if not self.web_public_base_url.startswith("https://"):
+            raise ValueError("生产环境 WEB_PUBLIC_BASE_URL 必须使用 HTTPS")
+        if not self.web_frontend_url.startswith("https://"):
+            raise ValueError("生产环境 WEB_FRONTEND_URL 必须使用 HTTPS")
+        if not self.cognito_issuer_url.startswith("https://") or not self.cognito_domain.startswith(
+            "https://"
+        ):
+            raise ValueError("生产环境 Cognito issuer 和 managed-login domain 必须使用 HTTPS")
+        if self.mcp_transport == "streamable-http":
+            if not self.mcp_public_url.startswith("https://"):
+                raise ValueError("生产环境远程 MCP_PUBLIC_URL 必须使用 HTTPS")
+            if (
+                self.mcp_oauth_resource_identifier.rstrip("/")
+                != self.mcp_public_url.rstrip("/")
+            ):
+                raise ValueError("MCP OAuth resource identifier 必须与 MCP_PUBLIC_URL 一致")
+        return self
 
 
 @lru_cache(maxsize=1)

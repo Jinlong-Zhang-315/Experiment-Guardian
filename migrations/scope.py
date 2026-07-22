@@ -21,6 +21,8 @@ SUBMISSION_ANALYSIS_TABLES = frozenset(
     {"submission_risks", "workflow_jobs", "outbox_events", "submission_embeddings"}
 )
 FORMAL_EXPERIMENT_TABLES = frozenset({"experiments", "experiment_metrics", "memories"})
+WEB_AUTH_TABLES = frozenset({"web_sessions", "oidc_transactions"})
+MCP_OAUTH_TABLES = frozenset({"mcp_oauth_clients", "mcp_oauth_grants"})
 MIGRATED_TABLES = (
     FOUNDATION_TABLES
     | PLAN_CHECK_TABLES
@@ -28,6 +30,8 @@ MIGRATED_TABLES = (
     | SUBMISSION_PREPARE_TABLES
     | SUBMISSION_ANALYSIS_TABLES
     | FORMAL_EXPERIMENT_TABLES
+    | WEB_AUTH_TABLES
+    | MCP_OAUTH_TABLES
 )
 
 

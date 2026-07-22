@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "status": "COMPLETED",
+  "metrics": {
+    "top1": 0.812
+  },
+  "started_at": "2026-07-22T08:00:00Z",
+  "completed_at": "2026-07-22T09:30:00Z",
+  "failure_reason": null
+}

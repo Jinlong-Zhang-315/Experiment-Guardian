@@ -1,343 +1,121 @@
 # Experiment Guardian 迭代实现与计划
 
 更新时间：2026-07-22
-当前完成轮次：R13
-下一轮：R14 四个 Web 页面、AWS 演示部署与最终演示
+当前完成轮次：R14 代码实现
+下一步：真实 AWS/Cognito 双角色验收，不扩展 MVP
 
-本文档维护“每轮交付了什么”和“下一轮只做什么”。详细缺陷与修复过程见
-`docs/DEVELOPMENT_LOG.md`，当前代码结构见 `docs/ARCHITECTURE.md`。
+本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
+`ARCHITECTURE.md`。
 
 ## 总体进度
 
-| 轮次 | 目标 | 状态 | 主要验收结果 |
+| 轮次 | 目标 | 状态 | 主要结果 |
 | --- | --- | --- | --- |
-| R0 | 需求和 MVP 收敛 | 完成 | 单一 P0 纵向主线、六个 MCP 工具 |
-| R1 | 环境和目录 | 完成 | Python 包与 CockroachDB 开发环境 |
-| R2 | 领域/API/MCP/工作流骨架 | 完成 | 可启动、可测试的第一版框架 |
-| R3 | 治理来源、证据、版本和追溯 | 完成 | 候选事实不能直接成为正式规则 |
-| R4 | 配置检查运行级问题 | 完成 | 工作流可构建，重复键和路径碰撞被拒绝 |
-| R5 | 本地证据和 YAML 类型安全 | 完成 | 核心证据不可全字段绕过 |
-| R6 | 基础数据、认证和正式上下文读取 | 完成 | CockroachDB migration + API + MCP 读取链路 |
-| R7 | 训练前检查持久化 | 完成 | 已认证、幂等、完整策略快照 Plan Check |
-| R8 | 计划审批和 Run Manifest | 完成 | Owner 最终决策与不可变 Manifest |
-| R9 | S3 草稿提交 | 完成 | RECEIVED 草稿、artifact 声明与短期 PUT URL |
-| R10 | 上传确认与 S3 复核 | 完成 | UPLOAD_VERIFIED 与原子云端证据 |
-| R11 | 可恢复的确定性分析前半程 | 完成 | 解析、校验、查重和风险 |
-| R12a | 可靠异步编排与摘要 | 完成 | Outbox + SQS Worker + Bedrock 摘要 |
-| R12b | embedding 与审核回执 | 完成 | VECTOR(1024) + 确定性回执 + NEEDS_REVIEW |
-| R13 | 正式实验确认、查询和向量候选 | 完成 | 单事务确认 + 结构化过滤精确向量查询 |
-| R14 | Web 页面与 AWS 演示部署 | 下一轮 | 不属于当前轮次 |
+| R0-R5 | 需求收敛、骨架、配置和证据正确性 | 完成 | 确定性规则、版本、来源、严格配置解析 |
+| R6 | 基础数据、Token 和正式上下文 | 完成 | CockroachDB、CLI、项目初始化、Context MCP |
+| R7 | 训练前检查持久化 | 完成 | 完整历史快照、幂等、严格类型、事务重试 |
+| R8 | 计划审批和 Run Manifest | 完成 | Owner 最终决定、不可变 Manifest |
+| R9-R10 | S3 草稿上传与验证 | 完成 | 防覆盖、哈希、VersionId、失败审计和恢复 |
+| R11 | 可恢复确定性分析 | 完成 | 解析、Manifest 校验、查重和风险 |
+| R12a | Outbox/SQS/Bedrock 摘要 | 完成 | 可租约 Worker、至少一次、安全摘要边界 |
+| R12b | embedding 与审核回执 | 完成 | VECTOR(1024)、确定性权限回执、NEEDS_REVIEW |
+| R13 | 正式实验确认与查询 | 完成 | 单事务确认、结构化过滤优先的向量候选 |
+| R14a | Cognito Web 认证与管理 API | 完成 | OIDC+PKCE、服务端 Session、CSRF、近期认证 |
+| R14b | 四个收敛 Web 页面 | 完成 | React/Vite 设置、计划、审核、查询页面 |
+| R14c | 远程 MCP OAuth | 完成 | RFC9728、Cognito RS、预注册客户端、本地撤销 |
+| R14d | AWS 部署定义 | 完成 | Terraform ECS/CloudFront/Cognito/S3/SQS/WAF |
+| R14e | 最终演示与运维材料 | 完成 | 验收脚本、双角色 Runbook、文档同步 |
 
-## 已完成轮次
-
-### R0：需求和 MVP 收敛
+## R14a：托管身份认证与管理 API
 
 交付：
 
-* Owner/Researcher 权限矩阵。
-* Context、Intent、Constraint、Plan Check、Manifest、Submission 和 Experiment 主线。
-* 检查、审批、证据和提交工作流状态定义。
-* MVP 输入格式和明确排除项。
+* 删除最终计划中的自建密码方案；仓库没有密码列、set-password CLI 或应用密码流程。
+* Cognito Managed Login 使用 Authorization Code + PKCE S256，后端校验 state、nonce、issuer、
+  audience、签名、auth_time 和 verified email 后交换授权码。
+* Browser 只保存 HttpOnly Session Cookie；数据库只保存 Session SHA-256。
+* Session idle 8 小时、absolute 7 天、recent auth 10 分钟；写请求使用 Session 绑定 CSRF。
+* 首次登录只绑定管理员预建的相同 verified email User，不允许自助加入团队。
+* 角色和成员关系每个请求实时读取；Session 撤销和成员删除立即生效。
+* 策略发布、Plan 最终决定和 Owner High-risk 批准使用 Cognito `prompt=login` 近期认证。
+* Web 管理 API 提供项目、设置历史、策略版本发布、Plan/Submission/Experiment 列表详情和
+  固定 S3 VersionId 的短期下载地址。
+* 策略发布不会覆盖 Context/Intent/约束旧版本，也不会修改既有 Manifest。
+* revision `20260722_11` 增加 `User.cognito_sub`、`web_sessions`、`oidc_transactions`。
 
-### R1：环境和目录
-
-交付：
-
-* Conda/Python 依赖描述。
-* CockroachDB Docker Compose。
-* 分层包目录和环境变量模板。
-
-### R2：第一阶段代码框架
-
-交付：
-
-* FastAPI 健康和能力接口。
-* 六个 MCP 工具协议。
-* 领域契约、枚举、ORM 模型和确定性规则引擎。
-* LangGraph 提交分析固定拓扑。
-* 单元测试与静态检查配置。
-
-### R3：治理语义和证据边界
+## R14b：四个 Web 页面
 
 交付：
 
-* 明确事实与推断事实的来源和确认状态。
-* 正式/探索实验隔离。
-* Context/Intent/Manifest/Submission 全链路版本字段。
-* 本地声明、用户提供和云端验证证据边界。
-* 向量查询前的结构化过滤契约。
+* React 19、TypeScript、Vite、TanStack Query、React Router 和 Lucide。
+* 项目设置页显示生效版本、确认信息、约束和历史，Owner 可发布完整新版本。
+* 计划审批页显示参数变化、当前动态审批状态、风险、命令和决定操作。
+* 实验审核页显示短回执、强制展开 High/Critical 风险、Artifact 和权限动作。
+* 实验查询页提供正式记录浏览及结构化条件先行的向量候选查询。
+* 401 显示 Cognito 登录入口，428 自动进入 reauth；前端不持久化 Cognito Token。
+* Desktop/Mobile 自适应，按钮和状态尺寸稳定，紧凑工作台布局，无 Dashboard 扩展。
+* Playwright 在桌面和移动视口跑通四页导航并检查页面级横向溢出，设置页截图已人工复核。
 
-### R4：配置检查正确性修复
-
-交付：
-
-* LangGraph 图构建修复。
-* YAML/JSON 重复键拒绝。
-* 无碰撞参数路径。
-* baseline 与正式 expected value 校验。
-* MCP 服务端身份来源。
-* Pending 约束冲突完整展示。
-
-### R5：证据适用性和 YAML 类型安全
+## R14c：标准 OAuth + 预注册 MCP 客户端
 
 交付：
 
-* 核心本地证据不得 `NOT_APPLICABLE`。
-* 可选证据必须说明不适用原因且不得同时给值。
-* YAML 使用稳定的 JSON 标量语义。
-* 配置规范化哈希保持可重复。
+* Streamable HTTP MCP 作为 Cognito OAuth Resource Server，stdio 保留本地 Token。
+* MCP SDK 自动公开 RFC 9728 Protected Resource Metadata 和规范 401 challenge。
+* Cognito OIDC discovery、PKCE S256、RFC 8707 resource audience 和七个 OAuth scope。
+* JWT 之后再次检查本地预注册 client、单项目绑定、User sub、TeamMembership、scope 和 Grant。
+* 本地 Client/Grant 即时撤销优先于 Access Token 自然过期。
+* CLI 支持 register/revoke MCP OAuth client 和 revoke user grant，记录具体审计。
+* R14 客户端固定使用完整七 scope，避免 FastMCP 全局 scope 门槛下的无效子集配置。
+* 明确不实现 DCR 或 Client ID Metadata Documents。
+* revision `20260722_12` 增加 `mcp_oauth_clients` 和 `mcp_oauth_grants`。
 
-### R6：基础数据、认证和正式上下文读取
-
-交付：
-
-* Alembic revision `20260721_01` 和 10 张基础表。
-* Token 哈希存储、audience、scope、过期、撤销和项目绑定。
-* Owner/团队和 Token 管理 CLI。
-* 原子且幂等的项目初始化 API。
-* 数据库驱动的 `project_get_context` MCP 用例。
-* 正式来源、版本、确认人和生效时间完整返回。
-* 45 项自动化测试和 CockroachDB v26.2.0 实库迁移验证。
-
-### R7：训练前检查持久化
+## R14d：AWS 演示部署
 
 交付：
 
-* Alembic revision `20260721_02` 和单一新表 `plan_checks`。
-* 数据库驱动的 `experiment_check_plan` MCP 用例。
-* Context、Intent、约束、配置和本地证据快照的完整追溯。
-* 基于服务端 Token 身份的 scope、项目、团队和成员权限检查。
-* `(requester_id, idempotency_key)` 幂等重放和请求哈希冲突检查。
-* PASS、NEEDS_APPROVAL、BLOCKED 全状态集成测试。
-* revision `20260721_03` 补齐 Context/baseline、Intent 和原始配置历史快照。
-* 审批状态在幂等重放时动态合成，不被不可变检查 report 固化。
-* 严格配置类型比较、Intent/LOCKED 冲突门禁、输入边界和原始配置 SHA-256 核对。
-* CockroachDB `40001` 服务端有界重试。
-* 60 项默认自动化测试，另有 1 项已验证通过的真实 CockroachDB 隔离库集成测试。
+* 后端和 Web Dockerfile；后端按锁文件安装依赖并以非 root 用户运行。
+* Terraform 定义 VPC、公私子网、NAT、CloudFront、WAF、私有 Web S3、HTTPS ALB、私网
+  ECS API/MCP/Worker、ECR、CloudWatch、IAM 和 Secrets Manager。
+* Artifact S3 开启 KMS、Versioning 和 Public Access Block；SQS Standard 配置 KMS 与 DLQ。
+* Cognito User Pool 使用 Managed Login v2、仅管理员建用户、Web confidential client 和显式
+  `mcp_clients` public client map。
+* CloudFront 转发 API/MCP/OAuth metadata，ALB 规则要求随机 Origin Header，减少直接绕过。
+* Cockroach Cloud 作为外部依赖，不在 Terraform 中创建。
+* Terraform 1.9.8、AWS Provider 6.55 和 Random Provider 3.9 schema 验证通过。
+* 后端/Web 镜像均完成实际构建和启动；后端 health 与 Web 根路径/SPA 深层路由返回 200。
+* Server lock 已补齐 boto3 传递依赖；Web 构建上下文和 Nginx 延迟解析已完成运行级修复。
 
-当前可演示的最短链路：
-
-```text
-CLI bootstrap Owner/API Token
--> Owner 调用项目初始化 API
--> CLI 签发项目绑定 MCP Token
--> 本地 Agent 调用 project_get_context
--> 返回 Context v1 + Intent v1 + confirmed constraints
--> 本地 Agent 调用 experiment_check_plan
--> 持久化 Plan Check 并返回检查/审批状态和风险回执
-```
-
-### R8：计划审批和不可变 Run Manifest
+## R14e：验收与文档
 
 交付：
 
-* revision `20260721_04`，只新增 `approval_records` 和 `run_manifests`。
-* `POST /projects/{project_id}/plan-checks/{plan_check_id}/decision` Owner 管理 API。
-* `plan:approve` scope、Owner/团队/项目/状态校验和一次性最终决策。
-* 批准与拒绝的不可重复 ApprovalRecord、AuditLog 和幂等回放。
-* MCP `run_manifest_create`，身份来自项目绑定 Token 的 `manifest:create` scope。
-* PASS/NOT_REQUIRED 和 NEEDS_APPROVAL/APPROVED 两条 Manifest 合法入口。
-* 只从 Plan Check 历史快照提取配置、Context/Intent 版本、Git、命令、checkpoint、
-  环境与证据，不读取当前策略补值。
-* `schema_version=1` 的规范化 Manifest 哈希、单 Plan 唯一约束和异 key 冲突。
-* 74 项默认测试通过，1 项真实 CockroachDB 隔离库验收显式执行并通过。
+* `scripts/verify_r14_deployment.py` 验证 Web、API、RFC9728、Cognito discovery、scope 与
+  DCR 禁用边界，可选验证双角色 Session。
+* `demo/r14/` 保存 BLOCKED、NEEDS_APPROVAL、结果、日志和说明演示输入。
+* `R14_DEPLOYMENT.md`、`R14_SECURITY.md`、`R14_DEMO.md` 分别维护部署、安全和六场景演示。
+* README、开发日志和框架图同步至 R14。
+* 本地真实 CockroachDB 完成 revision 12 升级、跨版本降级和再升级验收。
 
-当前可演示链路已扩展为：
+## 下一步唯一目标
 
-```text
-experiment_check_plan
--> PASS: 直接 run_manifest_create
--> NEEDS_APPROVAL: Owner decision API -> APPROVED -> run_manifest_create
--> immutable RunManifest with complete version/evidence trace
-```
+不开始 R15 功能开发，只执行真实环境验收：
 
-### R9：S3 草稿提交
+1. 在目标 AWS 账号执行 `terraform plan/apply`，完成域名、证书和 Bedrock model access。
+2. 构建推送不可变镜像，升级 Cockroach Cloud 到 revision 12，发布 Web 静态文件。
+3. 创建 Owner/Researcher Cognito 用户并完成现有 User sub 绑定。
+4. 用一个真实预注册 MCP Client 跑通 OAuth discovery/code/PKCE/resource 和七个工具。
+5. 按 `R14_DEMO.md` 完成六场景并保存无敏感信息的验收证据。
+6. 建立报警接收人、备份恢复和回滚演练记录。
 
-交付：
+只有真实验收发现缺陷时修复对应模块；不增加自动训练、自动改代码、复杂成员管理、动态
+客户端注册、向量索引或 baseline 自动晋升。
 
-* revision `20260721_05`，只迁移 `experiment_submissions` 和 `artifacts`。
-* MCP `submission_prepare`，身份来自项目绑定 Token 的 `submission:create` scope。
-* 每个草稿必须恰好包含一个 CONFIG 和一个 RESULT；LOG 可多个，NOTE 和
-  MANIFEST 各最多一个。
-* 扩展名、Content-Type、单文件 20 MiB、总文件 100 MiB、SHA-256、文件名和
-  数量边界在写库前统一校验。
-* 运行结果只接受 `COMPLETED/FAILED`；完成运行必须提供有限数值的指标摘要。
-* 一个事务创建 `RECEIVED` Submission、Artifact、AuditLog 和 IdempotencyRecord。
-* 同一 Manifest 允许多次实验提交；同 key 同请求复用 Submission/Artifact ID，异体
-  请求冲突。
-* S3 PUT 地址在数据库提交后生成，不持久化；每次幂等重放生成新的短期 URL。
-* 预签名请求绑定 Content-Type、Content-Length、SHA-256 checksum 和
-  `If-None-Match: *`，防止超大上传和已有 artifact 被覆盖。
-* 运行结果、指标和文件声明保存为 `LOCAL_ATTESTED`；Manifest 引用保存为
-  `CLOUD_VERIFIED`，没有把未上传内容标记为云端已验证。
-* 94 项测试被收集，92 项默认执行全部通过；CockroachDB 隔离库验收已显式
-  执行通过，真实 AWS S3 兼容性测试默认跳过。
+## 每轮更新规则
 
-R9 没有实现 `submission_finalize`、S3 对象复核、提交分析、Bedrock 或正式实验确认。
+完成修改后必须同步：
 
-### R10：上传完成确认与 S3 对象复核
-
-交付：
-
-* revision `20260722_06` 增加 Submission 上传复核人、时间、回执快照以及 Artifact
-  复核时间、S3 version ID 和结构化证据；状态列扩至 `VARCHAR(32)`。
-* MCP `submission_finalize` 只接受 `submission_id` 和 `idempotency_key`，调用者身份来自
-  项目绑定 Token，并要求 `submission:finalize` scope；原提交者或项目 Owner 可执行。
-* S3 适配器使用 `HEAD` 与 `ChecksumMode=ENABLED` 获取对象存在性、Content-Length、
-  Content-Type、ChecksumSHA256、ETag、VersionId 和观测时间。
-* finalize 强制要求不可变 VersionId；错误或无版本对象使用新的随机 object key 重传，
-  保持 `If-None-Match: *` 防覆盖语义。
-* 对象缺失或声明不匹配返回完整的可重试 FAILED 回执，Submission 保持 `RECEIVED`，
-  不写入任何部分 Artifact 验证结果。
-* 同一失败 key 可在修复对象后重新检查；相同 key 对不同 Submission 的异体请求冲突。
-* 全部对象通过后，一个 CockroachDB 事务原子写入 Artifact `CLOUD_VERIFIED` 证据、
-  Submission `UPLOAD_VERIFIED`、AuditLog 和 IdempotencyRecord。
-* 成功幂等重放直接返回原回执，不再次访问 S3；prepare 重放也不再签发上传 URL。
-* S3 服务暂时不可用时不绑定失败幂等结果，不修改 Submission 或 Artifact，可用相同 key
-  安全重试。
-* 每次确定性验证失败都写入独立 AuditLog；成功和失败记录均包含具体 Token ID、原始
-  `source_agent` 和 Owner 恢复模式，后续成功不会覆盖历史失败事实。
-* 迁移 downgrade 会先把新版 `UPLOAD_VERIFIED` 映射为 R9 可理解的 `RECEIVED`，再恢复
-  旧状态列长度，同时清除 R9 无法解释的 Artifact 云端验证标记，保证存在实际数据时
-  也能回滚。
-* 106 项测试被收集，104 项默认执行全部通过；CockroachDB 隔离库验收已显式执行通过，
-  真实 AWS S3 PUT/HEAD 测试因未配置专用 Bucket 和凭据而默认跳过。
-
-R10 没有下载或解析 CONFIG/RESULT，不启动 LangGraph，不生成风险、摘要或 embedding，
-也不实现正式实验确认、查询和 Web。
-
-### R11：可恢复的确定性提交分析前半程
-
-交付：
-
-* revision `20260722_07` 为 Submission 增加 `workflow_status`、`processing_step`、
-  `processing_error` 和有界 `analysis_snapshot`，并正式迁移 `submission_risks`。
-* `submission_finalize` 上传验证成功后同步启动分析；相同 key 重放动态合成当前分析状态，
-  上传幂等快照不会固化旧工作流状态。
-* LangGraph 生产图只编排前五个连续节点；数据库业务表游标是唯一恢复依据，不引入
-  PostgreSQL checkpointer。
-* CONFIG/RESULT 只按上传验证保存的 S3 VersionId 下载，限制为 1 MiB，下载后再次核对
-  SHA-256；真实 S3 opt-in 测试覆盖指定版本 GET。
-* CONFIG 复用重复键拒绝、JSON 标量语义和稳定规范化哈希；`result.json` 固定为
-  `schema_version/status/metrics/timestamps/failure_reason`，拒绝额外字段、布尔指标、NaN、
-  无时区时间和逆序时间。
-* Manifest 校验覆盖追溯链、Manifest hash、配置原始/规范化 hash、配置快照、结果状态、
-  指标声明和主指标。可解析的不一致形成阻断型 CRITICAL 风险，不由 LLM 降级。
-* 查重先按 project 和可用状态过滤；相同 Manifest + CONFIG/RESULT hash 为非阻断 MEDIUM，
-  同运行条件为非阻断 LOW，结果只作为候选证据。
-* 每个节点独立事务提交。S3 暂时不可用进入 `RETRYABLE_FAILURE` 并可用同 finalize key
-  恢复；不可变版本缺失、哈希变化或内容无效进入 `FAILED/TERMINAL_FAILURE`。
-* 完成 R11 后保持 `PROCESSING/AWAITING_ENRICHMENT` 和 `processing_step=RISK_ANALYSIS`，
-  没有提前伪装为 `NEEDS_REVIEW`。
-* 125 项测试被收集，123 项默认执行全部通过；CockroachDB 隔离库验收显式通过，真实
-  AWS S3 测试因未配置专用 Bucket/凭据默认跳过。
-
-R11 没有调用 Bedrock、生成 embedding/审核回执、确认正式实验、查询向量或开发 Web。
-
-## R12a：可靠异步编排与摘要
-
-交付：
-
-* revision `20260722_08` 只增加 `generated_summary`、`workflow_jobs` 和
-  `outbox_events`，没有提前迁移 embedding 或审核回执字段。
-* R11 风险节点在同一数据库事务内创建唯一摘要 Job 和 Outbox；升级前停在 R11 终点的
-  Submission 由 Worker 启动时对账补齐。
-* SQS Standard 消息只包含 schema、Job、Submission 和 generation；API 不直接发消息，
-  Outbox 发布允许重复但不会丢失业务意图。
-* 单并发 Worker 使用 120 秒数据库租约和 SQS 可见性超时；摘要 Job 最多尝试五次，按
-  30/120/480/... 秒退避并封顶 3600 秒，最终进入可人工重置的 `DEAD_LETTER`。
-* Bedrock Converse 输入只使用 Intent 目标、Manifest 运行条件、结果和已存在风险；不发
-  LOG/NOTE，不接收工具调用，不允许模型新增风险、修改等级、批准或断言实验正确。
-* 摘要最多 3000 字，保存 model、prompt version、source hash、生成时间、usage 和明确
-  disclaimer；它是模型解释，不被标为验证证据。
-* 新增 `submission_get_status`，因此 MCP 边界从六个工具显式扩为七个；仅原提交者或
-  Owner 可读取 Submission/Job/风险/摘要动态状态。
-* `submission_finalize` 同 key 继续动态重放；新 key 可由原提交者或 Owner 恢复 R11 前缀，
-  或对 retryable/dead 摘要 Job 增加 generation 重新入队，不重复访问 S3。
-* 摘要成功后刻意停在 `PROCESSING/AWAITING_ENRICHMENT/SUMMARY_GENERATION`，没有提前
-  生成 embedding、审核回执或进入 `NEEDS_REVIEW`。
-* 默认严格 Fake 覆盖 Outbox 发布失败、发送后崩溃、重复/旧 generation、模型提交前崩溃、
-  重试/死信/恢复、权限和降级；真实 SQS/Bedrock 验收通过环境开关显式执行。
-
-R12a 不创建 SQS/DLQ/IAM/KMS 基础设施，不实现 embedding、审核回执、正式实验、查询、
-Web、自动训练或自动改代码。
-
-## R12b：embedding 与审核回执
-
-交付：
-
-* revision `20260722_09` 增加独立 `submission_embeddings`、Submission 审核回执字段，
-  并扩展 Job/Outbox 类型；正式 Experiment/Memory Schema 保持未迁移。
-* 摘要成功事务原子创建 `SUBMISSION_REVIEW_PREPARATION` Job 与 Outbox；Worker 启动会为
-  revision 08 已有摘要补建缺失任务，两类 Job 继续共用同一 SQS Standard Queue。
-* 固定使用 Titan Text Embeddings V2、1024 维和归一化输出；严格拒绝错误维度、布尔值、
-  NaN/Infinity 与非归一化向量。
-* `submission-search-v1` 输入只来自历史 Intent、Manifest、Plan Check 变化、结果和风险，
-  不包含生成摘要、LOG、NOTE 或原始配置全文；输入文本、SHA-256、模型和 token 数可追溯。
-* embedding 独立提交后再生成确定性短回执。该恢复边界保证回执提交前崩溃不会再次调用
-  embedding 模型；外部调用后、向量提交前仍只承诺至少一次。
-* 回执展示目标、版本追溯、关键运行条件、允许/审批变化、关键结果和证据边界；所有
-  HIGH/CRITICAL 强制展开，LOW/MEDIUM 只保存折叠计数。
-* 未解决 blocking 或 CRITICAL 风险得到 `BLOCKED`；HIGH 得到 `OWNER_ONLY`；其余得到
-  `RESEARCHER_OR_OWNER`。风险权限完全由确定性数据计算，不读取摘要结论。
-* 成功终态为 `NEEDS_REVIEW/COMPLETED/NEEDS_REVIEW`。该状态是数据库交接，不是
-  LangGraph 原生人工中断。
-* `submission_get_status` 向后兼容保留 `job`，新增有序 `jobs`、embedding 元数据和审核
-  回执；不返回原始向量或冻结输入全文。
-* `submission_finalize` 新 key 会按当前阶段恢复 Summary 或 Review Job；同 key 重放继续
-  动态返回最新分析状态，不再次访问 S3。
-
-R12b 不实现正式实验确认、`experiments_query`、Web、AWS 资源创建、自动训练或自动改代码。
-
-## R13：正式实验确认与查询
-
-交付：
-
-* revision `20260722_10` 正式迁移 Experiment、ExperimentMetric 和 Memory，并为 Artifact
-  增加正式实验外键；Memory 保存模型、维度、归一化、文档版本和内容哈希。
-* 新增 Submission decision REST API 和 `submission:review` scope；Researcher 只能决定
-  自己的草稿，Owner 可决定项目内任意草稿。
-* 批准前重新计算风险权限、回执来源哈希和 embedding 文档哈希。LOW/MEDIUM 可由原
-  Researcher 或 Owner 批准，HIGH 仅 Owner，CRITICAL/blocking 不能批准但可拒绝。
-* 批准在单个 CockroachDB 事务内创建 Experiment、Metric、CONFIRMED Memory、Artifact
-  关联、ApprovalRecord、AuditLog 和幂等回执；事务内不调用 S3/Bedrock。
-* 拒绝只写最终决定、Submission 状态、审计和幂等结果，不创建部分正式记录。
-* `experiments_query` 已接入服务端身份和 `experiment:query` scope；向量模式先强制 project、
-  protocol、状态、CONFIRMED/current、模型版本过滤，再对最多 200 条记录精确排序。
-* 指定 `experiment_id` 返回完整结构化记录，不调用 Bedrock；向量结果标记为
-  `CANDIDATE_EVIDENCE`，历史记录默认隐藏。
-* 可信 CLI 增加 Researcher 创建和项目绑定 API Token 签发，并可为 Researcher 签发 MCP
-  Token；没有增加邀请流或 Web 成员管理。
-
-R13 不创建向量索引，不实现 baseline 晋升、文件下载、Web、AWS 资源、自动训练或自动改代码。
-
-## 下一轮 R14：Web 与最终演示
-
-### 单一目标
-
-在不改动 R13 治理语义的前提下，为已有 API/MCP 链路实现四个收敛页面并完成 AWS 演示
-部署与 Owner/Researcher 纵向演示。
-
-### 本轮包含
-
-1. 项目设置、计划审批、实验审核和实验查询四个页面。
-2. 页面只调用已有确认/查询契约，不在前端重新计算风险或权限。
-3. 配置演示所需的 CockroachDB、S3、SQS/DLQ、IAM、Bedrock 和应用进程运行资源。
-4. 完成双角色主线演示、最小监控和部署验收。
-
-## 后续队列
-
-后续轮次只表示顺序，不在 R13 同时开发：
-
-```text
-R14 Four Web pages + AWS deployment + final demonstration
-```
-
-## 每轮更新要求
-
-完成一轮后必须同步更新：
-
-1. 本文件：当前轮状态、实际交付、下一轮唯一目标。
-2. `docs/DEVELOPMENT_LOG.md`：逐项更新、修复和验证结果。
-3. `docs/ARCHITECTURE.md`：模块状态、数据表和调用链。
-4. README：只保留面向使用者的当前能力和启动方法。
+1. 本文件：交付状态和唯一下一步。
+2. `DEVELOPMENT_LOG.md`：具体更新、修复、验证和遗留。
+3. `ARCHITECTURE.md`：当前模块、数据关系和调用链。
+4. README：使用者可见能力和启动/部署入口。

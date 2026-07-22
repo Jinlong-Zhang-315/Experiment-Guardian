@@ -6,6 +6,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanResult,
     ExperimentQueryCommand,
     ExperimentQueryResult,
+    PresignedDownload,
     PresignedUpload,
     ProjectContextBundle,
     RunManifestResult,
@@ -82,6 +84,50 @@ class ArtifactStorage(Protocol):
     def read_object_version(
         self, *, object_key: str, version_id: str, max_bytes: int
     ) -> bytes | None: ...
+
+    def create_download_url(
+        self,
+        *,
+        object_key: str,
+        version_id: str,
+        filename: str,
+        expires_in: int,
+    ) -> PresignedDownload: ...
+
+
+@dataclass(frozen=True, slots=True)
+class OidcIdentity:
+    """由托管身份提供商验证后的最小身份声明；Token 不进入应用数据库。"""
+
+    subject: str
+    email: str
+    email_verified: bool
+    authenticated_at: datetime
+
+
+class OidcProvider(Protocol):
+    """Cognito OIDC 适配端口，便于在不访问 AWS 的测试中替换。"""
+
+    def authorization_url(
+        self,
+        *,
+        state: str,
+        nonce: str,
+        code_challenge: str,
+        redirect_uri: str,
+        prompt: str | None = None,
+    ) -> str: ...
+
+    def exchange_code(
+        self,
+        *,
+        code: str,
+        code_verifier: str,
+        redirect_uri: str,
+        expected_nonce: str,
+    ) -> OidcIdentity: ...
+
+    def logout_url(self, *, redirect_uri: str) -> str: ...
 
 
 class SubmissionWorkflow(Protocol):

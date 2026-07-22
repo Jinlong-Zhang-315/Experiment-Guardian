@@ -10,6 +10,7 @@ from experiment_guardian.application.errors import (
     ConflictError,
     FeatureUnavailableError,
     InputValidationError,
+    RecentAuthenticationRequiredError,
     ResourceNotFoundError,
     ServiceUnavailableError,
 )
@@ -17,6 +18,7 @@ from experiment_guardian.application.errors import (
 STATUS_BY_ERROR: dict[type[ApplicationError], int] = {
     AuthenticationError: 401,
     AuthorizationError: 403,
+    RecentAuthenticationRequiredError: 428,
     ResourceNotFoundError: 404,
     ConflictError: 409,
     InputValidationError: 422,

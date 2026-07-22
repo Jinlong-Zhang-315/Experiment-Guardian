@@ -549,6 +549,13 @@ class PresignedUpload(ContractModel):
     required_headers: dict[str, str]
 
 
+class PresignedDownload(ContractModel):
+    """短期下载 URL；只指向云端已经固定并校验过的 S3 VersionId。"""
+
+    download_url: str = Field(min_length=1)
+    expires_at: datetime
+
+
 class ArtifactUploadTarget(ContractModel):
     artifact_id: UUID
     filename: str

@@ -2,14 +2,18 @@
 
 import base64
 import binascii
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import boto3  # type: ignore[import-untyped]
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
 
 from experiment_guardian.application.errors import InputValidationError, ServiceUnavailableError
-from experiment_guardian.domain.contracts import PresignedUpload, StoredObjectMetadata
+from experiment_guardian.domain.contracts import (
+    PresignedDownload,
+    PresignedUpload,
+    StoredObjectMetadata,
+)
 
 
 class S3ArtifactStorage:
@@ -144,6 +148,38 @@ class S3ArtifactStorage:
             raise ServiceUnavailableError("S3 对象读取长度与元数据不一致")
         return payload
 
+    def create_download_url(
+        self,
+        *,
+        object_key: str,
+        version_id: str,
+        filename: str,
+        expires_in: int,
+    ) -> PresignedDownload:
+        """下载始终固定 VersionId，避免验证后对象被替换造成证据漂移。"""
+
+        if not version_id:
+            raise InputValidationError("Artifact 尚未绑定不可变 S3 VersionId")
+        safe_filename = filename.replace('"', "").replace("\r", "").replace("\n", "")
+        try:
+            url = self._get_client().generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": self._bucket,
+                    "Key": object_key,
+                    "VersionId": version_id,
+                    "ResponseContentDisposition": f'attachment; filename="{safe_filename}"',
+                },
+                ExpiresIn=expires_in,
+                HttpMethod="GET",
+            )
+        except (BotoCoreError, ClientError, ValueError) as exc:
+            raise ServiceUnavailableError("S3 下载预签名服务暂时不可用") from exc
+        return PresignedDownload(
+            download_url=url,
+            expires_at=datetime.now(UTC) + timedelta(seconds=expires_in),
+        )
+
     @staticmethod
     def _decode_sha256(value: object) -> str | None:
         if not isinstance(value, str):
@@ -178,4 +214,15 @@ class UnconfiguredArtifactStorage:
         self, *, object_key: str, version_id: str, max_bytes: int
     ) -> bytes | None:
         del object_key, version_id, max_bytes
+        raise ServiceUnavailableError("S3_BUCKET 尚未配置")
+
+    def create_download_url(
+        self,
+        *,
+        object_key: str,
+        version_id: str,
+        filename: str,
+        expires_in: int,
+    ) -> PresignedDownload:
+        del object_key, version_id, filename, expires_in
         raise ServiceUnavailableError("S3_BUCKET 尚未配置")

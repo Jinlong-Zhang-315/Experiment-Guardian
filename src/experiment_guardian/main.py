@@ -1,6 +1,7 @@
 """FastAPI 进程入口。"""
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from experiment_guardian import __version__
 from experiment_guardian.api.errors import application_error_handler
@@ -20,6 +21,13 @@ def create_app() -> FastAPI:
         description="提高实验一致性、可追溯性和风险可见性的治理服务",
     )
     app.add_exception_handler(ApplicationError, application_error_handler)  # type: ignore[arg-type]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[settings.web_frontend_url.rstrip("/")],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Idempotency-Key", "X-CSRF-Token"],
+    )
     app.include_router(api_router, prefix=settings.api_prefix)
     return app
 

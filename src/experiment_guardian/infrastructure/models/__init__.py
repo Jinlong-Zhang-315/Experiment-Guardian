@@ -11,7 +11,10 @@ from experiment_guardian.infrastructure.models.entities import (
     ExperimentMetric,
     ExperimentSubmission,
     IdempotencyRecord,
+    McpOAuthClient,
+    McpOAuthGrant,
     Memory,
+    OidcTransaction,
     OutboxEvent,
     PlanCheck,
     Project,
@@ -23,6 +26,7 @@ from experiment_guardian.infrastructure.models.entities import (
     Team,
     TeamMember,
     User,
+    WebSession,
     WorkflowJob,
 )
 
@@ -38,6 +42,9 @@ __all__ = [
     "ExperimentSubmission",
     "IdempotencyRecord",
     "Memory",
+    "McpOAuthClient",
+    "McpOAuthGrant",
+    "OidcTransaction",
     "OutboxEvent",
     "PlanCheck",
     "Project",
@@ -49,5 +56,6 @@ __all__ = [
     "Team",
     "TeamMember",
     "User",
+    "WebSession",
     "WorkflowJob",
 ]

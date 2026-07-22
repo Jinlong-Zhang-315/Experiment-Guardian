@@ -1,0 +1,6 @@
+dataset:
+  protocol: "40/20"
+model:
+  backbone: ctr-gcn
+  fusion: 0.2
+seed: 1

@@ -21,6 +21,7 @@ from experiment_guardian.application.async_review import (
 from experiment_guardian.application.errors import (
     AuthorizationError,
     ConflictError,
+    RecentAuthenticationRequiredError,
     ResourceNotFoundError,
 )
 from experiment_guardian.application.identity import RequestIdentity
@@ -178,6 +179,16 @@ class ExperimentReviewService:
 
                 risks = self._submissions.list_risks(session, submission.id)
                 eligibility = review_eligibility_for_risks(risks)
+                if (
+                    request.decision is ApprovalDecision.APPROVED
+                    and role is TeamRole.OWNER
+                    and eligibility is ReviewEligibility.OWNER_ONLY
+                    and identity.authentication_method == "WEB_SESSION"
+                    and not identity.recent_authentication
+                ):
+                    raise RecentAuthenticationRequiredError(
+                        "Owner 批准 Submission 前需要通过 Cognito 重新认证"
+                    )
                 receipt = self._load_receipt(submission)
                 now = datetime.now(UTC)
                 approval = ApprovalRecord(
