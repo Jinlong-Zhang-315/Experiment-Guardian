@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
-更新时间：2026-07-22
-当前完成轮次：R14 代码实现
-下一步：真实 AWS/Cognito 双角色验收，不扩展 MVP
+更新时间：2026-07-23
+当前完成轮次：R14 + Local deployment profile
+下一步：真实百炼与真实 AWS 双环境验收，不扩展 MVP
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -25,6 +25,22 @@
 | R14c | 远程 MCP OAuth | 完成 | RFC9728、Cognito RS、预注册客户端、本地撤销 |
 | R14d | AWS 部署定义 | 完成 | Terraform ECS/CloudFront/Cognito/S3/SQS/WAF |
 | R14e | 最终演示与运维材料 | 完成 | 验收脚本、双角色 Runbook、文档同步 |
+| R14 Local | 单机可替换基础设施 | 完成 | local_owner、MinIO、DB Queue、百炼、Compose |
+
+## R14 Local：可替换基础设施部署
+
+交付：
+
+* `DEPLOYMENT_MODE=cloud/local` 条件配置校验，本地启动不读取或实例化 Cognito、SQS、AWS
+  S3 或 Bedrock 客户端。
+* `local_owner` 只接受唯一 Team 的真实 Owner Membership，继续使用 WebSession、CSRF、实时
+  RBAC、近期认证和审计；production 启动直接拒绝。
+* MinIO 复用 S3 协议，要求真实 VersionId、固定版本读取、SHA-256/大小/类型验证和防覆盖。
+* DatabaseOutboxQueue 复用 Outbox、WorkflowJob、lease、generation、重试和死信状态。
+* 百炼 OpenAI-compatible 摘要/embedding 适配器；固定 1024 维、有限数值和范数校验，保存
+  provider/model/dimension/document version。
+* Compose 明确串行 database-init、migration、local-init，并由 minio-init 开启 Versioning。
+* `bootstrap-local` 幂等创建 User、Team、Owner Membership、Project 和首版正式策略。
 
 ## R14a：托管身份认证与管理 API
 
@@ -102,11 +118,12 @@
 不开始 R15 功能开发，只执行真实环境验收：
 
 1. 在目标 AWS 账号执行 `terraform plan/apply`，完成域名、证书和 Bedrock model access。
-2. 构建推送不可变镜像，升级 Cockroach Cloud 到 revision 12，发布 Web 静态文件。
+2. 构建推送不可变镜像，升级 Cockroach Cloud 到 revision `20260722_13`，发布 Web 静态文件。
 3. 创建 Owner/Researcher Cognito 用户并完成现有 User sub 绑定。
 4. 用一个真实预注册 MCP Client 跑通 OAuth discovery/code/PKCE/resource 和七个工具。
 5. 按 `R14_DEMO.md` 完成六场景并保存无敏感信息的验收证据。
 6. 建立报警接收人、备份恢复和回滚演练记录。
+7. 使用真实百炼摘要和 1024 维 embedding 模型跑一次本地 Submission 全链路。
 
 只有真实验收发现缺陷时修复对应模块；不增加自动训练、自动改代码、复杂成员管理、动态
 客户端注册、向量索引或 baseline 自动晋升。

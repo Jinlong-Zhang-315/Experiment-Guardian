@@ -10,6 +10,7 @@ from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from experiment_guardian.application.errors import InputValidationError, ServiceUnavailableError
 from experiment_guardian.infrastructure.storage import (
     S3ArtifactStorage,
+    S3CompatibleObjectStorage,
     UnconfiguredArtifactStorage,
 )
 
@@ -138,6 +139,50 @@ def test_s3_head_keeps_missing_or_malformed_checksum_unverified() -> None:
     assert result.checksum_sha256 is None
 
 
+def test_s3_compatible_uses_metadata_checksum_fallback_and_real_version() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def generate_presigned_url(self, operation: str, **kwargs: object) -> str:
+            captured["operation"] = operation
+            captured.update(kwargs)
+            return "http://127.0.0.1:9000/signed"
+
+        def head_object(self, **_: object) -> dict[str, object]:
+            return {
+                "ContentLength": 7,
+                "ContentType": "application/json",
+                "Metadata": {"sha256": "ab" * 32},
+                "VersionId": "minio-version-1",
+            }
+
+    client = FakeClient()
+    storage = S3CompatibleObjectStorage(
+        bucket="experiments",
+        region="us-east-1",
+        endpoint_url="http://minio:9000",
+        presign_endpoint_url="http://127.0.0.1:9000",
+        access_key="key",
+        secret_key="secret",
+        client=client,
+    )
+    upload = storage.create_upload_url(
+        object_key="objects/result.json",
+        content_type="application/json",
+        content_length=7,
+        sha256="ab" * 32,
+        expires_in=300,
+    )
+    params = captured["Params"]
+    assert isinstance(params, dict)
+    assert params["Metadata"] == {"sha256": "ab" * 32}
+    assert upload.required_headers["x-amz-meta-sha256"] == "ab" * 32
+    metadata = storage.inspect_object(object_key="objects/result.json")
+    assert metadata is not None
+    assert metadata.checksum_sha256 == "ab" * 32
+    assert metadata.version_id == "minio-version-1"
+
+
 def test_s3_reads_only_the_exact_bounded_version_and_closes_stream() -> None:
     captured: dict[str, object] = {}
 
@@ -216,3 +261,31 @@ def test_s3_version_read_distinguishes_missing_oversized_and_service_errors() ->
     storage._client = ForbiddenClient()
     with pytest.raises(ServiceUnavailableError, match="版本读取"):
         storage.read_object_version(object_key="objects/a", version_id="version-1", max_bytes=10)
+
+
+def test_s3_compatible_maps_minio_invalid_version_to_missing() -> None:
+    class MinioClient:
+        def get_object(self, **_: object) -> dict[str, object]:
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "InvalidArgument",
+                        "Message": "Invalid version id specified",
+                    },
+                    "ResponseMetadata": {"HTTPStatusCode": 400},
+                },
+                "GetObject",
+            )
+
+    storage = S3CompatibleObjectStorage(
+        bucket="experiments",
+        region="us-east-1",
+        endpoint_url="http://minio:9000",
+        access_key="local-key",
+        secret_key="local-secret",
+        client=MinioClient(),
+    )
+    assert (
+        storage.read_object_version(object_key="objects/a", version_id="invalid", max_bytes=10)
+        is None
+    )

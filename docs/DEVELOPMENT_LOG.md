@@ -957,6 +957,62 @@
 * R14 不支持动态 MCP client registration、任意第三方零配置、自动训练、自动改代码、
   baseline 自动晋升或向量索引。
 
+## 2026-07-23 / R14 Local：单机可替换基础设施部署
+
+版本：working tree，延续 R14 领域模型和状态机。
+
+### 更新内容
+
+* 增加 `DEPLOYMENT_MODE=cloud/local` 和 backend/provider 条件配置校验；本地模式不要求或实例化
+  Cognito、AWS S3、SQS、Bedrock，production 拒绝 `local_owner`。
+* `LocalOwnerWebAuthService` 通过真实 User、唯一 TeamMembership 和 Owner 角色建立现有
+  WebSession，复用 HttpOnly Cookie、CSRF、实时 scope、近期认证、撤销和审计。
+* 在现有 ArtifactStorage 端口下增加 S3-compatible 适配器，支持 MinIO 内外端点、Bucket
+  Versioning、预签名 PUT/GET、真实 VersionId、固定版本读取、SHA-256 metadata fallback。
+* 在现有 SubmissionQueue 端口下增加 DatabaseOutboxQueue，复用 Outbox、WorkflowJob、lease、
+  generation、重试游标，新增 COMPLETED/DEAD_LETTER 终态用于保留本地投递历史。
+* 增加百炼 OpenAI-compatible 摘要和 embedding 适配器。摘要 temperature=0、无工具、长度受限；
+  向量固定 1024 维并校验有限数值、零范数和归一化，持久化 provider/model/version 元数据。
+* revision 13 增加模型 provider 元数据并升级 Outbox 状态约束，支持安全 downgrade。
+* 增加 `bootstrap-local` 幂等初始化，以及 CockroachDB、MinIO、一次性 migration/minio-init/
+  local-init、API、Worker、Web Compose 链路。
+
+### 修复的问题
+
+* 单机部署不再被无关 AWS/Cognito 配置阻塞，也不会在本地路径隐式创建 boto3 云客户端。
+* MinIO 预签名 URL 区分容器内服务端 endpoint 与宿主机浏览器 endpoint，仍保持同一对象 key
+  的防覆盖与固定版本证据链。
+* 数据库空队列使用可配置等待，崩溃后由 Outbox/Job 双租约恢复；过期 generation 不能回写。
+* CockroachDB 实测发现带 `JOIN` 的 `FOR UPDATE SKIP LOCKED` 可能漏取可用 Outbox；数据库队列
+  改为只锁 Outbox，再在同一事务中校验 Job 状态和 generation，并保留 40001 有界重试。
+* 历史 Memory/SubmissionEmbedding 明确记录 provider，切换模型不会覆盖旧向量。
+* 共享应用层的近期认证与模型错误提示改为 provider-neutral，local_owner/百炼路径不再被错误
+  描述为 Cognito/Bedrock 事实。
+
+### 验证结果
+
+* Ruff 全仓通过；mypy 63 个源文件通过；全量 pytest 为 208 passed、8 skipped。跳过项仅为
+  需要显式凭据或真实服务的 CockroachDB、MinIO/S3、SQS、Bedrock 和百炼验收。
+* 真实 Docker MinIO 的 10 项适配器/单元验收通过：预签名 PUT、`If-None-Match` 防覆盖、
+  metadata SHA-256、真实 VersionId、多版本、固定旧版本读取、错误版本与预签名 GET。
+* 真实单节点 CockroachDB 完成空库 upgrade head、跨版本 downgrade/re-upgrade、完整业务写入、
+  Outbox 发布和双 Worker 并发唯一 claim；revision 13 provider 列及终态约束通过。
+* 本地应用集成链覆盖 Plan、Approval、Manifest、Submission、DatabaseOutboxQueue、Mock Bailian
+  摘要/embedding、审核回执、正式确认和幂等重放，Experiment/Memory/Artifact 未重复创建。
+* Compose 实际完成 database-init、单一 migration、MinIO Versioning、幂等 local-init、API、
+  Worker 和 Web 启动；health、local_owner Session/CSRF 和重复初始化均通过。
+* Web ESLint、Vitest 2 tests、production build 和 Playwright desktop/mobile 2 场景通过；AWS
+  Terraform `fmt -check` 与 `validate` 继续通过。
+* 百炼默认 HTTP mock 覆盖成功、超时、非 2xx、空输出、非法 JSON、维度错误和 NaN/Infinity；
+  真实调用仅在 `RUN_BAILIAN_INTEGRATION=1` 时运行。
+
+### 已知遗留项
+
+* 本地模式是回环地址上的单机可信开发部署，不提供远程访问、多节点 MinIO、自动备份或 HA。
+* 真实百炼可用性、配额和具体模型 1024 维能力取决于部署账号，仓库不保存真实 API Key。
+* 本轮未持有真实百炼 Key，因此实际 Compose 闭环使用 HTTP mock 完成模型协议验收；真实百炼
+  双模型调用保留为显式 integration gate。
+
 ## 新日志模板
 
 ```text

@@ -82,6 +82,7 @@ class FakeQueue:
 
 
 class FakeSummaryGenerator:
+    provider = "fake-provider"
     model_id = "fake.summary-v1"
 
     def __init__(self, text: str = "目标、运行条件、结果和既有风险摘要。") -> None:
@@ -155,6 +156,7 @@ def test_outbox_dispatch_and_summary_are_idempotent(
         assert submission.workflow_status is WorkflowStatus.QUEUED
         assert submission.processing_step is WorkflowStep.SUMMARY_GENERATION
         assert submission.generated_summary["text"] == generator.text
+        assert submission.generated_summary["provider"] == generator.provider
         assert submission.generated_summary["model_id"] == generator.model_id
         assert len(submission.generated_summary["source_hash"]) == 64
         assert job.status is WorkflowJobStatus.SUCCEEDED

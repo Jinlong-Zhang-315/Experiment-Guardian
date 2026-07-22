@@ -112,6 +112,9 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     assert "uq_submission_embeddings_submission_id" in {
         item["name"] for item in inspector.get_unique_constraints("submission_embeddings")
     }
+    assert "provider" in {
+        item["name"] for item in inspector.get_columns("submission_embeddings")
+    }
     assert set(inspector.get_table_names()) >= FORMAL_EXPERIMENT_TABLES
     assert {
         "approval_record_id",
@@ -120,6 +123,7 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     } <= {item["name"] for item in inspector.get_columns("experiments")}
     assert {
         "embedding_model_id",
+        "embedding_provider",
         "embedding_dimension",
         "embedding_normalized",
         "document_version",

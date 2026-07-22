@@ -1,0 +1,216 @@
+"""阿里云百炼 OpenAI-compatible 摘要与 embedding 适配器。"""
+
+import math
+from typing import Any
+from urllib.parse import urlparse
+
+import httpx
+
+from experiment_guardian.application.errors import ServiceUnavailableError
+from experiment_guardian.application.ports import (
+    EmbeddingGenerator,
+    EmbeddingModelOutput,
+    SummaryModelOutput,
+    SummaryTextGenerator,
+)
+
+MAX_SUMMARY_RESPONSE_BYTES = 64 * 1024
+MAX_EMBEDDING_RESPONSE_BYTES = 512 * 1024
+REQUIRED_DIMENSION = 1024
+
+
+class _BailianClient:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        connect_timeout_seconds: int,
+        read_timeout_seconds: int,
+        client: httpx.Client | None,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("BAILIAN_API_KEY 未配置")
+        normalized_url = base_url.strip().rstrip("/")
+        parsed = urlparse(normalized_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("BAILIAN_BASE_URL 必须是有效的 HTTP(S) URL")
+        self._base_url = normalized_url
+        self._client = client or httpx.Client(
+            headers={"Authorization": f"Bearer {api_key.strip()}"},
+            timeout=httpx.Timeout(
+                timeout=read_timeout_seconds,
+                connect=connect_timeout_seconds,
+            ),
+        )
+
+    def post(self, path: str, payload: dict[str, Any], *, max_bytes: int) -> dict[str, Any]:
+        try:
+            response = self._client.post(f"{self._base_url}{path}", json=payload)
+            response.raise_for_status()
+        except (httpx.HTTPError, OSError) as exc:
+            raise ServiceUnavailableError("百炼模型服务暂时不可用") from exc
+        if len(response.content) > max_bytes:
+            raise ServiceUnavailableError("百炼模型响应超过大小上限")
+        try:
+            decoded = response.json()
+        except ValueError as exc:
+            raise ServiceUnavailableError("百炼返回了非 JSON 响应") from exc
+        if not isinstance(decoded, dict):
+            raise ServiceUnavailableError("百炼返回了无效的 JSON 对象")
+        return decoded
+
+
+class BailianSummaryGenerator(SummaryTextGenerator):
+    """调用百炼 chat/completions；不声明工具且固定 temperature=0。"""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model_id: str,
+        connect_timeout_seconds: int = 5,
+        read_timeout_seconds: int = 60,
+        client: httpx.Client | None = None,
+    ) -> None:
+        if not model_id.strip():
+            raise ValueError("BAILIAN_SUMMARY_MODEL 未配置")
+        self._model_id = model_id.strip()
+        self._api = _BailianClient(
+            api_key=api_key,
+            base_url=base_url,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            client=client,
+        )
+
+    @property
+    def provider(self) -> str:
+        return "bailian"
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    def generate(self, *, system_prompt: str, user_prompt: str) -> SummaryModelOutput:
+        payload = self._api.post(
+            "/chat/completions",
+            {
+                "model": self._model_id,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0,
+                "max_tokens": 1200,
+            },
+            max_bytes=MAX_SUMMARY_RESPONSE_BYTES,
+        )
+        try:
+            choices = payload["choices"]
+            if not isinstance(choices, list) or len(choices) != 1:
+                raise ValueError("choices 数量无效")
+            message = choices[0]["message"]
+            if message.get("tool_calls"):
+                raise ValueError("响应包含工具调用")
+            text = message["content"]
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("摘要为空")
+            usage = payload.get("usage") or {}
+            return SummaryModelOutput(
+                text=text.strip(),
+                input_tokens=_optional_nonnegative_int(usage.get("prompt_tokens")),
+                output_tokens=_optional_nonnegative_int(usage.get("completion_tokens")),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ServiceUnavailableError("百炼返回了无效的摘要响应") from exc
+
+
+class BailianEmbeddingGenerator(EmbeddingGenerator):
+    """调用百炼 embeddings，并将合法非零向量归一化为现有 1024 维契约。"""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model_id: str,
+        dimension: int = REQUIRED_DIMENSION,
+        connect_timeout_seconds: int = 5,
+        read_timeout_seconds: int = 60,
+        client: httpx.Client | None = None,
+    ) -> None:
+        if not model_id.strip():
+            raise ValueError("BAILIAN_EMBEDDING_MODEL 未配置")
+        if dimension != REQUIRED_DIMENSION:
+            raise ValueError("百炼 embedding 维度必须为 1024")
+        self._model_id = model_id.strip()
+        self._dimension = dimension
+        self._api = _BailianClient(
+            api_key=api_key,
+            base_url=base_url,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            client=client,
+        )
+
+    @property
+    def provider(self) -> str:
+        return "bailian"
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
+    def embed(self, input_text: str) -> EmbeddingModelOutput:
+        if not input_text or len(input_text) > 16000:
+            raise ValueError("embedding 输入必须为 1 到 16000 个字符")
+        payload = self._api.post(
+            "/embeddings",
+            {
+                "model": self._model_id,
+                "input": input_text,
+                "dimensions": self._dimension,
+                "encoding_format": "float",
+            },
+            max_bytes=MAX_EMBEDDING_RESPONSE_BYTES,
+        )
+        try:
+            data = payload["data"]
+            if not isinstance(data, list) or len(data) != 1:
+                raise ValueError("embedding data 数量无效")
+            raw_vector = data[0]["embedding"]
+            if not isinstance(raw_vector, list) or len(raw_vector) != self._dimension:
+                raise ValueError("embedding 维度错误")
+            vector: list[float] = []
+            for item in raw_vector:
+                if isinstance(item, bool) or not isinstance(item, (int, float)):
+                    raise ValueError("embedding 包含非数值元素")
+                number = float(item)
+                if not math.isfinite(number):
+                    raise ValueError("embedding 包含非有限数值")
+                vector.append(number)
+            norm = math.sqrt(sum(item * item for item in vector))
+            if not math.isfinite(norm) or norm <= 1e-12:
+                raise ValueError("embedding 范数无效")
+            normalized = [item / norm for item in vector]
+            usage = payload.get("usage") or {}
+            return EmbeddingModelOutput(
+                vector=normalized,
+                input_tokens=_optional_nonnegative_int(
+                    usage.get("prompt_tokens", usage.get("total_tokens"))
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            raise
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value

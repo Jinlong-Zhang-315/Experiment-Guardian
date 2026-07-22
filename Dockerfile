@@ -9,12 +9,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 RUN addgroup --system guardian && adduser --system --ingroup guardian guardian
 
-COPY pyproject.toml README.md alembic.ini ./
 COPY requirements ./requirements
+RUN pip install -r requirements/lock-server.txt
+COPY pyproject.toml README.md alembic.ini ./
 COPY src ./src
 COPY migrations ./migrations
-RUN pip install -r requirements/lock-server.txt \
-    && pip install --no-deps .
+RUN pip install --no-deps .
+COPY examples ./examples
 
 USER guardian
 EXPOSE 8000 8001

@@ -103,7 +103,7 @@ class _PreparedReview:
 
 
 class SubmissionJobProcessor:
-    """按数据库 Job 类型路由同一个 SQS 队列中的最小消息。"""
+    """按数据库 Job 类型路由同一个队列中的最小消息。"""
 
     def __init__(
         self,
@@ -663,6 +663,7 @@ class SubmissionReviewProcessor:
     def _validate_existing_embedding(self, embedding: SubmissionEmbedding, input_hash: str) -> None:
         if (
             embedding.input_sha256 != input_hash
+            or embedding.provider != getattr(self._generator, "provider", "bedrock")
             or embedding.model_id != self._generator.model_id
             or embedding.dimension != EMBEDDING_DIMENSION
             or not embedding.normalized
@@ -689,6 +690,7 @@ class SubmissionReviewProcessor:
                         submission_id=submission.id,
                         project_id=submission.project_id,
                         embedding=vector,
+                        provider=getattr(self._generator, "provider", "bedrock"),
                         model_id=self._generator.model_id,
                         dimension=EMBEDDING_DIMENSION,
                         normalized=True,

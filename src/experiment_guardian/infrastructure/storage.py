@@ -1,4 +1,4 @@
-"""Amazon S3 Artifact Storage 适配器。"""
+"""AWS S3 与 S3-compatible Artifact Storage 适配器。"""
 
 import base64
 import binascii
@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import boto3  # type: ignore[import-untyped]
+from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
 
 from experiment_guardian.application.errors import InputValidationError, ServiceUnavailableError
@@ -16,18 +17,76 @@ from experiment_guardian.domain.contracts import (
 )
 
 
-class S3ArtifactStorage:
+class AwsS3ObjectStorage:
     """生成受约束的 PUT URL，并提供不下载内容的对象元数据观测。"""
 
-    def __init__(self, *, bucket: str, region: str) -> None:
+    def __init__(
+        self,
+        *,
+        bucket: str,
+        region: str,
+        endpoint_url: str | None = None,
+        presign_endpoint_url: str | None = None,
+        access_key: str | None = None,
+        secret_key: str | None = None,
+        force_path_style: bool = False,
+        client: Any | None = None,
+        metadata_checksum_fallback: bool = False,
+    ) -> None:
         self._bucket = bucket
         self._region = region
-        self._client: Any | None = None
+        self._endpoint_url = endpoint_url
+        self._presign_endpoint_url = presign_endpoint_url
+        self._access_key = access_key
+        self._secret_key = secret_key
+        self._force_path_style = force_path_style
+        self._metadata_checksum_fallback = metadata_checksum_fallback
+        self._client: Any | None = client
+        self._presign_client: Any | None = client
 
     def _get_client(self) -> Any:
         if self._client is None:
-            self._client = boto3.client("s3", region_name=self._region)
+            kwargs: dict[str, Any] = {
+                "region_name": self._region,
+                "config": Config(
+                    signature_version="s3v4",
+                    retries={"max_attempts": 2, "mode": "standard"},
+                    s3={
+                        "addressing_style": "path" if self._force_path_style else "virtual"
+                    },
+                ),
+            }
+            if self._endpoint_url:
+                kwargs["endpoint_url"] = self._endpoint_url
+            if self._access_key is not None:
+                kwargs["aws_access_key_id"] = self._access_key
+            if self._secret_key is not None:
+                kwargs["aws_secret_access_key"] = self._secret_key
+            self._client = boto3.client("s3", **kwargs)
         return self._client
+
+    def _get_presign_client(self) -> Any:
+        if self._presign_client is None:
+            if not self._presign_endpoint_url or self._presign_endpoint_url == self._endpoint_url:
+                self._presign_client = self._get_client()
+            else:
+                self._presign_client = boto3.client(
+                    "s3",
+                    region_name=self._region,
+                    endpoint_url=self._presign_endpoint_url,
+                    aws_access_key_id=self._access_key,
+                    aws_secret_access_key=self._secret_key,
+                    config=Config(
+                        signature_version="s3v4",
+                        retries={"max_attempts": 2, "mode": "standard"},
+                        s3={
+                            "addressing_style": (
+                                "path" if self._force_path_style else "virtual"
+                            )
+                        },
+                    ),
+                )
+        return self._presign_client
 
     def create_upload_url(
         self,
@@ -40,16 +99,26 @@ class S3ArtifactStorage:
     ) -> PresignedUpload:
         try:
             checksum = base64.b64encode(bytes.fromhex(sha256)).decode("ascii")
-            url = self._get_client().generate_presigned_url(
+            params: dict[str, Any] = {
+                "Bucket": self._bucket,
+                "Key": object_key,
+                "ContentType": content_type,
+                "ContentLength": content_length,
+                "ChecksumSHA256": checksum,
+                "IfNoneMatch": "*",
+            }
+            required_headers = {
+                "Content-Type": content_type,
+                "Content-Length": str(content_length),
+                "If-None-Match": "*",
+                "x-amz-checksum-sha256": checksum,
+            }
+            if self._metadata_checksum_fallback:
+                params["Metadata"] = {"sha256": sha256}
+                required_headers["x-amz-meta-sha256"] = sha256
+            url = self._get_presign_client().generate_presigned_url(
                 "put_object",
-                Params={
-                    "Bucket": self._bucket,
-                    "Key": object_key,
-                    "ContentType": content_type,
-                    "ContentLength": content_length,
-                    "ChecksumSHA256": checksum,
-                    "IfNoneMatch": "*",
-                },
+                Params=params,
                 ExpiresIn=expires_in,
                 HttpMethod="PUT",
             )
@@ -57,21 +126,26 @@ class S3ArtifactStorage:
             raise ServiceUnavailableError("S3 预签名服务暂时不可用") from exc
         return PresignedUpload(
             upload_url=url,
-            required_headers={
-                "Content-Type": content_type,
-                "Content-Length": str(content_length),
-                "If-None-Match": "*",
-                "x-amz-checksum-sha256": checksum,
-            },
+            required_headers=required_headers,
         )
 
     def inspect_object(self, *, object_key: str) -> StoredObjectMetadata | None:
         try:
-            response = self._get_client().head_object(
-                Bucket=self._bucket,
-                Key=object_key,
-                ChecksumMode="ENABLED",
-            )
+            try:
+                response = self._get_client().head_object(
+                    Bucket=self._bucket,
+                    Key=object_key,
+                    ChecksumMode="ENABLED",
+                )
+            except ClientError as exc:
+                code = str(exc.response.get("Error", {}).get("Code", ""))
+                if not self._metadata_checksum_fallback or code not in {
+                    "InvalidArgument",
+                    "InvalidRequest",
+                    "NotImplemented",
+                }:
+                    raise
+                response = self._get_client().head_object(Bucket=self._bucket, Key=object_key)
         except ClientError as exc:
             error = exc.response.get("Error", {})
             code = str(error.get("Code", ""))
@@ -86,6 +160,11 @@ class S3ArtifactStorage:
         if type(content_length) is not int or content_length < 0:
             raise ServiceUnavailableError("S3 返回了无效的对象大小")
         checksum = self._decode_sha256(response.get("ChecksumSHA256"))
+        if checksum is None and self._metadata_checksum_fallback:
+            metadata = response.get("Metadata")
+            candidate = metadata.get("sha256") if isinstance(metadata, dict) else None
+            if isinstance(candidate, str) and self._is_sha256(candidate):
+                checksum = candidate.lower()
         etag = response.get("ETag")
         return StoredObjectMetadata(
             content_length=content_length,
@@ -113,8 +192,15 @@ class S3ArtifactStorage:
         except ClientError as exc:
             error = exc.response.get("Error", {})
             code = str(error.get("Code", ""))
+            message = str(error.get("Message", ""))
             status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
             if status == 404 or code in {"404", "NoSuchKey", "NoSuchVersion", "NotFound"}:
+                return None
+            if (
+                self._metadata_checksum_fallback
+                and code == "InvalidArgument"
+                and "version id" in message.lower()
+            ):
                 return None
             raise ServiceUnavailableError("S3 对象版本读取服务暂时不可用") from exc
         except BotoCoreError as exc:
@@ -162,7 +248,7 @@ class S3ArtifactStorage:
             raise InputValidationError("Artifact 尚未绑定不可变 S3 VersionId")
         safe_filename = filename.replace('"', "").replace("\r", "").replace("\n", "")
         try:
-            url = self._get_client().generate_presigned_url(
+            url = self._get_presign_client().generate_presigned_url(
                 "get_object",
                 Params={
                     "Bucket": self._bucket,
@@ -189,6 +275,78 @@ class S3ArtifactStorage:
         except (binascii.Error, ValueError):
             return None
         return decoded.hex() if len(decoded) == 32 else None
+
+    @staticmethod
+    def _is_sha256(value: str) -> bool:
+        if len(value) != 64:
+            return False
+        try:
+            bytes.fromhex(value)
+        except ValueError:
+            return False
+        return True
+
+
+class S3CompatibleObjectStorage(AwsS3ObjectStorage):
+    """MinIO 等 S3-compatible 服务；证据语义与 AWS S3 完全相同。"""
+
+    def __init__(
+        self,
+        *,
+        bucket: str,
+        region: str,
+        endpoint_url: str,
+        presign_endpoint_url: str | None = None,
+        access_key: str,
+        secret_key: str,
+        force_path_style: bool = True,
+        client: Any | None = None,
+    ) -> None:
+        if not endpoint_url.strip():
+            raise ValueError("S3_ENDPOINT_URL 未配置")
+        if not access_key or not secret_key:
+            raise ValueError("S3-compatible access key/secret key 未配置")
+        super().__init__(
+            bucket=bucket,
+            region=region,
+            endpoint_url=endpoint_url.strip(),
+            presign_endpoint_url=(presign_endpoint_url or endpoint_url).strip(),
+            access_key=access_key,
+            secret_key=secret_key,
+            force_path_style=force_path_style,
+            client=client,
+            metadata_checksum_fallback=True,
+        )
+
+    def ensure_bucket(self) -> None:
+        """幂等创建 Bucket、开启 Versioning，并拒绝无真实版本能力的服务。"""
+
+        client = self._get_client()
+        try:
+            client.head_bucket(Bucket=self._bucket)
+        except ClientError as exc:
+            status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if status not in {404} and code not in {"404", "NoSuchBucket", "NotFound"}:
+                raise ServiceUnavailableError("S3-compatible Bucket 检查失败") from exc
+            try:
+                client.create_bucket(Bucket=self._bucket)
+            except (BotoCoreError, ClientError) as create_exc:
+                raise ServiceUnavailableError("S3-compatible Bucket 创建失败") from create_exc
+        try:
+            client.put_bucket_versioning(
+                Bucket=self._bucket,
+                VersioningConfiguration={"Status": "Enabled"},
+            )
+            status = client.get_bucket_versioning(Bucket=self._bucket).get("Status")
+        except (BotoCoreError, ClientError) as exc:
+            raise ServiceUnavailableError("S3-compatible Bucket Versioning 配置失败") from exc
+        if status != "Enabled":
+            raise ServiceUnavailableError("S3-compatible Bucket 未提供可用 Versioning")
+
+
+# 兼容既有导入；新装配代码使用明确的云端类名。
+S3ArtifactStorage = AwsS3ObjectStorage
 
 
 class UnconfiguredArtifactStorage:

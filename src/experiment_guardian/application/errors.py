@@ -18,7 +18,7 @@ class AuthorizationError(ApplicationError):
 
 
 class RecentAuthenticationRequiredError(ApplicationError):
-    """敏感操作需要用户通过 Cognito 重新认证，而不是重新输入应用密码。"""
+    """敏感操作需要当前认证后端提供近期认证，不重新实现应用密码。"""
 
     code = "RECENT_AUTHENTICATION_REQUIRED"
 

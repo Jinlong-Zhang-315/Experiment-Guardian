@@ -18,14 +18,23 @@ from experiment_guardian.application.async_summary import (
     SubmissionSummaryScheduler,
 )
 from experiment_guardian.application.errors import ServiceUnavailableError
+from experiment_guardian.application.ports import (
+    EmbeddingGenerator,
+    SubmissionQueue,
+    SummaryTextGenerator,
+)
 from experiment_guardian.core.config import Settings, get_settings
 from experiment_guardian.core.logging import configure_logging
+from experiment_guardian.infrastructure.bailian import (
+    BailianEmbeddingGenerator,
+    BailianSummaryGenerator,
+)
 from experiment_guardian.infrastructure.bedrock import (
     BedrockSummaryGenerator,
     BedrockTitanV2EmbeddingGenerator,
 )
 from experiment_guardian.infrastructure.database import get_session_factory
-from experiment_guardian.infrastructure.queue import SqsSubmissionQueue
+from experiment_guardian.infrastructure.queue import DatabaseOutboxQueue, SqsSubmissionQueue
 from experiment_guardian.infrastructure.repositories import (
     SqlAlchemySubmissionRepository,
     SqlAlchemyWorkflowRepository,
@@ -38,7 +47,9 @@ class SubmissionWorker:
     review_scheduler: SubmissionReviewScheduler
     dispatcher: OutboxDispatcher
     processor: SubmissionJobProcessor
-    queue: SqsSubmissionQueue
+    queue: SubmissionQueue
+    batch_size: int = 1
+    idle_wait_seconds: float = 1.0
 
     def run_forever(self) -> None:
         logger = structlog.get_logger(__name__)
@@ -51,11 +62,17 @@ class SubmissionWorker:
         )
         while True:
             try:
+                did_work = False
                 for _ in range(100):
                     if not self.dispatcher.dispatch_once():
                         break
-                for delivery in self.queue.receive(max_messages=1):
+                    did_work = True
+                deliveries = self.queue.receive(max_messages=self.batch_size)
+                for delivery in deliveries:
+                    did_work = True
                     self.processor.process_delivery(delivery)
+                if not did_work:
+                    time.sleep(self.idle_wait_seconds)
             except ServiceUnavailableError as exc:
                 logger.warning("submission_summary_dependency_unavailable", error=str(exc))
                 time.sleep(5)
@@ -67,27 +84,67 @@ class SubmissionWorker:
 
 def build_worker(settings: Settings | None = None) -> SubmissionWorker:
     current = settings or get_settings()
-    if not current.sqs_submission_queue_url.strip():
-        raise ValueError("SQS_SUBMISSION_QUEUE_URL 未配置，R12b Worker 无法启动")
-    if not current.bedrock_summary_model_id.strip():
-        raise ValueError("BEDROCK_SUMMARY_MODEL_ID 未配置，R12b Worker 无法启动")
-
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     factory = get_session_factory()
     workflows = SqlAlchemyWorkflowRepository()
     submissions = SqlAlchemySubmissionRepository()
-    queue = SqsSubmissionQueue(
-        queue_url=current.sqs_submission_queue_url,
-        region=current.aws_region,
-        wait_time_seconds=current.sqs_wait_time_seconds,
-        visibility_timeout_seconds=current.sqs_visibility_timeout_seconds,
-    )
-    summary_generator = BedrockSummaryGenerator(
-        model_id=current.bedrock_summary_model_id,
-        region=current.aws_region,
-        connect_timeout_seconds=current.bedrock_connect_timeout_seconds,
-        read_timeout_seconds=current.bedrock_read_timeout_seconds,
-    )
+    queue: SubmissionQueue
+    if current.queue_backend == "database":
+        queue = DatabaseOutboxQueue(
+            factory,
+            worker_id=worker_id,
+            lease_seconds=current.worker_lease_seconds,
+        )
+        batch_size = current.database_queue_batch_size
+        idle_wait_seconds = current.database_queue_poll_interval_seconds
+    else:
+        if not current.sqs_submission_queue_url.strip():
+            raise ValueError("SQS_SUBMISSION_QUEUE_URL 未配置，Worker 无法启动")
+        queue = SqsSubmissionQueue(
+            queue_url=current.sqs_submission_queue_url,
+            region=current.aws_region,
+            wait_time_seconds=current.sqs_wait_time_seconds,
+            visibility_timeout_seconds=current.sqs_visibility_timeout_seconds,
+        )
+        batch_size = 1
+        idle_wait_seconds = 1.0
+
+    summary_generator: SummaryTextGenerator
+    embedding_generator: EmbeddingGenerator
+    if current.llm_provider == "bailian":
+        api_key = current.bailian_api_key
+        raw_api_key = api_key.get_secret_value() if api_key else ""
+        summary_generator = BailianSummaryGenerator(
+            api_key=raw_api_key,
+            base_url=current.bailian_base_url,
+            model_id=current.bailian_summary_model,
+            connect_timeout_seconds=current.bailian_connect_timeout_seconds,
+            read_timeout_seconds=current.bailian_read_timeout_seconds,
+        )
+        embedding_generator = BailianEmbeddingGenerator(
+            api_key=raw_api_key,
+            base_url=current.bailian_base_url,
+            model_id=current.bailian_embedding_model,
+            dimension=current.bailian_embedding_dimension,
+            connect_timeout_seconds=current.bailian_connect_timeout_seconds,
+            read_timeout_seconds=current.bailian_read_timeout_seconds,
+        )
+    else:
+        if not current.bedrock_summary_model_id.strip():
+            raise ValueError("BEDROCK_SUMMARY_MODEL_ID 未配置，Worker 无法启动")
+        summary_generator = BedrockSummaryGenerator(
+            model_id=current.bedrock_summary_model_id,
+            region=current.aws_region,
+            connect_timeout_seconds=current.bedrock_connect_timeout_seconds,
+            read_timeout_seconds=current.bedrock_read_timeout_seconds,
+        )
+        embedding_generator = BedrockTitanV2EmbeddingGenerator(
+            model_id=current.bedrock_embedding_model_id,
+            region=current.aws_region,
+            dimension=current.embedding_dimension,
+            connect_timeout_seconds=current.bedrock_connect_timeout_seconds,
+            read_timeout_seconds=current.bedrock_read_timeout_seconds,
+        )
     scheduler = SubmissionSummaryScheduler(
         factory,
         workflows,
@@ -115,13 +172,6 @@ def build_worker(settings: Settings | None = None) -> SubmissionWorker:
         worker_id=worker_id,
         lease_seconds=current.worker_lease_seconds,
     )
-    embedding_generator = BedrockTitanV2EmbeddingGenerator(
-        model_id=current.bedrock_embedding_model_id,
-        region=current.aws_region,
-        dimension=current.embedding_dimension,
-        connect_timeout_seconds=current.bedrock_connect_timeout_seconds,
-        read_timeout_seconds=current.bedrock_read_timeout_seconds,
-    )
     review_processor = SubmissionReviewProcessor(
         factory,
         submissions,
@@ -138,7 +188,15 @@ def build_worker(settings: Settings | None = None) -> SubmissionWorker:
         summary_processor=summary_processor,
         review_processor=review_processor,
     )
-    return SubmissionWorker(scheduler, review_scheduler, dispatcher, processor, queue)
+    return SubmissionWorker(
+        scheduler,
+        review_scheduler,
+        dispatcher,
+        processor,
+        queue,
+        batch_size=batch_size,
+        idle_wait_seconds=idle_wait_seconds,
+    )
 
 
 def run() -> None:

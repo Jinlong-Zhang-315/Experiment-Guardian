@@ -707,7 +707,7 @@ class SubmissionFinalizeResult(ContractModel):
 
 
 class SummaryUsage(ContractModel):
-    """Bedrock 返回的可选 token 计数；缺失不影响摘要有效性。"""
+    """模型服务返回的可选 token 计数；缺失不影响摘要有效性。"""
 
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
@@ -718,6 +718,7 @@ class GeneratedSummary(ContractModel):
 
     schema_version: Literal[1] = 1
     text: str = Field(min_length=1, max_length=3000)
+    provider: str = Field(default="bedrock", min_length=1, max_length=50)
     model_id: str = Field(min_length=1, max_length=500)
     prompt_version: Literal["submission-summary-v1"] = "submission-summary-v1"
     source_hash: str = Field(pattern=SHA256_PATTERN)
@@ -741,7 +742,7 @@ class WorkflowJobReceipt(ContractModel):
 
 
 class WorkflowQueueEnvelope(ContractModel):
-    """SQS 中只保留定位信息，所有业务事实均从数据库重新加载。"""
+    """队列中只保留定位信息，所有业务事实均从数据库重新加载。"""
 
     schema_version: Literal[1] = 1
     job_id: UUID
@@ -754,6 +755,7 @@ SummaryQueueEnvelope = WorkflowQueueEnvelope
 
 
 class EmbeddingMetadata(ContractModel):
+    provider: str = Field(default="bedrock", min_length=1, max_length=50)
     model_id: str = Field(min_length=1, max_length=500)
     dimension: Literal[1024] = 1024
     normalized: Literal[True] = True

@@ -920,6 +920,7 @@ class GuardianApplication:
             embedding_record = self._submissions.get_embedding(session, submission.id)
             embedding = (
                 EmbeddingMetadata(
+                    provider=embedding_record.provider,
                     model_id=embedding_record.model_id,
                     dimension=embedding_record.dimension,
                     normalized=embedding_record.normalized,
@@ -1718,7 +1719,7 @@ class PlanApprovalService:
         if "plan:approve" not in identity.scopes:
             raise AuthorizationError("Token 缺少 plan:approve scope")
         if identity.authentication_method == "WEB_SESSION" and not identity.recent_authentication:
-            raise RecentAuthenticationRequiredError("批准 Plan Check 前需要通过 Cognito 重新认证")
+            raise RecentAuthenticationRequiredError("批准 Plan Check 前需要完成近期身份认证")
         request_hash = _canonical_hash(
             {
                 "project_id": str(project_id),

@@ -49,6 +49,7 @@ from tests.integration.test_submission_finalize_slice import (
 
 
 class FakeEmbeddingGenerator:
+    provider = "fake-provider"
     model_id = "amazon.titan-embed-text-v2:0"
     dimension = 1024
 
@@ -121,6 +122,7 @@ def test_review_job_persists_embedding_receipt_and_needs_review(
         assert submission.workflow_status is WorkflowStatus.COMPLETED
         assert submission.processing_step is WorkflowStep.NEEDS_REVIEW
         assert embedding.dimension == 1024
+        assert embedding.provider == generator.provider
         assert embedding.normalized
         assert embedding.input_token_count == 42
         assert len(embedding.embedding) == 1024

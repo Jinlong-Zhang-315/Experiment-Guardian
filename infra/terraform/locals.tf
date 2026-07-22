@@ -21,7 +21,12 @@ locals {
 
   common_environment = [
     { name = "APP_ENV", value = "production" },
+    { name = "DEPLOYMENT_MODE", value = "cloud" },
     { name = "LOG_LEVEL", value = "INFO" },
+    { name = "WEB_AUTH_MODE", value = "cognito" },
+    { name = "OBJECT_STORAGE_BACKEND", value = "aws_s3" },
+    { name = "QUEUE_BACKEND", value = "sqs" },
+    { name = "LLM_PROVIDER", value = "bedrock" },
     { name = "AWS_REGION", value = var.aws_region },
     { name = "S3_BUCKET", value = aws_s3_bucket.artifacts.id },
     { name = "SQS_SUBMISSION_QUEUE_URL", value = aws_sqs_queue.submissions.url },

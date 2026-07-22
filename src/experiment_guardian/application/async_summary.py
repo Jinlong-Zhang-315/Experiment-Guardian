@@ -1,4 +1,4 @@
-"""R12a 事务 Outbox、SQS 消费和 Bedrock 摘要编排。"""
+"""R12a 事务 Outbox、队列消费和受约束摘要编排。"""
 
 import json
 from dataclasses import dataclass
@@ -189,7 +189,7 @@ class SubmissionReviewScheduler:
 
 
 class OutboxDispatcher:
-    """先租约领取、事务外发 SQS、再记录发布回执，允许崩溃窗口产生重复消息。"""
+    """先租约领取、事务外发队列、再记录发布回执，允许崩溃窗口产生重复消息。"""
 
     def __init__(
         self,
@@ -304,7 +304,7 @@ class OutboxDispatcher:
 
 
 class SubmissionSummaryProcessor:
-    """消费一条 SQS 消息，并以 Job generation/lease 保证幂等提交。"""
+    """消费一条队列消息，并以 Job generation/lease 保证幂等提交。"""
 
     def __init__(
         self,
@@ -445,11 +445,12 @@ class SubmissionSummaryProcessor:
                 user_prompt=_user_prompt(source),
             )
             if not output.text.strip():
-                raise ServiceUnavailableError("Bedrock 返回了空摘要")
+                raise ServiceUnavailableError("模型服务返回了空摘要")
             if len(output.text) > MAX_SUMMARY_CHARACTERS:
-                raise ServiceUnavailableError("Bedrock 摘要超过 3000 字符上限")
+                raise ServiceUnavailableError("模型摘要超过 3000 字符上限")
             summary = GeneratedSummary(
                 text=output.text.strip(),
+                provider=getattr(self._generator, "provider", "bedrock"),
                 model_id=self._generator.model_id,
                 prompt_version=SUMMARY_PROMPT_VERSION,
                 source_hash=source_hash,

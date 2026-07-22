@@ -539,6 +539,7 @@ class SubmissionEmbedding(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     embedding: Mapped[list[float]] = mapped_column(VectorType(1024), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), default="bedrock", nullable=False)
     model_id: Mapped[str] = mapped_column(String(500), nullable=False)
     dimension: Mapped[int] = mapped_column(Integer, nullable=False)
     normalized: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -603,7 +604,7 @@ class OutboxEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             name="outbox_event_type_valid",
         ),
         CheckConstraint(
-            "status IN ('PENDING', 'PUBLISHING', 'PUBLISHED')",
+            "status IN ('PENDING', 'PUBLISHING', 'PUBLISHED', 'COMPLETED', 'DEAD_LETTER')",
             name="outbox_status_valid",
         ),
         CheckConstraint("generation >= 1", name="outbox_generation_positive"),
@@ -799,6 +800,7 @@ class Memory(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     memory_type: Mapped[str] = mapped_column(String(100), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(VectorType(1024), nullable=False)
+    embedding_provider: Mapped[str] = mapped_column(String(50), default="bedrock", nullable=False)
     embedding_model_id: Mapped[str] = mapped_column(String(500), nullable=False)
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
     embedding_normalized: Mapped[bool] = mapped_column(Boolean, nullable=False)

@@ -44,6 +44,10 @@ class BedrockSummaryGenerator(SummaryTextGenerator):
         )
 
     @property
+    def provider(self) -> str:
+        return "bedrock"
+
+    @property
     def model_id(self) -> str:
         return self._model_id
 
@@ -104,6 +108,10 @@ class BedrockTitanV2EmbeddingGenerator(EmbeddingGenerator):
                 retries={"max_attempts": 2, "mode": "standard"},
             ),
         )
+
+    @property
+    def provider(self) -> str:
+        return "bedrock"
 
     @property
     def model_id(self) -> str:

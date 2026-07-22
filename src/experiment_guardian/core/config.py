@@ -26,13 +26,15 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Experiment Guardian"
-    app_env: Literal["local", "test", "staging", "production"] = "local"
+    app_env: Literal["local", "development", "test", "staging", "production"] = "local"
+    deployment_mode: Literal["cloud", "local"] = "cloud"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     api_prefix: str = "/api/v1"
+    api_host: str = "127.0.0.1"
 
     # 数据库 URL 使用 SQLAlchemy 的 psycopg 方言。测试可以覆盖为独立数据库。
     database_url: str = (
-        "postgresql+psycopg://root@127.0.0.1:26257/experiment_guardian?sslmode=disable"
+        "cockroachdb+psycopg://root@127.0.0.1:26257/experiment_guardian?sslmode=disable"
     )
     database_echo: bool = False
 
@@ -46,11 +48,14 @@ class Settings(BaseSettings):
     mcp_oauth_resource_identifier: str = ""
     mcp_oauth_scope_prefix: str = "experiment-guardian"
 
-    # 人类用户只通过 Cognito Managed Login 登录。后端完成授权码交换，浏览器仅持有
-    # HttpOnly Session Cookie，不接触 Cognito access/id/refresh token。
+    web_auth_mode: Literal["cognito", "local_owner"] = "cognito"
+    local_owner_email: str = ""
+    # Cognito 和 local_owner 最终都创建相同的可撤销服务端 Session。浏览器不接触
+    # Cognito access/id/refresh token。
     web_public_base_url: str = "http://127.0.0.1:8000"
     web_frontend_url: str = "http://127.0.0.1:5173"
     web_session_cookie_name: str = "eg_session"
+    web_csrf_cookie_name: str = "eg_csrf"
     web_session_idle_seconds: int = Field(default=8 * 60 * 60, ge=300)
     web_session_absolute_seconds: int = Field(default=7 * 24 * 60 * 60, ge=3600)
     web_recent_auth_seconds: int = Field(default=10 * 60, ge=60, le=3600)
@@ -65,19 +70,39 @@ class Settings(BaseSettings):
 
     manifest_hash_algorithm: Literal["sha256"] = "sha256"
 
+    object_storage_backend: Literal["aws_s3", "s3_compatible"] = "aws_s3"
     aws_region: str = "us-east-1"
     s3_bucket: str = ""
+    s3_endpoint_url: str = ""
+    s3_presign_endpoint_url: str = ""
+    s3_access_key: SecretStr | None = None
+    s3_secret_key: SecretStr | None = None
+    s3_region: str = "us-east-1"
+    s3_force_path_style: bool = False
     s3_presign_expires_seconds: int = Field(default=900, ge=60, le=3600)
+
+    queue_backend: Literal["sqs", "database"] = "sqs"
     sqs_submission_queue_url: str = ""
     sqs_wait_time_seconds: int = Field(default=20, ge=0, le=20)
     sqs_visibility_timeout_seconds: int = Field(default=120, ge=30, le=43200)
     worker_lease_seconds: int = Field(default=120, ge=30, le=3600)
     worker_max_attempts: int = Field(default=5, ge=1, le=20)
+    database_queue_poll_interval_seconds: float = Field(default=1.0, ge=0.1, le=60)
+    database_queue_batch_size: int = Field(default=10, ge=1, le=100)
+
+    llm_provider: Literal["bedrock", "bailian"] = "bedrock"
     bedrock_summary_model_id: str = ""
     bedrock_embedding_model_id: str = "amazon.titan-embed-text-v2:0"
     embedding_dimension: int = Field(default=1024, ge=1)
     bedrock_connect_timeout_seconds: int = Field(default=5, ge=1, le=60)
     bedrock_read_timeout_seconds: int = Field(default=60, ge=1, le=300)
+    bailian_api_key: SecretStr | None = None
+    bailian_base_url: str = ""
+    bailian_summary_model: str = ""
+    bailian_embedding_model: str = ""
+    bailian_embedding_dimension: int = Field(default=1024, ge=1)
+    bailian_connect_timeout_seconds: int = Field(default=5, ge=1, le=60)
+    bailian_read_timeout_seconds: int = Field(default=60, ge=1, le=300)
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -93,11 +118,68 @@ class Settings(BaseSettings):
             raise ValueError("R12b 的 EMBEDDING_DIMENSION 必须为 1024")
         return value
 
+    @field_validator("bailian_embedding_dimension")
+    @classmethod
+    def require_bailian_embedding_dimension(cls, value: int) -> int:
+        if value != 1024:
+            raise ValueError("BAILIAN_EMBEDDING_DIMENSION 必须为 1024")
+        return value
+
     @model_validator(mode="after")
-    def require_managed_identity_secrets_in_production(self) -> "Settings":
+    def validate_deployment_backends(self) -> "Settings":
+        if self.deployment_mode == "local":
+            if self.app_env not in {"development", "test"}:
+                raise ValueError("DEPLOYMENT_MODE=local 只能用于 development 或 test 环境")
+            expected = {
+                "WEB_AUTH_MODE": (self.web_auth_mode, "local_owner"),
+                "OBJECT_STORAGE_BACKEND": (self.object_storage_backend, "s3_compatible"),
+                "QUEUE_BACKEND": (self.queue_backend, "database"),
+                "LLM_PROVIDER": (self.llm_provider, "bailian"),
+            }
+            invalid = [name for name, values in expected.items() if values[0] != values[1]]
+            if invalid:
+                raise ValueError("本地部署后端配置不一致: " + ", ".join(invalid))
+            if not self.database_url.startswith("cockroachdb+psycopg://"):
+                raise ValueError("本地 DATABASE_URL 必须使用 cockroachdb+psycopg:// dialect")
+            required_local = {
+                "LOCAL_OWNER_EMAIL": self.local_owner_email,
+                "S3_ENDPOINT_URL": self.s3_endpoint_url,
+                "S3_PRESIGN_ENDPOINT_URL": self.s3_presign_endpoint_url,
+                "S3_BUCKET": self.s3_bucket,
+                "S3_ACCESS_KEY": (
+                    self.s3_access_key.get_secret_value() if self.s3_access_key else ""
+                ),
+                "S3_SECRET_KEY": (
+                    self.s3_secret_key.get_secret_value() if self.s3_secret_key else ""
+                ),
+                "BAILIAN_API_KEY": (
+                    self.bailian_api_key.get_secret_value() if self.bailian_api_key else ""
+                ),
+                "BAILIAN_BASE_URL": self.bailian_base_url,
+                "BAILIAN_SUMMARY_MODEL": self.bailian_summary_model,
+                "BAILIAN_EMBEDDING_MODEL": self.bailian_embedding_model,
+            }
+            missing = [name for name, value in required_local.items() if not value.strip()]
+            if missing:
+                raise ValueError("本地部署缺少配置: " + ", ".join(missing))
+            return self
+
+        expected_cloud = {
+            "WEB_AUTH_MODE": (self.web_auth_mode, "cognito"),
+            "OBJECT_STORAGE_BACKEND": (self.object_storage_backend, "aws_s3"),
+            "QUEUE_BACKEND": (self.queue_backend, "sqs"),
+            "LLM_PROVIDER": (self.llm_provider, "bedrock"),
+        }
+        invalid_cloud = [
+            name for name, values in expected_cloud.items() if values[0] != values[1]
+        ]
+        if invalid_cloud:
+            raise ValueError("云端部署后端配置不一致: " + ", ".join(invalid_cloud))
         if self.app_env != "production":
             return self
-        required = {
+        if not self.database_url.startswith("cockroachdb+psycopg://"):
+            raise ValueError("生产 DATABASE_URL 必须使用 cockroachdb+psycopg:// dialect")
+        required_cloud = {
             "COGNITO_ISSUER_URL": self.cognito_issuer_url,
             "COGNITO_DOMAIN": self.cognito_domain,
             "COGNITO_WEB_CLIENT_ID": self.cognito_web_client_id,
@@ -106,8 +188,12 @@ class Settings(BaseSettings):
                 if self.cognito_web_client_secret
                 else ""
             ),
+            "S3_BUCKET": self.s3_bucket,
+            "SQS_SUBMISSION_QUEUE_URL": self.sqs_submission_queue_url,
+            "BEDROCK_SUMMARY_MODEL_ID": self.bedrock_summary_model_id,
+            "BEDROCK_EMBEDDING_MODEL_ID": self.bedrock_embedding_model_id,
         }
-        missing = [name for name, value in required.items() if not value]
+        missing = [name for name, value in required_cloud.items() if not value]
         if missing:
             raise ValueError("生产环境缺少托管身份配置: " + ", ".join(missing))
         state_key = self.web_oidc_state_key.get_secret_value()

@@ -40,4 +40,10 @@ def run() -> None:
 
     import uvicorn
 
-    uvicorn.run("experiment_guardian.main:app", host="0.0.0.0", port=8000, reload=False)
+    settings = get_settings()
+    uvicorn.run(
+        "experiment_guardian.main:app",
+        host=settings.api_host,
+        port=8000,
+        reload=False,
+    )

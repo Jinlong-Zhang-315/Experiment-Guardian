@@ -8,6 +8,7 @@ from experiment_guardian.application.experiments import (
 )
 from experiment_guardian.application.identity import IdentityProvider
 from experiment_guardian.application.ports import (
+    ArtifactStorage,
     EmbeddingGenerator,
     EmbeddingModelOutput,
     GuardianUseCases,
@@ -17,9 +18,10 @@ from experiment_guardian.application.services import (
     PlanApprovalService,
     ProjectAdministrationService,
 )
-from experiment_guardian.application.web_auth import WebAuthService
+from experiment_guardian.application.web_auth import LocalOwnerWebAuthService, WebAuthService
 from experiment_guardian.application.web_management import WebManagementService
 from experiment_guardian.core.config import get_settings
+from experiment_guardian.infrastructure.bailian import BailianEmbeddingGenerator
 from experiment_guardian.infrastructure.bedrock import BedrockTitanV2EmbeddingGenerator
 from experiment_guardian.infrastructure.cognito import CognitoOidcProvider
 from experiment_guardian.infrastructure.database import get_session_factory
@@ -39,17 +41,23 @@ from experiment_guardian.infrastructure.security import (
     SqlAlchemyTokenService,
 )
 from experiment_guardian.infrastructure.storage import (
-    S3ArtifactStorage,
+    AwsS3ObjectStorage,
+    S3CompatibleObjectStorage,
     UnconfiguredArtifactStorage,
 )
 
 
 class _LazyQueryEmbeddingGenerator(EmbeddingGenerator):
-    """MCP 读取/提交工具不应因为尚未使用查询而初始化 AWS 客户端。"""
+    """MCP 读取/提交工具不应因为尚未使用查询而初始化模型客户端。"""
 
-    def __init__(self, model_id: str, dimension: int) -> None:
+    def __init__(self, provider: str, model_id: str, dimension: int) -> None:
+        self._provider = provider
         self._model_id = model_id
         self._dimension = dimension
+
+    @property
+    def provider(self) -> str:
+        return self._provider
 
     @property
     def model_id(self) -> str:
@@ -89,11 +97,23 @@ def get_workflow_repository() -> SqlAlchemyWorkflowRepository:
 
 
 @lru_cache(maxsize=1)
-def get_artifact_storage() -> S3ArtifactStorage | UnconfiguredArtifactStorage:
+def get_artifact_storage() -> ArtifactStorage:
     settings = get_settings()
     if not settings.s3_bucket:
         return UnconfiguredArtifactStorage()
-    return S3ArtifactStorage(bucket=settings.s3_bucket, region=settings.aws_region)
+    if settings.object_storage_backend == "s3_compatible":
+        access_key = settings.s3_access_key
+        secret_key = settings.s3_secret_key
+        return S3CompatibleObjectStorage(
+            bucket=settings.s3_bucket,
+            region=settings.s3_region,
+            endpoint_url=settings.s3_endpoint_url,
+            presign_endpoint_url=settings.s3_presign_endpoint_url,
+            access_key=access_key.get_secret_value() if access_key else "",
+            secret_key=secret_key.get_secret_value() if secret_key else "",
+            force_path_style=settings.s3_force_path_style,
+        )
+    return AwsS3ObjectStorage(bucket=settings.s3_bucket, region=settings.aws_region)
 
 
 @lru_cache(maxsize=1)
@@ -115,7 +135,10 @@ def get_oidc_provider() -> CognitoOidcProvider:
 
 @lru_cache(maxsize=1)
 def get_web_auth_service() -> WebAuthService:
-    return WebAuthService(get_session_factory(), get_oidc_provider(), get_settings())
+    settings = get_settings()
+    if settings.web_auth_mode == "local_owner":
+        return LocalOwnerWebAuthService(get_session_factory(), settings)
+    return WebAuthService(get_session_factory(), get_oidc_provider(), settings)
 
 
 @lru_cache(maxsize=1)
@@ -153,14 +176,30 @@ def get_experiment_query_service() -> ExperimentQueryService:
         get_session_factory(),
         get_project_repository(),
         _LazyQueryEmbeddingGenerator(
-            settings.bedrock_embedding_model_id, settings.embedding_dimension
+            settings.llm_provider,
+            (
+                settings.bailian_embedding_model
+                if settings.llm_provider == "bailian"
+                else settings.bedrock_embedding_model_id
+            ),
+            settings.embedding_dimension,
         ),
     )
 
 
 @lru_cache(maxsize=1)
-def get_query_embedding_generator() -> BedrockTitanV2EmbeddingGenerator:
+def get_query_embedding_generator() -> EmbeddingGenerator:
     settings = get_settings()
+    if settings.llm_provider == "bailian":
+        api_key = settings.bailian_api_key
+        return BailianEmbeddingGenerator(
+            api_key=api_key.get_secret_value() if api_key else "",
+            base_url=settings.bailian_base_url,
+            model_id=settings.bailian_embedding_model,
+            dimension=settings.bailian_embedding_dimension,
+            connect_timeout_seconds=settings.bailian_connect_timeout_seconds,
+            read_timeout_seconds=settings.bailian_read_timeout_seconds,
+        )
     return BedrockTitanV2EmbeddingGenerator(
         model_id=settings.bedrock_embedding_model_id,
         region=settings.aws_region,

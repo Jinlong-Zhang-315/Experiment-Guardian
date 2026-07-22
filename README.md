@@ -11,7 +11,7 @@ Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的
 完整纵向链路：
 
 ```text
-Owner Cognito 登录并发布正式 Context / Intent / Constraint 版本
+Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Context / Intent / Constraint 版本
 -> Researcher 通过 OAuth MCP 读取相同上下文
 -> YAML/JSON Plan Check 返回 PASS / NEEDS_APPROVAL / BLOCKED
 -> Owner 对审批型变化作最终决定
@@ -35,13 +35,14 @@ Owner Cognito 登录并发布正式 Context / Intent / Constraint 版本
 * 不可修改 ApprovalRecord、不可变 Manifest 和所有写操作幂等协议；
 * S3 防覆盖上传、SHA-256、固定 VersionId、失败审计和可恢复重传；
 * 数据库游标驱动的解析、Manifest 校验、结构化查重和风险工作流；
-* CockroachDB Outbox、SQS Standard/DLQ、租约 Worker、Bedrock 摘要和 Titan V2 embedding；
+* CockroachDB Outbox、SQS 或数据库队列、租约 Worker、Bedrock/百炼摘要和 1024 维 embedding；
 * High/Critical 强制展开的短审核回执，Critical 不能批准；
 * 正式确认单事务和 project/protocol/status 等结构化过滤先行的向量候选查询；
 * React/Vite 四页 Web 工作台；
 * Cognito Managed Login、服务端 Web Session、CSRF、撤销和近期认证；
 * MCP 2025-11-25 OAuth Resource Server、RFC 9728、PKCE、RFC 8707 和预注册客户端；
-* AWS CloudFront/WAF/ALB/ECS/S3/SQS/Cognito/Bedrock Terraform 部署定义。
+* AWS CloudFront/WAF/ALB/ECS/S3/SQS/Cognito/Bedrock Terraform 部署定义；
+* CockroachDB、MinIO、数据库队列、百炼和 local_owner 的单机 Compose 部署模式。
 
 MCP 只暴露七个工具：
 
@@ -72,7 +73,13 @@ recent auth        10 minutes via Cognito prompt=login
 策略发布、Plan Check 最终决定和 Owner High-risk Submission 批准需要近期认证。首次 Cognito 登录
 只绑定管理员已创建、邮箱已验证且恰好属于一个团队的现有 User；不会自助创建成员。
 
-详见 [`docs/R14_SECURITY.md`](docs/R14_SECURITY.md)。
+云端模式使用上述 Cognito 流程。本地模式使用 `local_owner`：后端按配置邮箱查询现有 User，
+确认其在唯一 Team 中确实拥有 Owner Membership，再创建同一种 Web Session、CSRF Cookie、
+实时 RBAC 和审计记录；没有“权限恒为 true”的旁路。
+
+`local_owner` 只允许 `development`/`test`，默认只监听 `127.0.0.1`。任何能访问该本地服务的
+人都将获得配置用户的 Owner 权限，禁止把它暴露到局域网或公网。云端安全边界详见
+[`docs/R14_SECURITY.md`](docs/R14_SECURITY.md)。
 
 ## 远程 MCP OAuth
 
@@ -89,7 +96,33 @@ AWS 演示使用 Streamable HTTP OAuth，不使用静态 MCP Token：
 
 本地开发仍可使用 stdio + 数据库哈希 `MCP_ACCESS_TOKEN`。
 
-## 本地后端
+## 本地一键部署
+
+本地模式不需要 Cognito、SQS、AWS Access Key、AWS Region 或 Bedrock Model ID，唯一允许的
+外部云依赖是阿里云百炼。先配置百炼 Key 和两个模型：
+
+```bash
+cp .env.local.example .env.local
+# 编辑 .env.local 中 BAILIAN_API_KEY、BAILIAN_SUMMARY_MODEL、
+# BAILIAN_EMBEDDING_MODEL；embedding 模型必须输出 1024 维。
+docker compose --env-file .env.local up -d --build
+docker compose --env-file .env.local ps -a
+```
+
+默认 Web：`http://127.0.0.1:5173`，API：`http://127.0.0.1:8000`，MinIO Console：
+`http://127.0.0.1:9001`。`migration` 只执行一次 Alembic，`minio-init` 创建 Bucket 并开启
+Versioning，`local-init` 幂等创建 Owner、Team、Project 和首版策略。
+
+单独重复初始化：
+
+```bash
+docker compose --env-file .env.local run --rm local-init
+docker compose --env-file .env.local logs local-init
+```
+
+完整操作、验收和故障排查见 [`docs/LOCAL_DEPLOYMENT.md`](docs/LOCAL_DEPLOYMENT.md)。
+
+## 本地源码开发
 
 项目要求 Python 3.12：
 
@@ -104,7 +137,7 @@ experiment-guardian-api
 
 默认 API：`http://127.0.0.1:8000`，OpenAPI：`/docs`。
 
-当前 Alembic head 为 `20260722_12`：
+当前 Alembic head 为 `20260722_13`：
 
 ```text
 01 foundation/context
@@ -118,6 +151,7 @@ experiment-guardian-api
 10 formal experiments/memories
 11 Cognito binding/web sessions/OIDC transactions
 12 pre-registered MCP OAuth clients/grants
+13 local backends/outbox terminal status/model provider metadata
 ```
 
 初始化现有团队和首个项目仍可使用可信本地 CLI/API：
@@ -141,16 +175,16 @@ experiment-guardian-admin issue-mcp-token \
 MCP_ACCESS_TOKEN="$MCP_ACCESS_TOKEN" experiment-guardian-mcp
 ```
 
-Worker 需要 S3、SQS 和 Bedrock 配置：
+Worker 按配置集中装配 S3/SQS/Bedrock 或 MinIO/数据库队列/百炼：
 
 ```bash
 experiment-guardian-worker
 ```
 
-## 本地 Web
+## Web 源码开发
 
-Web 登录需要可用 Cognito User Pool、domain、callback 和后端环境变量；没有 Cognito 时仍可
-执行组件测试和生产构建。
+Cloud 模式的 Web 登录需要 Cognito；local 模式由后端 `local_owner` 创建正常 Session。前端
+本身不保存任何 Cognito 或百炼凭据。
 
 ```bash
 cd web
@@ -162,7 +196,7 @@ Vite 默认地址：`http://127.0.0.1:5173`，并把 `/api` 代理到 `127.0.0.1
 可用 `VITE_API_PROXY_TARGET=http://127.0.0.1:8788 npm run dev -- --port 5174` 指向备用 API；
 npm 脚本显式加载 `vite.config.ts`，不会被本地残留的编译产物覆盖。
 
-必须配置：
+Cloud 模式必须配置：
 
 ```text
 WEB_PUBLIC_BASE_URL=http://127.0.0.1:8000
@@ -236,8 +270,8 @@ terraform -chdir=infra/terraform validate
 python scripts/verify_r14_deployment.py --base-url https://guardian.example.com
 ```
 
-默认 pytest 不访问真实 CockroachDB、S3、SQS 或 Bedrock；相关测试通过 `RUN_*_INTEGRATION`
-环境开关显式执行。
+默认 pytest 不访问真实 CockroachDB、MinIO/S3、SQS、Bedrock 或百炼；相关测试通过
+`RUN_*_INTEGRATION` 环境开关显式执行。
 
 ## 目录
 
@@ -245,11 +279,11 @@ python scripts/verify_r14_deployment.py --base-url https://guardian.example.com
 src/experiment_guardian/
 ├── domain/          纯领域契约与确定性规则
 ├── application/     用例、事务、Web auth/management、分析和查询
-├── infrastructure/  CockroachDB、Cognito、MCP OAuth、S3、SQS、Bedrock
+├── infrastructure/  CockroachDB、Cognito/MCP OAuth、S3/MinIO、SQS/DB Queue、Bedrock/百炼
 ├── api/             FastAPI 协议边界
 ├── mcp_server/      七个 MCP 工具与 OAuth Resource Server
 ├── workflows/       LangGraph 编排，数据库游标负责恢复
-└── worker.py        Outbox/SQS/Bedrock Worker
+└── worker.py        Outbox 调度、SQS/数据库队列消费和模型处理 Worker
 
 web/                 React/Vite 四页工作台
 infra/terraform/     AWS/Cognito 部署定义

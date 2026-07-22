@@ -19,7 +19,7 @@ from experiment_guardian.application.errors import (
     InputValidationError,
 )
 from experiment_guardian.application.identity import RequestIdentity
-from experiment_guardian.application.ports import OidcProvider
+from experiment_guardian.application.ports import OidcIdentity, OidcProvider
 from experiment_guardian.core.config import Settings
 from experiment_guardian.domain.enums import TeamRole
 from experiment_guardian.domain.web_auth import AuthSessionView
@@ -94,6 +94,27 @@ class WebAuthService:
     def callback_uri(self) -> str:
         base_url = self._settings.web_public_base_url.rstrip("/")
         return f"{base_url}{self._settings.api_prefix}/auth/callback"
+
+    def start_login(self, *, return_to: str, user_agent: str | None) -> LoginCompletion:
+        del user_agent
+        return LoginCompletion(
+            raw_session="",
+            redirect_url=self.begin_login(return_to=return_to),
+            max_age=0,
+        )
+
+    def start_reauthentication(
+        self, *, identity: RequestIdentity, return_to: str
+    ) -> LoginCompletion:
+        return LoginCompletion(
+            raw_session="",
+            redirect_url=self.begin_login(
+                return_to=return_to,
+                purpose="REAUTH",
+                session_id=identity.token_id,
+            ),
+            max_age=0,
+        )
 
     def begin_login(
         self,
@@ -353,3 +374,120 @@ class WebAuthService:
         if len(value) > 2000:
             raise InputValidationError("return_to 过长")
         return value
+
+
+class _DisabledOidcProvider(OidcProvider):
+    def authorization_url(self, **_: object) -> str:
+        raise AuthenticationError("local_owner 模式不使用 OIDC")
+
+    def exchange_code(self, **_: object) -> OidcIdentity:
+        raise AuthenticationError("local_owner 模式不接受 OIDC callback")
+
+    def logout_url(self, **_: object) -> str:
+        raise AuthenticationError("local_owner 模式不使用 OIDC logout")
+
+
+class LocalOwnerWebAuthService(WebAuthService):
+    """仅供单机 development/test 使用的显式 Owner 会话建立器。"""
+
+    def __init__(self, session_factory: sessionmaker[Session], settings: Settings) -> None:
+        super().__init__(session_factory, _DisabledOidcProvider(), settings)
+        self._local_owner_email = settings.local_owner_email.strip().lower()
+
+    def start_login(self, *, return_to: str, user_agent: str | None) -> LoginCompletion:
+        safe_return_to = self._safe_return_to(return_to)
+        now = datetime.now(UTC)
+        raw_session = secrets.token_urlsafe(48)
+        with self._session_factory() as session, session.begin():
+            user = session.scalar(
+                select(User).where(func.lower(User.email) == self._local_owner_email)
+            )
+            if user is None:
+                raise AuthorizationError("LOCAL_OWNER_EMAIL 对应的用户不存在，请先执行本地初始化")
+            membership = self._single_membership(session, user.id)
+            if membership.role is not TeamRole.OWNER:
+                raise AuthorizationError("LOCAL_OWNER_EMAIL 在唯一团队中不是 Owner")
+            web_session = WebSession(
+                user_id=user.id,
+                team_id=membership.team_id,
+                session_hash=_digest(raw_session),
+                authenticated_at=now,
+                reauthenticated_at=now,
+                last_seen_at=now,
+                absolute_expires_at=now
+                + timedelta(seconds=self._settings.web_session_absolute_seconds),
+                user_agent_hash=_digest(user_agent) if user_agent else None,
+            )
+            session.add(web_session)
+            session.flush()
+            session.add(
+                AuditLog(
+                    team_id=membership.team_id,
+                    project_id=None,
+                    actor_type="USER",
+                    actor_id=user.id,
+                    action="web.login",
+                    target_type="WEB_SESSION",
+                    target_id=web_session.id,
+                    before_value=None,
+                    after_value={
+                        "authentication_method": "LOCAL_OWNER",
+                        "local_owner_email": self._local_owner_email,
+                    },
+                )
+            )
+        redirect_url = urljoin(
+            self._settings.web_frontend_url.rstrip("/") + "/", safe_return_to.lstrip("/")
+        )
+        return LoginCompletion(
+            raw_session=raw_session,
+            redirect_url=redirect_url,
+            max_age=self._settings.web_session_absolute_seconds,
+        )
+
+    def start_reauthentication(
+        self, *, identity: RequestIdentity, return_to: str
+    ) -> LoginCompletion:
+        if identity.authentication_method != "WEB_SESSION":
+            raise AuthenticationError("近期认证仅适用于 Web Session")
+        safe_return_to = self._safe_return_to(return_to)
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            web_session = session.get(WebSession, identity.token_id, with_for_update=True)
+            user = session.get(User, identity.user_id)
+            membership = session.get(TeamMember, (identity.team_id, identity.user_id))
+            if (
+                web_session is None
+                or user is None
+                or membership is None
+                or web_session.revoked_at is not None
+                or membership.role is not TeamRole.OWNER
+                or user.email.lower() != self._local_owner_email
+            ):
+                raise AuthorizationError("本地 Owner Session 已失效")
+            web_session.reauthenticated_at = now
+            web_session.last_seen_at = now
+            session.add(
+                AuditLog(
+                    team_id=identity.team_id,
+                    project_id=None,
+                    actor_type="USER",
+                    actor_id=identity.user_id,
+                    action="web.reauthenticate",
+                    target_type="WEB_SESSION",
+                    target_id=web_session.id,
+                    before_value=None,
+                    after_value={"authentication_method": "LOCAL_OWNER"},
+                )
+            )
+        return LoginCompletion(
+            raw_session="",
+            redirect_url=urljoin(
+                self._settings.web_frontend_url.rstrip("/") + "/",
+                safe_return_to.lstrip("/"),
+            ),
+            max_age=0,
+        )
+
+    def logout_url(self) -> str:
+        return self._settings.web_frontend_url

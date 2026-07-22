@@ -106,7 +106,7 @@ class OidcIdentity:
 
 
 class OidcProvider(Protocol):
-    """Cognito OIDC 适配端口，便于在不访问 AWS 的测试中替换。"""
+    """OIDC 适配端口，便于在不访问托管身份服务的测试中替换。"""
 
     def authorization_url(
         self,
@@ -175,6 +175,9 @@ class SummaryTextGenerator(Protocol):
     """只生成纯文本；风险等级和权限仍由确定性代码决定。"""
 
     @property
+    def provider(self) -> str: ...
+
+    @property
     def model_id(self) -> str: ...
 
     def generate(self, *, system_prompt: str, user_prompt: str) -> SummaryModelOutput: ...
@@ -182,6 +185,9 @@ class SummaryTextGenerator(Protocol):
 
 class EmbeddingGenerator(Protocol):
     """只负责将冻结的检索文档转换成固定维度向量。"""
+
+    @property
+    def provider(self) -> str: ...
 
     @property
     def model_id(self) -> str: ...

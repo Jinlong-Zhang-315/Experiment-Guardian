@@ -1,6 +1,7 @@
 """认证、初始化事务和正式上下文读取的纵向验收测试。"""
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -254,6 +255,43 @@ def test_bootstrap_owner_cli_grants_and_displays_api_scopes(
     )
     assert result["scopes"] == sorted(admin_cli.OWNER_API_SCOPES)
     assert authenticated.scopes == admin_cli.OWNER_API_SCOPES
+
+
+def test_bootstrap_local_is_idempotent_and_creates_real_owner_project(
+    foundation_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    administration, _ = services(foundation_session_factory)
+    project_config = tmp_path / "project.json"
+    project_config.write_text(initial_request().model_dump_json(), encoding="utf-8")
+    monkeypatch.setattr(admin_cli, "get_session_factory", lambda: foundation_session_factory)
+    monkeypatch.setattr(
+        admin_cli, "get_project_administration_service", lambda: administration
+    )
+    monkeypatch.setattr(
+        admin_cli,
+        "get_settings",
+        lambda: SimpleNamespace(local_owner_email="local-owner@example.com"),
+    )
+    args = SimpleNamespace(
+        email=None,
+        name="Local Owner",
+        team_name="Local Team",
+        project_config=str(project_config),
+    )
+
+    first = admin_cli._bootstrap_local(args)
+    replay = admin_cli._bootstrap_local(args)
+
+    assert replay["project_id"] == first["project_id"]
+    assert replay["idempotency_key"] == first["idempotency_key"]
+    with foundation_session_factory() as session:
+        assert session.scalar(select(func.count(User.id))) == 1
+        assert session.scalar(select(func.count(Team.id))) == 1
+        assert session.scalar(select(func.count(Project.id))) == 1
+        membership = session.scalar(select(TeamMember))
+        assert membership is not None and membership.role is TeamRole.OWNER
 
 
 def test_admin_cli_adds_researcher_and_issues_project_api_token(

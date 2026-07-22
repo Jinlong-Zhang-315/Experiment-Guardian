@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from experiment_guardian.application.errors import (
     ConflictError,
     RecentAuthenticationRequiredError,
+    ResourceNotFoundError,
 )
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.services import ProjectAdministrationService
@@ -16,13 +17,16 @@ from experiment_guardian.application.web_management import WebManagementService
 from experiment_guardian.domain.enums import ContextStatus, IntentStatus, VerificationStatus
 from experiment_guardian.domain.web_management import PolicyPublishRequest
 from experiment_guardian.infrastructure.models import (
+    Artifact,
     ExperimentIntent,
+    Project,
     ProjectContext,
     ProtectedParameter,
 )
 from experiment_guardian.infrastructure.repositories import SqlAlchemyProjectRepository
 from experiment_guardian.infrastructure.storage import UnconfiguredArtifactStorage
 from tests.integration.test_foundation_slice import initial_request, seed_owner
+from tests.integration.test_submission_finalize_slice import finalize_identity, prepare_draft
 
 
 def _setup(
@@ -165,3 +169,45 @@ def test_web_project_settings_expose_current_and_history(
     assert len(projects.items) == 1
     assert settings.current.context.version == 1
     assert settings.context_history[0].confirmed_by == identity.user_id
+
+
+def test_artifact_download_rejects_cross_project_access(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    owner, project_id, storage, guardian, finalize, _ = prepare_draft(
+        plan_check_session_factory
+    )
+    storage.accept_declared_uploads()
+    guardian.submission_finalize(finalize, finalize_identity(owner, project_id))
+    with plan_check_session_factory() as session, session.begin():
+        other_project = Project(
+            team_id=owner.team_id,
+            name="Other Project",
+            description="cross-project authorization test",
+        )
+        session.add(other_project)
+        session.flush()
+        artifact = session.scalar(select(Artifact))
+        assert artifact is not None
+        other_project_id = other_project.id
+        artifact_id = artifact.id
+    identity = RequestIdentity(
+        user_id=owner.user_id,
+        team_id=owner.team_id,
+        token_id=uuid4(),
+        scopes=frozenset({"artifact:read"}),
+        authentication_method="WEB_SESSION",
+    )
+    service = WebManagementService(
+        plan_check_session_factory,
+        SqlAlchemyProjectRepository(),
+        UnconfiguredArtifactStorage(),
+        900,
+    )
+
+    with pytest.raises(ResourceNotFoundError, match="项目中不存在该 Artifact"):
+        service.create_artifact_download(
+            project_id=other_project_id,
+            artifact_id=artifact_id,
+            identity=identity,
+        )

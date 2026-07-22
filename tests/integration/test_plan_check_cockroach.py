@@ -5,15 +5,18 @@ import json
 import os
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, inspect, select, text
+from sqlalchemy import create_engine, func, inspect, or_, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
+from experiment_guardian.application.async_summary import OutboxDispatcher
 from experiment_guardian.application.errors import ConflictError, InputValidationError
 from experiment_guardian.application.experiments import ExperimentQueryService
 from experiment_guardian.application.identity import RequestIdentity
@@ -47,10 +50,12 @@ from experiment_guardian.domain.enums import (
     ConfigFormat,
     EvidenceType,
     ExperimentStatus,
+    OutboxStatus,
     SubmissionStatus,
     TeamRole,
     UploadVerificationResult,
     VerificationStatus,
+    WorkflowJobStatus,
     WorkflowStatus,
     WorkflowStep,
 )
@@ -60,18 +65,22 @@ from experiment_guardian.infrastructure.models import (
     Experiment,
     ExperimentSubmission,
     Memory,
+    OutboxEvent,
     PlanCheck,
     RunManifest,
     SubmissionEmbedding,
     Team,
     TeamMember,
     User,
+    WorkflowJob,
 )
+from experiment_guardian.infrastructure.queue import DatabaseOutboxQueue
 from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyGovernanceRepository,
     SqlAlchemyPlanCheckRepository,
     SqlAlchemyProjectRepository,
     SqlAlchemySubmissionRepository,
+    SqlAlchemyWorkflowRepository,
 )
 
 RUN_COCKROACH_INTEGRATION = os.getenv("RUN_COCKROACH_INTEGRATION") == "1"
@@ -226,6 +235,13 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         } <= set(inspect(test_engine).get_table_names())
         assert "cognito_sub" in {
             column["name"] for column in inspect(test_engine).get_columns("users")
+        }
+        assert "provider" in {
+            column["name"]
+            for column in inspect(test_engine).get_columns("submission_embeddings")
+        }
+        assert "embedding_provider" in {
+            column["name"] for column in inspect(test_engine).get_columns("memories")
         }
         assert {
             "upload_verified_at",
@@ -479,6 +495,61 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         assert finalized.status is SubmissionStatus.UPLOAD_VERIFIED
         assert finalized.analysis is not None
         assert finalized.analysis.workflow_status is WorkflowStatus.QUEUED
+        workflows = SqlAlchemyWorkflowRepository()
+        queue_a = DatabaseOutboxQueue(factory, worker_id="cockroach-worker-a")
+        queue_b = DatabaseOutboxQueue(factory, worker_id="cockroach-worker-b")
+        with factory() as session, session.begin():
+            outbox = session.scalar(select(OutboxEvent))
+            assert outbox is not None and outbox.status is OutboxStatus.PENDING
+            # 使用固定历史时间，避免测试进程与 CockroachDB 节点的亚秒时钟差
+            # 影响“已到期”前置条件；生产代码仍使用真实租约时间。
+            definitely_available = datetime(2000, 1, 1, tzinfo=UTC)
+            outbox.available_at = definitely_available
+            workflow_job = session.get(WorkflowJob, outbox.workflow_job_id)
+            assert workflow_job is not None
+            workflow_job.available_at = definitely_available
+        with factory() as session:
+            current_time = datetime.now(UTC)
+            persisted_outbox = session.scalar(
+                select(OutboxEvent).where(
+                    OutboxEvent.available_at <= current_time,
+                    or_(
+                        OutboxEvent.status == OutboxStatus.PENDING,
+                        (
+                            (OutboxEvent.status == OutboxStatus.PUBLISHING)
+                            & (OutboxEvent.lease_expires_at <= current_time)
+                        ),
+                    ),
+                )
+            )
+            assert persisted_outbox is not None
+        dispatcher = OutboxDispatcher(
+            factory,
+            workflows,
+            queue_a,
+            worker_id="cockroach-dispatcher",
+        )
+        assert dispatcher.dispatch_once()
+        with factory() as session:
+            dispatched_outbox = session.scalar(select(OutboxEvent))
+            assert dispatched_outbox is not None
+            assert dispatched_outbox.status is OutboxStatus.PUBLISHED
+            assert dispatched_outbox.lease_owner is None
+            dispatched_job = session.get(WorkflowJob, dispatched_outbox.workflow_job_id)
+            assert dispatched_job is not None
+            assert dispatched_job.status is WorkflowJobStatus.QUEUED
+            assert dispatched_job.generation == dispatched_outbox.generation
+        claims = []
+        for _ in range(10):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                claims = list(
+                    executor.map(lambda queue: queue.receive(max_messages=1), (queue_a, queue_b))
+                )
+            if sum(len(items) for items in claims) > 0:
+                break
+            # SKIP LOCKED 可以在前一事务刚释放锁时暂时返回空；数据库队列按相同方式轮询。
+            time.sleep(0.1)
+        assert sorted(len(items) for items in claims) == [0, 1]
         prepared_after_finalize = guardian.submission_prepare(submission_request, identity)
         assert prepared_after_finalize.status is SubmissionStatus.UPLOAD_VERIFIED
         assert prepared_after_finalize.artifact_uploads == []

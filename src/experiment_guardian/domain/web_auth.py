@@ -1,4 +1,4 @@
-"""Cognito 登录与服务端 Web Session 的外部契约。"""
+"""人类登录与服务端 Web Session 的外部契约。"""
 
 from datetime import datetime
 from typing import Literal

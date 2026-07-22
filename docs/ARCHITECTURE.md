@@ -1,11 +1,11 @@
 # Experiment Guardian 当前框架图
 
-更新时间：2026-07-22
-当前实现：R14
-数据库 head：`20260722_12`
+更新时间：2026-07-23
+当前实现：R14 + Local deployment profile
+数据库 head：`20260722_13`
 
 本文只描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与自动化验证，`[EXTERNAL]`
-表示由部署环境提供，`[MANUAL]` 表示最终演示仍需真实 AWS/Cognito 人工验收。
+表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
 
 ## 总体运行图
 
@@ -93,13 +93,42 @@ CloudWatch Logs/Metrics -> API/MCP/Worker, ALB, WAF, SQS
 Terraform 位于 `infra/terraform/`，已经通过 Terraform 1.9.8 和 AWS Provider 6.55 schema
 验证。实际 `apply`、Bedrock model access、域名证书和双角色演示属于部署环境验收。
 
+## 本地部署图
+
+```text
+Browser (127.0.0.1 only)
+   |  local_owner login -> normal HttpOnly Session + CSRF
+   v
+Web/Nginx -> FastAPI API ------------------------+--> CockroachDB
+                 |                               |    business truth + sessions
+                 |                               |    workflow jobs + outbox
+                 +--> S3CompatibleObjectStorage -+--> MinIO versioned bucket
+                 |                                    fixed VersionId evidence
+                 +--> Outbox transaction
+                          |
+                          v
+                  DatabaseOutboxQueue poll/claim
+                          |
+                          v
+                    Worker lease/generation
+                          |
+                          +--> BailianSummaryGenerator
+                          +--> BailianEmbeddingGenerator (VECTOR(1024))
+
+minio-init: create bucket + enable/verify Versioning, then exit
+database-init -> migration -> local-init: ordered one-shot services
+```
+
+本地与云端共用应用服务、领域规则、数据库状态机和审计。`DEPLOYMENT_MODE` 只在 Settings 校验、
+依赖容器和 Worker 组合根中决定适配器，业务服务不判断 MinIO、SQS、Cognito 或百炼。
+
 ## 代码分层
 
 ```text
 src/experiment_guardian/
 |
 +-- api/
-|   +-- auth.py                 Cognito redirect/callback/me/logout/reauth
+|   +-- auth.py                 Cognito/local_owner login、Session、logout/reauth
 |   +-- web.py                  四页读取、策略发布、下载 URL、查询
 |   +-- plan_checks.py          Owner 计划决定
 |   +-- submissions.py          草稿最终决定
@@ -107,7 +136,7 @@ src/experiment_guardian/
 +-- mcp_server/server.py        七个 MCP 工具 + HTTP health
 |
 +-- application/
-|   +-- web_auth.py             OIDC transaction、Session、CSRF、撤销
+|   +-- web_auth.py             Cognito/local_owner、Session、CSRF、撤销
 |   +-- web_management.py       页面读取、版本发布、Artifact 下载
 |   +-- services.py             Context/Plan/Manifest/Submission 主线
 |   +-- experiments.py          正式确认与结构化/向量查询
@@ -120,15 +149,17 @@ src/experiment_guardian/
 +-- infrastructure/
 |   +-- cognito.py              人类 OIDC Provider adapter
 |   +-- mcp_oauth.py            Cognito Access Token + 本地 Grant verifier
-|   +-- storage.py              固定 S3 VersionId 上传/读取/下载
+|   +-- storage.py              AWS/MinIO 固定 VersionId 上传/读取/下载
 |   +-- database.py/models/     SQLAlchemy/CockroachDB
-|   +-- queue.py/bedrock.py     SQS 与 Bedrock adapters
+|   +-- queue.py                SQS/DatabaseOutboxQueue adapters
+|   +-- bedrock.py/bailian.py   摘要与 embedding adapters
 |
 +-- workflows/                  LangGraph 固定拓扑，DB 游标负责恢复
-+-- worker.py                   单并发可租约 Worker
-+-- admin_cli.py                成员/本地 token/预注册 MCP 客户端管理
++-- worker.py                   批量轮询、可租约/可恢复 Worker
++-- admin_cli.py                本地幂等初始化/成员/token/MCP client 管理
 
 web/                            React 19 + Vite + TanStack Query + Lucide
+docker-compose.yml              CRDB/MinIO/API/Worker/Web 本地一键部署
 infra/terraform/                AWS/Cognito/ECS/CloudFront/S3/SQS IaC
 demo/r14/                       最终演示输入文件
 scripts/verify_r14_deployment.py 公开部署认证/发现验收
@@ -183,7 +214,7 @@ Owner Cognito login
 -> submission_prepare -> S3 presigned PUT with checksum and no overwrite
 -> submission_finalize -> fixed VersionId/cloud hash verification
 -> deterministic parse/manifest/duplicate/risk workflow
--> SQS Worker -> constrained summary -> embedding -> deterministic receipt
+-> SQS 或 DB Queue Worker -> constrained summary -> embedding -> deterministic receipt
 -> NEEDS_REVIEW
 -> Researcher or Owner Web confirmation according to risk policy
 -> one CockroachDB transaction creates formal Experiment/Metric/Memory/artifact links
@@ -193,6 +224,7 @@ Owner Cognito login
 ## 不在框架内
 
 * 自建密码认证、密码恢复或应用密码策略；
+* 把 local_owner 暴露到局域网、公网或 production；
 * 动态 MCP 客户端注册和任意第三方零配置接入；
 * 自动训练、自动改代码或自动批准；
 * CRITICAL 风险人工绕过；

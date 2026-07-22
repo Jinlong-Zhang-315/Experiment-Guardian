@@ -175,7 +175,7 @@ class WebManagementService:
     ) -> PolicyPublishResult:
         self._require_scope(identity, "project:write")
         if identity.authentication_method == "WEB_SESSION" and not identity.recent_authentication:
-            raise RecentAuthenticationRequiredError("发布正式策略前需要通过 Cognito 重新认证")
+            raise RecentAuthenticationRequiredError("发布正式策略前需要完成近期身份认证")
         self._validate_configuration(request)
         request_hash = _hash(request.model_dump(mode="json"))
         with self._session_factory() as session, session.begin():

@@ -168,6 +168,8 @@ class OutboxStatus(StrEnum):
     PENDING = "PENDING"
     PUBLISHING = "PUBLISHING"
     PUBLISHED = "PUBLISHED"
+    COMPLETED = "COMPLETED"
+    DEAD_LETTER = "DEAD_LETTER"
 
 
 class ExperimentStatus(StrEnum):

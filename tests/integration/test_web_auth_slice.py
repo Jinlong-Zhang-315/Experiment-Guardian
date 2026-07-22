@@ -1,14 +1,17 @@
 """R14a Cognito OIDC 与服务端 Session 的无 AWS 集成测试。"""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 from sqlalchemy import select
+from starlette.requests import Request
 
+import experiment_guardian.api.routes.auth as auth_routes
 from experiment_guardian.application.errors import AuthenticationError, AuthorizationError
 from experiment_guardian.application.ports import OidcIdentity
-from experiment_guardian.application.web_auth import WebAuthService
+from experiment_guardian.application.web_auth import LocalOwnerWebAuthService, WebAuthService
 from experiment_guardian.core.config import Settings
 from experiment_guardian.domain.enums import TeamRole
 from experiment_guardian.infrastructure.models import Team, TeamMember, User, WebSession
@@ -139,6 +142,73 @@ def test_session_idle_expiry_and_csrf_are_enforced(plan_check_session_factory: o
         stored_session.last_seen_at = datetime.now(UTC) - timedelta(minutes=6)
     with pytest.raises(AuthenticationError):
         service.authenticate(completion.raw_session)
+
+
+def test_local_owner_creates_normal_scoped_audited_session_without_cognito_binding(
+    plan_check_session_factory: object,
+) -> None:
+    user = _seed_user(plan_check_session_factory)
+    settings = _settings().model_copy(
+        update={"web_auth_mode": "local_owner", "local_owner_email": user.email}
+    )
+    service = LocalOwnerWebAuthService(plan_check_session_factory, settings)  # type: ignore[arg-type]
+
+    completion = service.start_login(return_to="/projects", user_agent="pytest-local")
+    identity = service.authenticate(completion.raw_session)
+
+    assert identity.user_id == user.id
+    assert identity.authentication_method == "WEB_SESSION"
+    assert identity.recent_authentication
+    assert "plan:approve" in identity.scopes
+    with plan_check_session_factory() as session:  # type: ignore[operator]
+        stored_user = session.get(User, user.id)
+        assert stored_user is not None and stored_user.cognito_sub is None
+
+
+def test_local_owner_rejects_researcher_and_multiple_team_memberships(
+    plan_check_session_factory: object,
+) -> None:
+    user = _seed_user(plan_check_session_factory)
+    settings = _settings().model_copy(
+        update={"web_auth_mode": "local_owner", "local_owner_email": user.email}
+    )
+    with plan_check_session_factory() as session, session.begin():  # type: ignore[operator]
+        membership = session.scalar(select(TeamMember).where(TeamMember.user_id == user.id))
+        assert membership is not None
+        membership.role = TeamRole.RESEARCHER
+    service = LocalOwnerWebAuthService(plan_check_session_factory, settings)  # type: ignore[arg-type]
+    with pytest.raises(AuthorizationError, match="不是 Owner"):
+        service.start_login(return_to="/", user_agent=None)
+
+
+def test_local_owner_existing_login_route_sets_session_and_csrf_cookies(
+    plan_check_session_factory: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _seed_user(plan_check_session_factory)
+    settings = _settings().model_copy(
+        update={"web_auth_mode": "local_owner", "local_owner_email": user.email}
+    )
+    service = LocalOwnerWebAuthService(plan_check_session_factory, settings)  # type: ignore[arg-type]
+    monkeypatch.setattr(auth_routes, "get_web_auth_service", lambda: service)
+    monkeypatch.setattr(auth_routes, "get_settings", lambda: settings)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/auth/login",
+            "headers": [],
+            "query_string": b"return_to=/projects",
+        }
+    )
+    response = asyncio.run(auth_routes.login(request, return_to="/projects"))
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "http://127.0.0.1:5173/projects"
+    cookies = response.headers.getlist("set-cookie")
+    session_cookie = next(item for item in cookies if item.startswith("eg_session="))
+    csrf_cookie = next(item for item in cookies if item.startswith("eg_csrf="))
+    assert "HttpOnly" in session_cookie
+    assert "HttpOnly" not in csrf_cookie
 
 
 def test_reauthentication_updates_existing_session_without_rotating_cookie(

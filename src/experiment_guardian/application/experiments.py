@@ -187,7 +187,7 @@ class ExperimentReviewService:
                     and not identity.recent_authentication
                 ):
                     raise RecentAuthenticationRequiredError(
-                        "Owner 批准 Submission 前需要通过 Cognito 重新认证"
+                        "Owner 批准 Submission 前需要完成近期身份认证"
                     )
                 receipt = self._load_receipt(submission)
                 now = datetime.now(UTC)
@@ -432,6 +432,7 @@ class ExperimentReviewService:
                 memory_type=MEMORY_TYPE,
                 content=embedding.input_text,
                 embedding=embedding.embedding,
+                embedding_provider=embedding.provider,
                 embedding_model_id=embedding.model_id,
                 embedding_dimension=embedding.dimension,
                 embedding_normalized=embedding.normalized,
@@ -551,6 +552,7 @@ class ExperimentQueryService:
             Memory.verification_status == VerificationStatus.CONFIRMED,
             Memory.protocol == command.protocol,
             Memory.experiment_status.in_(command.statuses),
+            Memory.embedding_provider == getattr(self._generator, "provider", "bedrock"),
             Memory.embedding_model_id == self._generator.model_id,
             Memory.embedding_dimension == EMBEDDING_DIMENSION,
             Memory.embedding_normalized.is_(True),

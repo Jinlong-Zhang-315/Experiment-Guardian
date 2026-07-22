@@ -1,20 +1,28 @@
 """可信本地管理员 CLI：只引导身份和 Token，不创建业务上下文。"""
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import func, select
 
-from experiment_guardian.application.container import get_token_service
+from experiment_guardian.application.container import (
+    get_project_administration_service,
+    get_token_service,
+)
 from experiment_guardian.application.errors import (
     ApplicationError,
     AuthorizationError,
     ConflictError,
 )
+from experiment_guardian.application.identity import RequestIdentity
+from experiment_guardian.core.config import get_settings
+from experiment_guardian.domain.administration import ProjectInitializeRequest
 from experiment_guardian.domain.enums import TeamRole, TokenAudience
 from experiment_guardian.infrastructure.database import get_session_factory
 from experiment_guardian.infrastructure.mcp_oauth import MCP_APPLICATION_SCOPES
@@ -46,6 +54,85 @@ OWNER_MCP_SCOPES = frozenset(
     }
 )
 RESEARCHER_MCP_SCOPES = OWNER_MCP_SCOPES
+
+
+def _bootstrap_local(args: argparse.Namespace) -> dict[str, Any]:
+    settings = get_settings()
+    email = (args.email or settings.local_owner_email).strip().lower()
+    if not email:
+        raise ValueError("必须提供 --email 或 LOCAL_OWNER_EMAIL")
+    config_path = Path(args.project_config)
+    try:
+        raw_config = config_path.read_bytes()
+        request = ProjectInitializeRequest.model_validate_json(raw_config)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"本地项目初始化文件无效: {config_path}") from exc
+
+    factory = get_session_factory()
+    with factory() as session, session.begin():
+        changed = False
+        user = session.scalar(select(User).where(func.lower(User.email) == email))
+        if user is None:
+            user = User(name=args.name.strip(), email=email)
+            session.add(user)
+            session.flush()
+            changed = True
+        team = session.scalar(
+            select(Team).where(Team.owner_id == user.id, Team.name == args.team_name.strip())
+        )
+        if team is None:
+            team = Team(name=args.team_name.strip(), owner_id=user.id)
+            session.add(team)
+            session.flush()
+            changed = True
+        memberships = session.scalars(select(TeamMember).where(TeamMember.user_id == user.id)).all()
+        if memberships:
+            if len(memberships) != 1 or memberships[0].team_id != team.id:
+                raise ConflictError("LOCAL_OWNER_EMAIL 必须恰好属于本地初始化团队")
+            if memberships[0].role is not TeamRole.OWNER:
+                raise ConflictError("LOCAL_OWNER_EMAIL 的现有成员关系不是 Owner")
+        else:
+            session.add(TeamMember(team_id=team.id, user_id=user.id, role=TeamRole.OWNER))
+            changed = True
+        if changed:
+            session.add(
+                AuditLog(
+                    team_id=team.id,
+                    project_id=None,
+                    actor_type="USER",
+                    actor_id=user.id,
+                    action="local.bootstrap_owner",
+                    target_type="TEAM",
+                    target_id=team.id,
+                    before_value=None,
+                    after_value={"email": email, "role": TeamRole.OWNER.value},
+                )
+            )
+        user_id = user.id
+        team_id = team.id
+
+    config_hash = hashlib.sha256(raw_config).hexdigest()
+    idempotency_key = uuid5(NAMESPACE_URL, f"experiment-guardian:{email}:{config_hash}")
+    result = get_project_administration_service().initialize_project(
+        identity=RequestIdentity(
+            user_id=user_id,
+            team_id=team_id,
+            token_id=uuid5(NAMESPACE_URL, f"experiment-guardian:local-owner:{email}"),
+            scopes=OWNER_API_SCOPES,
+            authentication_method="API_TOKEN",
+            recent_authentication=True,
+        ),
+        idempotency_key=idempotency_key,
+        request=request,
+    )
+    return {
+        "user_id": str(user_id),
+        "team_id": str(team_id),
+        "project_id": str(result.project_id),
+        "local_owner_email": email,
+        "idempotency_key": str(idempotency_key),
+        "replay_safe": True,
+    }
 
 
 def _token_output(kind: str, issued: IssuedToken, *, scopes: frozenset[str]) -> dict[str, Any]:
@@ -386,6 +473,15 @@ def _revoke_mcp_oauth_grant(args: argparse.Namespace) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="experiment-guardian-admin")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    bootstrap_local = subparsers.add_parser("bootstrap-local")
+    bootstrap_local.add_argument("--email")
+    bootstrap_local.add_argument("--name", default="Local Owner")
+    bootstrap_local.add_argument("--team-name", default="Local Experiment Team")
+    bootstrap_local.add_argument(
+        "--project-config", default="examples/project-initialize.json"
+    )
+    bootstrap_local.set_defaults(handler=_bootstrap_local)
 
     bootstrap = subparsers.add_parser("bootstrap-owner")
     bootstrap.add_argument("--email", required=True)
