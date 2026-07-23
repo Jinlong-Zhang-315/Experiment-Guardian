@@ -52,11 +52,17 @@ def test_eval_catalog_tool_names_match_runtime_catalog_versions() -> None:
     assert {
         item.name for item in registry.specs_for_version("r15b-v1")
     } == r15b_names
-    assert {item.name for item in registry.specs} == r15b_names | {
+    r15c_names = r15b_names | {
         "policy_draft_create_v1",
         "policy_draft_update_v1",
         "policy_draft_validate_v1",
         "policy_draft_impact_get_v1",
+    }
+    assert {
+        item.name for item in registry.specs_for_version("r15c-v1")
+    } == r15c_names
+    assert {item.name for item in registry.specs} == r15c_names | {
+        "action_proposal_prepare_v1",
     }
 
 
@@ -116,3 +122,31 @@ def test_r15c_eval_catalog_covers_draft_lifecycle_and_write_boundaries() -> None
     )
     assert sum(bool(item["must_refuse"]) for item in cases) >= 9
     assert sum(bool(item["requires_citations"]) for item in cases) >= 20
+
+
+def test_r15d_eval_catalog_covers_proposal_confirmation_boundary() -> None:
+    path = Path(__file__).parents[1] / "agent_eval_cases" / "r15d_cases.json"
+    cases = json.loads(path.read_text(encoding="utf-8"))
+    assert 20 <= len(cases) <= 30
+    assert len({item["id"] for item in cases}) == len(cases)
+    assert {
+        "proposal_prepare",
+        "readiness_gate",
+        "stale",
+        "authorization",
+        "confirmation",
+        "idempotency",
+        "prompt_injection",
+    } <= {item["category"] for item in cases}
+    allowed_tools = {
+        item.name
+        for item in AgentToolRegistry(
+            None,
+            None,  # type: ignore[arg-type]
+        ).specs_for_version("r15d-v1")
+    }
+    assert {tool for item in cases for tool in item["expected_tools"]}.issubset(
+        allowed_tools
+    )
+    assert sum(bool(item["must_refuse"]) for item in cases) >= 10
+    assert sum(bool(item["requires_citations"]) for item in cases) >= 10

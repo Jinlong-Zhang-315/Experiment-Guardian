@@ -2,7 +2,7 @@
 
 更新时间：2026-07-24
 计划轮次：R15a-R15e
-当前状态：R15c 已完成；下一步只实施 R15d
+当前状态：R15d-a Policy 发布提案已完成；下一步只实施 R15d-b
 
 ## 1. 目标与定位
 
@@ -464,8 +464,8 @@ R15a 继续使用现有 `httpx` 调用百炼，不为了 OpenAI-compatible 协�
 
 ### R15d：用户确认后的白名单正式操作
 
-1. 增加 Action Proposal 和 digest/base-version 协议。
-2. 接入 Policy Bundle 发布、Plan 批准/拒绝、Submission 确认/拒绝。
+1. R15d-a 增加 Action Proposal 和 digest/base-version 协议并接入 Policy Bundle 发布。
+2. R15d-b 再评估 Plan 批准/拒绝、Submission 确认/拒绝。
 3. 独立确认 API 执行 CSRF、近期认证、实时 RBAC、事务锁和幂等。
 4. 目标状态或版本变化时返回 STALE，不自动重做提案。
 5. CRITICAL、blocking、HIGH 风险角色限制和不可变记录规则保持不变。
@@ -480,8 +480,8 @@ R15a 继续使用现有 `httpx` 调用百炼，不为了 OpenAI-compatible 协�
 5. 实现 Bedrock AgentChatModel，并用同一 provider contract/eval suite 验证。
 6. 增加成本、token、延迟、工具错误和模型回归观测。
 
-一次只实现一个阶段。当前下一步只开始 R15d，R15d 的任何正式操作仍必须由独立人类确认请求
-执行，模型本身不获得 execute 工具。
+一次只实现一个阶段。当前下一步只开始 R15d-b；任何正式操作仍必须由独立人类确认请求执行，
+模型本身不获得 execute 工具。
 
 ## 13. 测试与评测
 
@@ -553,3 +553,23 @@ CI 使用 Fake/脚本化模型做严格 trajectory match，不访问外网。真
 * 七个产品 MCP 工具和正式 Policy、Plan、Manifest、Submission、Experiment 状态机未修改。
 * R15d 必须使用不可变 Proposal + digest + base version + 独立人类确认 API；不得把正式执行注册
   为模型工具，也不得让草稿直接发布。
+
+## 16. R15d-a 实现结果与 R15d-b 边界
+
+R15d-a 已按最小白名单实现 `POLICY_PUBLISH`：
+
+* `agent_action_proposals` 冻结 PolicyPublishRequest、来源草稿/revision、基线版本/hash、
+  diff、影响、待办状态 hash、24 小时有效期和提案 digest。
+* `action_proposal_prepare_v1` 是唯一新增 Agent 工具；工具只准备提案，不确认、不发布。
+* Researcher 可以准备自己的 Owner-only proposal；确认时的 actor 和权限始终来自实际
+  Owner Web Session，不继承提案创建人的权限。
+* Owner 确认使用独立 CSRF 请求、近期认证、实时 Membership、摘要匹配、版本/状态复核和
+  Idempotency-Key。Context 或草稿 revision 漂移、待办状态变化、过期都会阻止发布。
+* Policy 发布和 Proposal `EXECUTED` 状态共用一个 CockroachDB 事务。设置页原直接发布路径
+  继续调用同一个发布核心，未改变原 API。
+* Agent 回答使用 `ACTION_PROPOSAL` evidence；rolling summary schema v3 只保留引用，不提供
+  执行能力。R15a、R15b、R15c 的 Pending Run 继续使用冻结目录。
+
+R15d-b 才评估 Plan Check 批准/拒绝和 Submission 确认/拒绝提案。届时必须复用现有风险权限：
+`BLOCKED`/`CRITICAL` 不可绕过、HIGH 仅 Owner，且仍不得把 execute 工具暴露给模型。本轮没有
+实现这两类操作，也没有加入任意 SQL、训练、代码修改或长期 Agent Memory。

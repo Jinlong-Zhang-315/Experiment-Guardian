@@ -26,6 +26,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from experiment_guardian.domain.enums import (
+    ActionProposalOperation,
+    ActionProposalStatus,
     AgentCallStatus,
     AgentContextSummaryStatus,
     AgentMessageRole,
@@ -1195,6 +1197,102 @@ class AgentPolicyDraftRevision(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     narrative_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     impact_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     pending_state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class AgentActionProposal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Agent 准备、由人类确认的不可变高影响操作快照。"""
+
+    __tablename__ = "agent_action_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_run_id",
+            name="uq_agent_action_proposals_source_run",
+        ),
+        Index(
+            "ix_agent_action_proposals_project_status_created",
+            "project_id",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_agent_action_proposals_creator_status_created",
+            "created_by",
+            "status",
+            "created_at",
+        ),
+        CheckConstraint("source_draft_revision >= 1", name="source_revision_positive"),
+        CheckConstraint("length(payload_hash) = 64", name="payload_hash_length"),
+        CheckConstraint(
+            "length(source_candidate_hash) = 64",
+            name="source_candidate_hash_length",
+        ),
+        CheckConstraint("length(base_policy_hash) = 64", name="base_policy_hash_length"),
+        CheckConstraint("length(pending_state_hash) = 64", name="pending_state_hash_length"),
+        CheckConstraint("length(proposal_digest) = 64", name="proposal_digest_length"),
+    )
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    source_thread_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_threads.id"), nullable=False
+    )
+    source_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id"), nullable=False
+    )
+    source_tool_call_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_tool_calls.id"), nullable=False
+    )
+    source_draft_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_policy_drafts.id"), nullable=False
+    )
+    source_draft_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_policy_draft_revisions.id"), nullable=False
+    )
+    source_draft_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    operation: Mapped[ActionProposalOperation] = mapped_column(
+        enum_column(
+            ActionProposalOperation,
+            "agent_action_proposal_operation",
+            length=32,
+        ),
+        nullable=False,
+    )
+    status: Mapped[ActionProposalStatus] = mapped_column(
+        enum_column(ActionProposalStatus, "agent_action_proposal_status", length=16),
+        nullable=False,
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_candidate_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_context_id: Mapped[UUID] = mapped_column(
+        ForeignKey("project_contexts.id"), nullable=False
+    )
+    base_context_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_intent_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_intents.id"), nullable=False
+    )
+    base_intent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    diff_snapshot: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    impact_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    pending_state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    proposal_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    confirmed_session_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("web_sessions.id")
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canceled_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
+    executed_context_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project_contexts.id")
+    )
+    executed_context_version: Mapped[int | None] = mapped_column(Integer)
+    execution_result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    execution_error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class AgentCitation(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

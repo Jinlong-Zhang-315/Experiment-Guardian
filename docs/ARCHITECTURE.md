@@ -1,11 +1,11 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-24
-当前实现：R15c 治理草稿与影响分析
+当前实现：R15d-a Policy 发布提案与 Owner 独立确认
 
-下一计划：R15d 人类确认后的白名单正式操作。R15 总体边界见
+下一计划：R15d-b Plan/Submission 决策提案。R15 总体边界见
 `INTERNAL_GOVERNANCE_AGENT_PLAN.md`。
-数据库 head：`20260724_17`
+数据库 head：`20260724_18`
 
 除明确标记“计划”的章节外，本文描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与
 自动化验证，`[EXTERNAL]` 表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
@@ -138,6 +138,7 @@ FastAPI TrustedHost -> local_owner login --------+--> CockroachDB
                                   +--> BailianAgentChatModel
                                   +--> eight authorized read/analysis tools
                                   +--> four candidate-only policy draft tools
+                                  +--> one prepare-only Policy publish proposal tool
 
 minio-init: create bucket + enable/verify Versioning, then exit
 database-init -> migration -> local-init: ordered one-shot services
@@ -157,7 +158,7 @@ src/experiment_guardian/
 |   +-- plan_checks.py          Owner 计划决定
 |   +-- submissions.py          草稿最终决定
 |   +-- agent.py                Thread/Message/Run/SSE/retry API
-|                               + Policy Draft list/revision/abandon API
+|                               + Policy Draft and Action Proposal API
 |
 +-- mcp_server/server.py        七个 MCP 工具 + HTTP health
 |
@@ -173,10 +174,12 @@ src/experiment_guardian/
 |   +-- agent_runtime.py        有界 LangGraph loop、lease、审计与最终提交
 |   +-- agent_tools.py          八个只读/分析 + 四个候选草稿工具
 |   +-- policy_drafts.py        完整 Bundle revision、权限、diff 与影响模拟
+|   +-- action_proposals.py     24h 冻结提案、实时失效、Owner 原子确认
 |
 +-- domain/                     Pydantic 契约、状态、纯确定性规则
 |   +-- policy_narrative.py     结构化策略来源哈希与确定性 Markdown
 |   +-- policy_draft.py         草稿 schema、严格 diff、校验与候选说明
+|   +-- action_proposal.py      提案 digest、确认/取消契约和展示状态
 |
 +-- infrastructure/
 |   +-- cognito.py              人类 OIDC Provider adapter
@@ -202,7 +205,7 @@ scripts/verify_r14_deployment.py 公开部署认证/发现验收
 依赖方向保持：接口层 -> 应用层 -> 领域层；基础设施实现应用端口。前端不重新计算风险、
 审批资格或角色权限。
 
-## R15c Agent 当前框架图
+## R15d-a Agent 当前框架图
 
 ```text
 Web 治理 Agent 页
@@ -213,8 +216,9 @@ Agent API
    |
    +--> AgentConversationService
    |       +--> Thread / Message / Run / Citation / answer sections [DONE]
-   |       +--> rolling summary v2 / draft references / degraded warning [DONE]
+   |       +--> rolling summary v3 / draft + proposal references [DONE]
    |       +--> Policy Draft list / revision / abandon [DONE]
+   |       +--> Action Proposal list / confirm / cancel [DONE]
    |       +--> idempotent enqueue / archive / retry [DONE]
    |       +--> durable SSE replay / heartbeat [DONE]
    |
@@ -225,7 +229,7 @@ Agent API
            |
    +--> GovernanceAgentRuntime [DONE]
    |       +--> bounded single-agent LangGraph, max calls/tools/wall time
-   |       +--> r15a/r15b/r15c prompt + catalog compatibility
+   |       +--> r15a/r15b/r15c/r15d prompt + catalog compatibility
    |       +--> recent messages + non-authoritative rolling summary
    |       +--> AgentChatModel
    |       |       +--> Bailian streaming Function Calling [DONE]
@@ -243,6 +247,7 @@ Agent API
    |               +--> policy_draft_update_v1 [DONE, candidate only]
    |               +--> policy_draft_validate_v1 [DONE]
    |               +--> policy_draft_impact_get_v1 [DONE]
+   |               +--> action_proposal_prepare_v1 [DONE, no execute]
    |               +--> FORMAL EXECUTE [NOT REGISTERED]
    +--> validated AgentAnswer + evidence/citations + AuditLog [DONE]
 
@@ -250,10 +255,10 @@ Experiment Memory VECTOR(1024)       formal confirmed experiments only
 Agent Research Memory                not present; planned R15e separate store
 ```
 
-R15c 的写工具只能追加独立候选草稿，不能触达正式 Context/Intent/Constraint、Plan、
-Manifest 或 Submission。模型参数不能传入 `user_id`、`team_id` 或 `project_id`；服务端从
-Web Session 绑定身份和项目，每次工具执行重新校验 Membership。正式事实、候选草稿和影响分析
-分别使用 `CONFIRMED_FACT`、`CANDIDATE_DRAFT` 和 `ANALYSIS` evidence，摘要不参与正式判断。
+R15d-a 的模型写工具仍只能追加候选草稿或准备不可变提案。正式执行没有注册为模型工具；
+Owner 的独立确认请求复用既有 Policy 发布服务并在同一数据库事务中落库。正式事实、候选
+草稿、操作提案和影响分析分别使用 `CONFIRMED_FACT`、`CANDIDATE_DRAFT`、
+`ACTION_PROPOSAL` 和 `ANALYSIS` evidence，摘要不参与正式判断。
 
 ## 数据关系
 
@@ -287,6 +292,7 @@ User(cognito_sub)
                                       +--0..1 current READY AgentContextSummary
                                       +--< AgentPolicyDraft(originating thread)
                                       |      +--< AgentPolicyDraftRevision(append-only)
+                                      |             +--< AgentActionProposal(24h/digest/status)
                                       +--< AgentRun(lease/generation/retry)
                                              +--< AgentModelCall
                                              |      purpose=AGENT_TURN/CONTEXT_SUMMARY

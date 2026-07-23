@@ -254,6 +254,7 @@ class AgentEvidenceKind(StrEnum):
     CONFIRMED_FACT = "CONFIRMED_FACT"
     USER_PROVIDED = "USER_PROVIDED"
     CANDIDATE_DRAFT = "CANDIDATE_DRAFT"
+    ACTION_PROPOSAL = "ACTION_PROPOSAL"
     ANALYSIS = "ANALYSIS"
     HYPOTHESIS = "HYPOTHESIS"
 
@@ -277,6 +278,26 @@ class PolicyDraftFreshness(StrEnum):
 class PolicyDraftSource(StrEnum):
     AGENT = "AGENT"
     WEB = "WEB"
+
+
+class ActionProposalOperation(StrEnum):
+    POLICY_PUBLISH = "POLICY_PUBLISH"
+
+
+class ActionProposalStatus(StrEnum):
+    PROPOSED = "PROPOSED"
+    EXECUTED = "EXECUTED"
+    CANCELED = "CANCELED"
+    STALE = "STALE"
+    EXPIRED = "EXPIRED"
+    FAILED = "FAILED"
+
+
+class ActionProposalConfirmability(StrEnum):
+    READY = "READY"
+    STALE = "STALE"
+    EXPIRED = "EXPIRED"
+    TERMINAL = "TERMINAL"
 
 
 class ConfigFormat(StrEnum):

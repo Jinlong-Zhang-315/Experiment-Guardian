@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
 更新时间：2026-07-24
-当前完成轮次：R15c 治理草稿与影响分析
-下一步：R15d 人类确认后的白名单正式操作
+当前完成轮次：R15d-a Policy 发布提案与 Owner 独立确认
+下一步：R15d-b Plan/Submission 决策提案
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -30,7 +30,8 @@
 | R15a | 内部治理 Agent 只读对话 | 完成 | 持久化、百炼工具调用、只读工具、引用、独立 Worker |
 | R15b | 比较、统计与诊断 | 完成 | 分层可比性、显式组统计、审核诊断、滚动摘要 |
 | R15c | 治理草稿与影响分析 | 完成 | 追加式完整 Bundle 草稿、diff、歧义、影响与 Web 工作台 |
-| R15d | 人类确认后的正式操作 | 计划 | 提案摘要、版本复核、近期认证、白名单执行 |
+| R15d-a | Policy 发布提案 | 完成 | 不可变提案、版本复核、Owner 近期认证、原子发布 |
+| R15d-b | Plan/Submission 决策提案 | 计划 | 延续风险权限和人工最终决定，不扩大操作白名单 |
 | R15e | 研究总结与长期记忆 | 计划 | 可追溯结论、独立候选记忆、provider parity |
 
 ## R15：内部实验治理 Agent 路线
@@ -45,10 +46,30 @@
 * Agent 使用当前 Web 身份，工具执行器重新验证实时 RBAC 和项目隔离。
 * CockroachDB 保存所有原始消息；R15b 的 rolling summary 只压缩模型上下文，带消息范围和
   来源 hash，失败时保留旧摘要或退回最近窗口。百炼 provider 对话或缓存不是真实记忆源。
-* R15c 只写独立候选草稿表；R15d 前不执行任何正式业务操作。
+* R15c 只写独立候选草稿表；R15d-a 仅允许 Owner 确认 Policy 发布提案。
 * R15d 的正式操作不暴露为模型执行工具：Agent 生成提案，人类通过独立 CSRF + recent-auth
   请求确认，服务端重查版本和状态后调用既有业务服务。
 * Agent Research Memory 与正式 Experiment Memory 分离，且最早在 R15e 接入。
+
+## R15d-a：Policy 发布提案与 Owner 确认
+
+交付：
+
+* revision `20260724_18` 新增 `agent_action_proposals`，冻结当前草稿 revision、候选发布请求、
+  确定性 diff、影响、基线版本、待办状态哈希、24 小时有效期和 SHA-256 提案摘要。
+* Agent 仅新增 `action_proposal_prepare_v1`。它会在服务端重算草稿校验和影响，拒绝
+  `STALE`、`INVALID`、含歧义、旧 revision 或无差异草稿；没有 confirm/execute 工具。
+* Researcher 可为自己的草稿准备提案和取消提案，Owner 可查看项目全部提案；只有 Owner
+  能确认。确认必须经过 Web Session、CSRF、`project:write`、近期认证和摘要匹配。
+* 确认时重新检查 Context/Intent、草稿 revision、候选哈希及待审批 Plan/进行中 Submission
+  状态；漂移提案持久化为 `STALE`，过期提案持久化为 `EXPIRED`，不会发布。
+* Policy 发布核心支持使用调用方 Session；正式 Context/Intent/Constraints、Policy 发布
+  幂等记录、提案状态、确认幂等记录和审计在同一个 CockroachDB 事务中提交。
+* 现有项目设置页直接发布入口未改变。Agent 工作台增加提案列表、冻结差异/影响、原始
+  结构化请求、Researcher 等待状态和 Owner 复核勾选。
+* R15d Prompt/工具目录保持 R15a–R15c 兼容；evidence 增加 `ACTION_PROPOSAL`，rolling
+  summary schema v3 只保存有界提案引用，不把提案描述为已执行。
+* R15d 评测集增加 24 个提案准备、失效、权限、确认、幂等和 prompt injection case。
 
 ## R15a：只读内部实验治理 Agent
 

@@ -1359,6 +1359,81 @@
 * 确认前必须展示完整操作与影响；执行时重新校验 CSRF、近期认证、实时 RBAC、当前版本、风险、
   事务锁和幂等。R15d 不增加长期记忆、任意 SQL、训练或改代码能力。
 
+## 2026-07-24 / R15d-a：Policy 发布提案与 Owner 独立确认
+
+版本：working tree，revision `20260724_18`。
+
+### 更新内容
+
+* 新增 `agent_action_proposals`，保存 `POLICY_PUBLISH`、创建人和 Agent Thread/Run/ToolCall、
+  来源草稿/revision、完整 `PolicyPublishRequest`、候选/基线/待办哈希、冻结 diff/影响、
+  24 小时有效期、digest、确认/取消/执行结果和错误。
+* 提案状态为 `PROPOSED/EXECUTED/CANCELED/STALE/EXPIRED/FAILED`。GET 只计算实时
+  `READY/STALE/EXPIRED/TERMINAL`，不会隐式写库；确认过期或漂移提案时才固化终止状态。
+* `ActionProposalService` 在准备时重算确定性校验和影响，仅接受 Active、CURRENT、READY、
+  无歧义、有结构化差异且为当前 revision 的草稿。同一有效 revision 返回同一提案，同一
+  Agent Run 最多一次草稿或提案写操作。
+* Researcher 可以准备和取消自己的提案；Owner 可读取全部提案。只有实时 Owner、
+  `project:write`、Web Session、CSRF 和近期认证全部满足时才能确认。
+* 确认时重新验证 digest、TTL、正式 Context/Intent、草稿 revision/候选 hash 和待审批
+  Plan/进行中 Submission 状态。版本或状态变化返回并持久化 `STALE/EXPIRED`，不发布。
+* 抽取 `WebManagementService.publish_policy_in_session()`。设置页直接发布和提案确认共用
+  唯一正式写入核心；新 Policy 版本、两个幂等记录、提案 `EXECUTED` 和审计原子提交。
+* Agent 目录升级 `r15d-v1`，仅新增 `action_proposal_prepare_v1`；没有 confirm/execute
+  工具。新增 `ACTION_PROPOSAL` evidence 和最终回答类型校验，旧 R15a/R15b/R15c 目录兼容。
+* rolling summary 升级 schema v3，可保存有界 proposal ID、digest、来源草稿 revision、状态
+  和有效期；摘要仍是非权威上下文，不能确认提案。
+* Agent REST 新增提案列表、详情、确认和取消。Web Agent 工作台展示冻结差异、影响、完整
+  结构化请求、有效期和摘要；Owner 必须勾选已复核，Researcher 只看到等待 Owner。
+* 增加 24 个 R15d trajectory/security case，覆盖准备门槛、失效、权限、确认、幂等和
+  prompt injection。
+
+### 修复的问题
+
+* 正式 Policy 发布不再存在“提案状态已执行但正式版本回滚”或相反的跨事务窗口。
+* Agent 无法把用户消息中的“我确认”当成执行授权；确认 actor、角色和近期认证只取实际
+  Web Session。
+* 草稿准备后继续修改、正式版本变化或项目待办变化会使原提案失效，不会静默使用旧影响。
+* 提案摘要绑定操作、项目、完整发布请求、来源 revision/候选 hash、基线 hash、待办 hash
+  和过期时间，不能用同一确认请求替换发布内容。
+* 新提案引用使用独立 evidence 类型，不能在最终回答中伪装成 `CONFIRMED_FACT`。
+
+### 验证结果
+
+* Ruff 全仓和 mypy 通过；Python 共收集 275 项，全量执行到 100%，结果为 266 passed、
+  9 skipped。跳过项仍由真实 MinIO/S3/百炼/Cockroach 环境开关控制。
+* 新集成测试覆盖 Owner 原子确认与幂等、同 revision 复用、草稿 revision 漂移、TTL 过期、
+  Researcher 自有提案、Owner 代确认、Agent 提案 evidence，以及正式 Context 未提前变化。
+* SQLite Alembic head 和历史降级回归通过。真实 CockroachDB 完成
+  `20260724_17 -> 20260724_18 -> 20260724_17 -> 20260724_18`，确认 JSONB、固定短外键、
+  唯一索引和降级建表行为。
+* 完整 Cockroach 业务链验收因两个旧临时库中的历史 `ALTER TABLE ... provider` Schema Job
+  处于 paused 而不退出，已手工终止。取消这两个明确属于临时库的 Job 后，全部 `eg_plan_it_*`
+  和 `eg_r15d_*` 验收库均已清理；正式 `experiment_guardian` 数据未参与清理操作。
+* Web ESLint、Vitest 6 项和 production build 通过；新增测试验证 Owner 复核勾选与
+  Researcher 无确认按钮。
+* 本地 Compose 已运行一次性 migration，现有 `experiment_guardian` 数据库从 head 17 升至
+  head 18；随后重建 API/Web，API health 与 Web HTML 均可访问。Submission Worker 未重启，
+  Agent 仍按用户的 `AGENT_ENABLED=false` 保持关闭，未调用外部模型。
+* 使用真实 `local_owner` Session 完成只读冒烟：项目列表正常，新增
+  `/agent/action-proposals` 返回空分页；临时 Session Cookie 随后已从 `/tmp` 删除。
+
+### 已知遗留项
+
+* 本轮只执行 `POLICY_PUBLISH`。Plan 批准/拒绝和 Submission 确认/拒绝留到 R15d-b。
+* `FAILED` 状态为受控执行错误预留；Cockroach 序列化或连接失败会整体回滚并保留
+  `PROPOSED` 供相同请求安全重试，不会为了记录失败破坏原子性。
+* 提案过期或失效后不会自动 rebase。用户需要基于最新正式 Bundle 新建草稿和提案。
+* 实际百炼模型是否稳定遵守新提案提示词仍由 `RUN_BAILIAN_AGENT_INTEGRATION=1` 验收；
+  默认测试使用确定性 scripted/mock provider。
+* 本轮不增加长期 Agent Memory、任意 SQL、自动训练、自动改代码或新模型 provider。
+
+### 下一步
+
+* R15d-b 仅评估 Plan Check 与 Submission 的白名单决策提案，必须继续复用现有状态机和风险
+  权限：`BLOCKED/CRITICAL` 不可绕过、HIGH 仅 Owner、人类最终决定。
+* 在新增操作前先解决真实 Cockroach 全链测试清理挂起，避免扩大测试不确定性。
+
 ## 新日志模板
 
 ```text

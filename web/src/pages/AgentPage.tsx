@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Bot, FilePenLine, MessageSquarePlus, RotateCcw, Send, TriangleAlert } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, FilePenLine, MessageSquarePlus, RotateCcw, Send, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api, formatTime, idempotencyKey, streamServerEvents } from "../api";
 import { Badge, Empty, ErrorNotice } from "../components";
@@ -13,6 +13,7 @@ import type {
   Page,
 } from "../types";
 import { PolicyDraftWorkspace } from "./PolicyDraftWorkspace";
+import { ActionProposalWorkspace } from "./ActionProposalWorkspace";
 
 const ACTIVE_RUNS = new Set(["PENDING", "RUNNING", "RETRYABLE_FAILURE"]);
 
@@ -31,9 +32,11 @@ function AnswerContent({ content }: { content: string }) {
 function Message({
   value,
   onOpenDraft,
+  onOpenProposal,
 }: {
   value: AgentMessage;
   onOpenDraft: (draftId: string) => void;
+  onOpenProposal: (proposalId: string) => void;
 }) {
   return <article className={`agent-message ${value.role.toLowerCase()}`}>
     <header><strong>{value.role === "USER" ? "你" : "治理 Agent"}</strong><time>{formatTime(value.created_at)}</time></header>
@@ -51,6 +54,8 @@ function Message({
           <small>{citation.entity_type}{citation.entity_version ? ` · ${citation.entity_version}` : ""}</small></>;
         return citation.entity_type === "POLICY_DRAFT" && citation.entity_id
           ? <button className="agent-citation-link" key={citation.evidence_id} onClick={() => onOpenDraft(citation.entity_id!)}>{content}</button>
+          : citation.entity_type === "ACTION_PROPOSAL" && citation.entity_id
+            ? <button className="agent-citation-link" key={citation.evidence_id} onClick={() => onOpenProposal(citation.entity_id!)}>{content}</button>
           : <section key={citation.evidence_id}>{content}</section>;
       })}</div>
     </details>}
@@ -69,6 +74,7 @@ export function AgentPage() {
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [streamError, setStreamError] = useState<unknown>();
   const [draftWorkspace, setDraftWorkspace] = useState<{ open: boolean; draftId?: string }>({ open: false });
+  const [proposalWorkspace, setProposalWorkspace] = useState<{ open: boolean; proposalId?: string }>({ open: false });
   const lastEventId = useRef(0);
 
   const threads = useQuery({
@@ -220,6 +226,7 @@ export function AgentPage() {
     <header className="page-header"><div><span className="eyebrow">治理 Agent</span><h1>项目实验助手</h1><p>回答仅基于当前身份可见的正式记录</p></div>
       <div className="agent-header-actions">
         <button className="button" onClick={() => setDraftWorkspace({ open: true })}><FilePenLine />治理草稿</button>
+        <button className="button" onClick={() => setProposalWorkspace({ open: true })}><ShieldCheck />发布提案</button>
         <button className="button" onClick={() => setShowArchived((value) => !value)}>{showArchived ? <ArchiveRestore /> : <Archive />}{showArchived ? "当前会话" : "已归档"}</button>
         <button className="button primary" onClick={() => createThread.mutate()} disabled={createThread.isPending}><MessageSquarePlus />新对话</button>
       </div>
@@ -237,7 +244,7 @@ export function AgentPage() {
           </div>
           <div className="agent-message-list">
             {thread.data?.context_summary?.degraded && <div className="agent-summary-warning"><TriangleAlert /> <span>{thread.data.context_summary.warning}</span></div>}
-            {thread.isPending ? <div className="page-loading">正在加载消息</div> : thread.data?.messages.map((message) => <Message key={message.message_id} value={message} onOpenDraft={(draftId) => setDraftWorkspace({ open: true, draftId })} />)}
+            {thread.isPending ? <div className="page-loading">正在加载消息</div> : thread.data?.messages.map((message) => <Message key={message.message_id} value={message} onOpenDraft={(draftId) => setDraftWorkspace({ open: true, draftId })} onOpenProposal={(proposalId) => setProposalWorkspace({ open: true, proposalId })} />)}
             {(streamedAnswer || activity) && ACTIVE_RUNS.has(runStatus) && <article className="agent-message assistant streaming"><header><strong>治理 Agent</strong><Badge value={runStatus || "RUNNING"} /></header>{streamedAnswer ? <AnswerContent content={streamedAnswer} /> : <p>{activity}</p>}</article>}
           </div>
           {streamError ? <ErrorNotice error={streamError} /> : null}
@@ -247,5 +254,6 @@ export function AgentPage() {
         </section>
       </div>}
     {draftWorkspace.open && <PolicyDraftWorkspace projectId={projectId} initialDraftId={draftWorkspace.draftId} onClose={() => setDraftWorkspace({ open: false })} />}
+    {proposalWorkspace.open && <ActionProposalWorkspace projectId={projectId} initialProposalId={proposalWorkspace.proposalId} onClose={() => setProposalWorkspace({ open: false })} />}
   </main>;
 }

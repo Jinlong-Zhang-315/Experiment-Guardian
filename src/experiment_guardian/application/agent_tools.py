@@ -13,6 +13,7 @@ from pydantic import Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from experiment_guardian.application.action_proposals import ActionProposalService
 from experiment_guardian.application.errors import (
     AuthorizationError,
     InputValidationError,
@@ -20,6 +21,9 @@ from experiment_guardian.application.errors import (
 )
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.policy_drafts import PolicyDraftService
+from experiment_guardian.domain.action_proposal import (
+    ActionProposalPrepareInput,
+)
 from experiment_guardian.domain.agent import (
     AgentEvidence,
     AgentToolResult,
@@ -66,7 +70,8 @@ from experiment_guardian.infrastructure.repositories import SqlAlchemyProjectRep
 
 R15A_TOOL_CATALOG_VERSION = "r15a-v1"
 R15B_TOOL_CATALOG_VERSION = "r15b-v1"
-TOOL_CATALOG_VERSION = "r15c-v1"
+R15C_TOOL_CATALOG_VERSION = "r15c-v1"
+TOOL_CATALOG_VERSION = "r15d-v1"
 AgentToolDefinition = tuple[
     type[ContractModel],
     str,
@@ -129,10 +134,12 @@ class AgentToolRegistry:
         session_factory: sessionmaker[Session],
         projects: SqlAlchemyProjectRepository,
         policy_drafts: PolicyDraftService | None = None,
+        action_proposals: ActionProposalService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._projects = projects
         self._policy_drafts = policy_drafts
+        self._action_proposals = action_proposals
         self._r15a_definitions: AgentToolDefinitions = {
             "project_status_get_v1": (
                 _EmptyArgs,
@@ -201,6 +208,17 @@ class AgentToolRegistry:
                 self._policy_draft_impact,
             ),
         }
+        self._r15d_definitions: AgentToolDefinitions = {
+            **self._r15c_definitions,
+            "action_proposal_prepare_v1": (
+                ActionProposalPrepareInput,
+                (
+                    "从当前、无歧义且校验通过的治理草稿冻结正式策略发布提案；"
+                    "该工具不会发布策略，只有 Owner 能在 Web 工作台确认。"
+                ),
+                self._action_proposal_prepare,
+            ),
+        }
 
     @property
     def specs(self) -> list[AgentToolSpec]:
@@ -244,7 +262,7 @@ class AgentToolRegistry:
             "identity": identity,
             "evidence_prefix": evidence_prefix,
         }
-        if tool_name.startswith("policy_draft_"):
+        if tool_name.startswith(("policy_draft_", "action_proposal_")):
             return handler(
                 **common,
                 run_id=run_id,
@@ -257,8 +275,10 @@ class AgentToolRegistry:
             return self._r15a_definitions
         if catalog_version == R15B_TOOL_CATALOG_VERSION:
             return self._r15b_definitions
-        if catalog_version == TOOL_CATALOG_VERSION:
+        if catalog_version == R15C_TOOL_CATALOG_VERSION:
             return self._r15c_definitions
+        if catalog_version == TOOL_CATALOG_VERSION:
+            return self._r15d_definitions
         raise InputValidationError(f"不支持的 Agent 工具目录版本: {catalog_version}")
 
     def _project_status(
@@ -1030,6 +1050,59 @@ class AgentToolRegistry:
         if self._policy_drafts is None:
             raise InputValidationError("当前 Agent 工具目录未装配治理草稿服务")
         return self._policy_drafts
+
+    def _action_proposal_prepare(
+        self,
+        *,
+        validated: ActionProposalPrepareInput,
+        project_id: UUID,
+        identity: RequestIdentity,
+        evidence_prefix: str,
+        run_id: UUID | None,
+        tool_call_id: UUID | None,
+    ) -> AgentToolResult:
+        if self._action_proposals is None:
+            raise InputValidationError("当前 Agent 工具目录未装配操作提案服务")
+        if run_id is None or tool_call_id is None:
+            raise InputValidationError("操作提案准备缺少当前 Agent Run/ToolCall 来源")
+        proposal = self._action_proposals.prepare_from_agent(
+            project_id=project_id,
+            identity=identity,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            request=validated,
+        )
+        evidence_id = f"{evidence_prefix}_1"
+        payload = proposal.model_dump(mode="json")
+        return AgentToolResult(
+            content={
+                "proposal": payload,
+                "evidence_id": evidence_id,
+                "governance_notice": (
+                    "提案尚未执行。必须由 Owner 在 Web 工作台查看完整差异和影响，"
+                    "完成近期认证并明确确认。"
+                ),
+            },
+            evidence=[
+                AgentEvidence(
+                    evidence_id=evidence_id,
+                    evidence_kind=AgentEvidenceKind.ACTION_PROPOSAL,
+                    entity_type="ACTION_PROPOSAL",
+                    entity_id=proposal.proposal_id,
+                    entity_version=(
+                        f"policy-draft:{proposal.source_draft_revision}/digest:"
+                        f"{proposal.proposal_digest[:12]}"
+                    ),
+                    label=f"正式策略发布提案 {proposal.proposal_id}",
+                    excerpt=(
+                        f"{proposal.status.value} / {proposal.confirmability.value} / "
+                        f"Context v{proposal.base_context_version} -> "
+                        f"v{proposal.base_context_version + 1}"
+                    ),
+                    payload=payload,
+                )
+            ],
+        )
 
     @staticmethod
     def _draft_candidate_result(

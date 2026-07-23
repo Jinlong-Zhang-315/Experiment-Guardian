@@ -3,6 +3,7 @@
 from experiment_guardian.infrastructure.models.base import Base
 from experiment_guardian.infrastructure.models.entities import (
     AccessToken,
+    AgentActionProposal,
     AgentCitation,
     AgentContextSummary,
     AgentMessage,
@@ -43,6 +44,7 @@ from experiment_guardian.infrastructure.models.entities import (
 
 __all__ = [
     "AccessToken",
+    "AgentActionProposal",
     "AgentCitation",
     "AgentContextSummary",
     "AgentMessage",

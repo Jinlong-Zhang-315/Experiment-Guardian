@@ -13,10 +13,17 @@ from fastapi.responses import StreamingResponse
 from experiment_guardian.api.dependencies import ApiIdentity, CsrfIdentity
 from experiment_guardian.application.agent import TERMINAL_RUN_STATUSES
 from experiment_guardian.application.container import (
+    get_action_proposal_service,
     get_agent_conversation_service,
     get_policy_draft_service,
 )
 from experiment_guardian.core.config import get_settings
+from experiment_guardian.domain.action_proposal import (
+    ActionProposalCancelRequest,
+    ActionProposalConfirmRequest,
+    ActionProposalPage,
+    ActionProposalView,
+)
 from experiment_guardian.domain.agent import (
     AgentMessageCreateRequest,
     AgentRunReceipt,
@@ -38,6 +45,74 @@ from experiment_guardian.domain.policy_draft import (
 )
 
 router = APIRouter(prefix="/projects/{project_id}/agent", tags=["governance-agent"])
+
+
+@router.get("/action-proposals", response_model=ActionProposalPage)
+async def list_action_proposals(
+    project_id: UUID,
+    identity: ApiIdentity,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ActionProposalPage:
+    return get_action_proposal_service().list_proposals(
+        project_id=project_id,
+        identity=identity,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+@router.get("/action-proposals/{proposal_id}", response_model=ActionProposalView)
+async def get_action_proposal(
+    project_id: UUID,
+    proposal_id: UUID,
+    identity: ApiIdentity,
+) -> ActionProposalView:
+    return get_action_proposal_service().get_proposal(
+        project_id=project_id,
+        proposal_id=proposal_id,
+        identity=identity,
+    )
+
+
+@router.post(
+    "/action-proposals/{proposal_id}/confirm",
+    response_model=ActionProposalView,
+)
+async def confirm_action_proposal(
+    project_id: UUID,
+    proposal_id: UUID,
+    request: ActionProposalConfirmRequest,
+    identity: CsrfIdentity,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> ActionProposalView:
+    return get_action_proposal_service().confirm(
+        project_id=project_id,
+        proposal_id=proposal_id,
+        identity=identity,
+        idempotency_key=idempotency_key,
+        request=request,
+    )
+
+
+@router.post(
+    "/action-proposals/{proposal_id}/cancel",
+    response_model=ActionProposalView,
+)
+async def cancel_action_proposal(
+    project_id: UUID,
+    proposal_id: UUID,
+    request: ActionProposalCancelRequest,
+    identity: CsrfIdentity,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> ActionProposalView:
+    return get_action_proposal_service().cancel(
+        project_id=project_id,
+        proposal_id=proposal_id,
+        identity=identity,
+        idempotency_key=idempotency_key,
+        request=request,
+    )
 
 
 @router.get("/policy-drafts", response_model=PolicyDraftPage)

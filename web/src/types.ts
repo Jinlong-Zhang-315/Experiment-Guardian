@@ -208,7 +208,8 @@ export interface AgentRun extends AgentRunReceipt {
 }
 
 export type AgentEvidenceKind =
-  "CONFIRMED_FACT" | "USER_PROVIDED" | "CANDIDATE_DRAFT" | "ANALYSIS" | "HYPOTHESIS";
+  "CONFIRMED_FACT" | "USER_PROVIDED" | "CANDIDATE_DRAFT" | "ACTION_PROPOSAL" |
+  "ANALYSIS" | "HYPOTHESIS";
 export type PolicyDraftStatus = "ACTIVE" | "ABANDONED";
 export type PolicyDraftReadiness = "READY" | "NEEDS_CLARIFICATION" | "INVALID";
 
@@ -369,4 +370,50 @@ export interface PolicyDraftView {
   summary: PolicyDraftSummary;
   current: PolicyDraftRevision;
   revisions: PolicyDraftRevisionSummary[];
+}
+
+export interface ActionProposal {
+  proposal_id: string;
+  project_id: string;
+  created_by: string;
+  operation: "POLICY_PUBLISH";
+  status: "PROPOSED" | "EXECUTED" | "CANCELED" | "STALE" | "EXPIRED" | "FAILED";
+  confirmability: "READY" | "STALE" | "EXPIRED" | "TERMINAL";
+  confirmability_reasons: string[];
+  allowed_actions: Array<"CONFIRM" | "CANCEL">;
+  source_thread_id: string;
+  source_run_id: string;
+  source_tool_call_id: string;
+  source_draft_id: string;
+  source_draft_revision_id: string;
+  source_draft_revision: number;
+  source_candidate_hash: string;
+  payload: {
+    expected_context_version: number;
+    context: PolicyContextCandidate;
+    intent: PolicyIntentCandidate;
+    constraints: PolicyConstraintCandidate[];
+  };
+  payload_hash: string;
+  base_context_id: string;
+  base_context_version: number;
+  base_intent_id: string;
+  base_intent_version: number;
+  base_policy_hash: string;
+  diff_snapshot: PolicyDraftDiff[];
+  impact_snapshot: PolicyDraftImpact;
+  pending_state_hash: string;
+  proposal_digest: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+  confirmed_by?: string;
+  confirmed_at?: string;
+  canceled_by?: string;
+  canceled_at?: string;
+  cancel_reason?: string;
+  executed_context_id?: string;
+  executed_context_version?: number;
+  execution_result?: Record<string, unknown>;
+  execution_error?: Record<string, unknown>;
 }

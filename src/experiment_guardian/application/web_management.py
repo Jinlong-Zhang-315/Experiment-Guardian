@@ -4,7 +4,7 @@ import base64
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
-from typing import TypeVar
+from typing import Any, TypeVar
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -168,12 +168,34 @@ class WebManagementService:
         idempotency_key: UUID,
         request: PolicyPublishRequest,
     ) -> PolicyPublishResult:
+        with self._session_factory() as session, session.begin():
+            return self.publish_policy_in_session(
+                session,
+                project_id=project_id,
+                identity=identity,
+                idempotency_key=idempotency_key,
+                request=request,
+            )
+
+    def publish_policy_in_session(
+        self,
+        session: Session,
+        *,
+        project_id: UUID,
+        identity: RequestIdentity,
+        idempotency_key: UUID,
+        request: PolicyPublishRequest,
+        audit_context: dict[str, Any] | None = None,
+    ) -> PolicyPublishResult:
+        """在调用方事务中发布策略，供直接发布和确认提案共享唯一写入路径。"""
+
         self._require_scope(identity, "project:write")
         if identity.authentication_method == "WEB_SESSION" and not identity.recent_authentication:
             raise RecentAuthenticationRequiredError("发布正式策略前需要完成近期身份认证")
         self._validate_configuration(request)
         request_hash = _hash(request.model_dump(mode="json"))
-        with self._session_factory() as session, session.begin():
+
+        def execute() -> PolicyPublishResult:
             project = self._require_project(session, project_id, identity, owner=True)
             existing = session.scalar(
                 select(IdempotencyRecord).where(
@@ -357,6 +379,11 @@ class WebManagementService:
                             "human_readable_status": narrative.status,
                             "human_readable_source_hash": narrative.source_hash,
                             "session_id": str(identity.token_id),
+                            **(
+                                {"action_proposal": audit_context}
+                                if audit_context is not None
+                                else {}
+                            ),
                         },
                     ),
                     IdempotencyRecord(
@@ -371,6 +398,8 @@ class WebManagementService:
                 ]
             )
             return result
+
+        return execute()
 
     def regenerate_policy_narrative(
         self,

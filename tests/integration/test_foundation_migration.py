@@ -119,6 +119,7 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     assert {
         "agent_policy_drafts",
         "agent_policy_draft_revisions",
+        "agent_action_proposals",
     } <= set(inspector.get_table_names())
     assert "current_summary_id" in {item["name"] for item in inspector.get_columns("agent_threads")}
     assert "purpose" in {item["name"] for item in inspector.get_columns("agent_model_calls")}
@@ -146,6 +147,21 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     } <= {
         item["name"]
         for item in inspector.get_columns("agent_policy_draft_revisions")
+    }
+    assert {
+        "source_draft_revision_id",
+        "payload",
+        "payload_hash",
+        "diff_snapshot",
+        "impact_snapshot",
+        "proposal_digest",
+        "expires_at",
+        "confirmed_session_id",
+        "executed_context_id",
+        "execution_error",
+    } <= {
+        item["name"]
+        for item in inspector.get_columns("agent_action_proposals")
     }
     assert {
         "context_id",
@@ -187,6 +203,13 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         item["name"] for item in inspector.get_unique_constraints("outbox_events")
     }
     engine.dispose()
+
+    run_alembic("downgrade", "20260724_17")
+    engine = create_engine(database_url)
+    assert "agent_action_proposals" not in inspect(engine).get_table_names()
+    assert "agent_policy_drafts" in inspect(engine).get_table_names()
+    engine.dispose()
+    run_alembic("upgrade", "head")
 
     run_alembic("downgrade", "20260723_16")
     engine = create_engine(database_url)

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from experiment_guardian.application.action_proposals import ActionProposalService
 from experiment_guardian.application.agent import AgentConversationService
 from experiment_guardian.application.agent_tools import AgentToolRegistry
 from experiment_guardian.application.experiments import (
@@ -171,12 +172,23 @@ def get_agent_tool_registry() -> AgentToolRegistry:
         get_session_factory(),
         get_project_repository(),
         get_policy_draft_service(),
+        get_action_proposal_service(),
     )
 
 
 @lru_cache(maxsize=1)
 def get_policy_draft_service() -> PolicyDraftService:
     return PolicyDraftService(get_session_factory(), get_project_repository())
+
+
+@lru_cache(maxsize=1)
+def get_action_proposal_service() -> ActionProposalService:
+    return ActionProposalService(
+        get_session_factory(),
+        get_project_repository(),
+        get_policy_draft_service(),
+        get_web_management_service(),
+    )
 
 
 @lru_cache(maxsize=1)

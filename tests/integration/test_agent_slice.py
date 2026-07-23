@@ -146,7 +146,13 @@ class SummaryAwareAgentModel(AgentChatModel):
             if self.fail_summary:
                 raise ServiceUnavailableError("summary provider unavailable")
             source = json.loads(messages[1].content.split("\n", 1)[1])
-            schema_version = 2 if "schema_version=2" in messages[1].content else 1
+            schema_version = (
+                3
+                if "schema_version=3" in messages[1].content
+                else 2
+                if "schema_version=2" in messages[1].content
+                else 1
+            )
             payload = {
                 "schema_version": schema_version,
                 "covered_sequence_from": source["covered_sequence_from"],
@@ -157,8 +163,10 @@ class SummaryAwareAgentModel(AgentChatModel):
                 "source_message_ids": source["source_message_ids"],
                 "formal_reference_labels": [],
             }
-            if schema_version == 2:
+            if schema_version >= 2:
                 payload["draft_references"] = []
+            if schema_version == 3:
+                payload["proposal_references"] = []
             yield AgentModelEvent(event_type="text_delta", text=json.dumps(payload))
             yield AgentModelEvent(event_type="completed", finish_reason="stop")
             return

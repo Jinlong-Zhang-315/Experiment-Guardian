@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -93,6 +94,17 @@ ACTIVE_SUBMISSION_STATUSES = {
     SubmissionStatus.NEEDS_REVIEW,
 }
 IMPACT_ITEM_LIMIT = 20
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyDraftProposalSource:
+    draft: AgentPolicyDraft
+    revision: AgentPolicyDraftRevision
+    bundle: ProjectContextBundle
+    candidate: PolicyDraftCandidate
+    validation: PolicyDraftValidation
+    impact: PolicyDraftImpact
+    freshness: PolicyDraftFreshness
 
 
 def _decode_cursor(cursor: str | None) -> int:
@@ -500,6 +512,74 @@ class PolicyDraftService:
                 current,
                 current.pending_state_hash != row.pending_state_hash,
             )
+
+    def load_proposal_source(
+        self,
+        session: Session,
+        *,
+        project_id: UUID,
+        draft_id: UUID,
+        identity: RequestIdentity,
+        for_update: bool,
+    ) -> PolicyDraftProposalSource:
+        """在调用方事务中重算提案所依赖的草稿、正式版本和动态影响。"""
+
+        self._require_web_identity(identity)
+        draft = self._require_draft(
+            session,
+            project_id=project_id,
+            draft_id=draft_id,
+            identity=identity,
+            for_update=for_update,
+        )
+        revision = self._require_revision(session, draft.id, draft.current_revision)
+        bundle = self._projects.load_context_bundle(
+            session,
+            project_id=project_id,
+            user_id=identity.user_id,
+            team_id=identity.team_id,
+        )
+        candidate = PolicyDraftCandidate.model_validate(revision.candidate_payload)
+        validation = validate_policy_candidate(
+            candidate,
+            [
+                PolicyDraftAmbiguity.model_validate(item)
+                for item in revision.unresolved_ambiguities
+            ],
+        )
+        impact = self._build_impact(
+            session,
+            draft=draft,
+            candidate=candidate,
+            validation=validation,
+            diff=diff_policy_candidates(self._base_candidate(draft), candidate),
+        )
+        return PolicyDraftProposalSource(
+            draft=draft,
+            revision=revision,
+            bundle=bundle,
+            candidate=candidate,
+            validation=validation,
+            impact=impact,
+            freshness=self._freshness(draft, bundle),
+        )
+
+    def require_agent_source(
+        self,
+        session: Session,
+        *,
+        run_id: UUID,
+        tool_call_id: UUID,
+        project_id: UUID,
+        identity: RequestIdentity,
+    ) -> tuple[AgentRun, AgentThread]:
+        return self._require_agent_source(
+            session,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            project_id=project_id,
+            identity=identity,
+        )
 
     def _revise(
         self,

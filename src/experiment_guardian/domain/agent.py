@@ -173,8 +173,18 @@ class AgentDraftSummaryReference(ContractModel):
     unresolved_ambiguities: list[str] = Field(default_factory=list, max_length=20)
 
 
+class AgentProposalSummaryReference(ContractModel):
+    proposal_id: UUID
+    operation: str = Field(min_length=1, max_length=32)
+    status: str = Field(min_length=1, max_length=32)
+    proposal_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_draft_id: UUID
+    source_draft_revision: int = Field(ge=1)
+    expires_at: datetime
+
+
 class AgentContextSummaryPayload(ContractModel):
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     covered_sequence_from: int = Field(ge=1)
     covered_sequence_to: int = Field(ge=1)
     user_requests_and_context: list[str] = Field(default_factory=list, max_length=30)
@@ -183,6 +193,10 @@ class AgentContextSummaryPayload(ContractModel):
     source_message_ids: list[UUID] = Field(min_length=1, max_length=200)
     formal_reference_labels: list[str] = Field(default_factory=list, max_length=50)
     draft_references: list[AgentDraftSummaryReference] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+    proposal_references: list[AgentProposalSummaryReference] = Field(
         default_factory=list,
         max_length=20,
     )
@@ -195,6 +209,10 @@ class AgentContextSummaryPayload(ContractModel):
             raise ValueError("上下文摘要的 source_message_ids 不能重复")
         if self.schema_version == 1 and self.draft_references:
             raise ValueError("schema_version=1 的上下文摘要不能包含 draft_references")
+        if self.schema_version in {1, 2} and self.proposal_references:
+            raise ValueError(
+                "schema_version<3 的上下文摘要不能包含 proposal_references"
+            )
         return self
 
 
