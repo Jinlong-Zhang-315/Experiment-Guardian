@@ -97,11 +97,14 @@ Terraform 位于 `infra/terraform/`，已经通过 Terraform 1.9.8 和 AWS Provi
 
 ```text
 Browser (127.0.0.1 only)
-   |  local_owner login -> normal HttpOnly Session + CSRF
+   |  Host: 127.0.0.1/localhost only
    v
-Web/Nginx -> FastAPI API ------------------------+--> CockroachDB
-                 |                               |    business truth + sessions
-                 |                               |    workflow jobs + outbox
+Web/Nginx Host allowlist
+   |
+   v
+FastAPI TrustedHost -> local_owner login --------+--> CockroachDB
+                 |    normal HttpOnly Session     |    business truth + sessions
+                 |    + CSRF                      |    workflow jobs + outbox
                  +--> S3CompatibleObjectStorage -+--> MinIO versioned bucket
                  |                                    fixed VersionId evidence
                  +--> Outbox transaction
@@ -114,6 +117,9 @@ Web/Nginx -> FastAPI API ------------------------+--> CockroachDB
                           |
                           +--> BailianSummaryGenerator
                           +--> BailianEmbeddingGenerator (VECTOR(1024))
+                               malformed upstream output
+                               -> ServiceUnavailableError
+                               -> persisted retry/dead letter
 
 minio-init: create bucket + enable/verify Versioning, then exit
 database-init -> migration -> local-init: ordered one-shot services

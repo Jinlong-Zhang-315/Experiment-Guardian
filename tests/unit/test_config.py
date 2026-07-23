@@ -91,6 +91,18 @@ def test_local_mode_rejects_production_and_inconsistent_backends() -> None:
         Settings.model_validate(_local_settings(queue_backend="sqs"))
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("web_public_base_url", "http://guardian.attacker.example"),
+        ("web_frontend_url", "https://192.168.1.20:5173"),
+    ],
+)
+def test_local_mode_rejects_non_loopback_web_hosts(field: str, value: str) -> None:
+    with pytest.raises(ValidationError, match="127.0.0.1 或 localhost"):
+        Settings.model_validate(_local_settings(**{field: value}))
+
+
 def test_local_mode_requires_bailian_and_real_s3_compatible_inputs() -> None:
     with pytest.raises(ValidationError, match="BAILIAN_API_KEY"):
         Settings.model_validate(_local_settings(bailian_api_key=""))

@@ -136,6 +136,8 @@ services:
 
   web:
     build: ./web
+    environment:
+      NGINX_ALLOWED_HOSTS: "127.0.0.1 localhost"
     depends_on:
       api:
         condition: service_healthy

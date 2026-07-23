@@ -6,6 +6,7 @@
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -141,6 +142,21 @@ class Settings(BaseSettings):
                 raise ValueError("本地部署后端配置不一致: " + ", ".join(invalid))
             if not self.database_url.startswith("cockroachdb+psycopg://"):
                 raise ValueError("本地 DATABASE_URL 必须使用 cockroachdb+psycopg:// dialect")
+            local_urls = {
+                "WEB_PUBLIC_BASE_URL": self.web_public_base_url,
+                "WEB_FRONTEND_URL": self.web_frontend_url,
+            }
+            invalid_urls = [
+                name
+                for name, value in local_urls.items()
+                if urlparse(value).scheme not in {"http", "https"}
+                or urlparse(value).hostname not in {"127.0.0.1", "localhost"}
+            ]
+            if invalid_urls:
+                raise ValueError(
+                    "本地 Web URL 必须使用 127.0.0.1 或 localhost: "
+                    + ", ".join(invalid_urls)
+                )
             required_local = {
                 "LOCAL_OWNER_EMAIL": self.local_owner_email,
                 "S3_ENDPOINT_URL": self.s3_endpoint_url,
@@ -217,6 +233,17 @@ class Settings(BaseSettings):
             ):
                 raise ValueError("MCP OAuth resource identifier 必须与 MCP_PUBLIC_URL 一致")
         return self
+
+    def local_web_allowed_hosts(self) -> list[str]:
+        """返回 URL 中明确配置的回环 Host，供应用层拒绝 DNS rebinding。"""
+
+        return sorted(
+            {
+                host
+                for value in (self.web_public_base_url, self.web_frontend_url)
+                if (host := urlparse(value).hostname) is not None
+            }
+        )
 
 
 @lru_cache(maxsize=1)

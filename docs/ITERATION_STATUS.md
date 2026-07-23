@@ -35,10 +35,12 @@
   S3 或 Bedrock 客户端。
 * `local_owner` 只接受唯一 Team 的真实 Owner Membership，继续使用 WebSession、CSRF、实时
   RBAC、近期认证和审计；production 启动直接拒绝。
+* local_owner 只允许配置的回环 URL；Nginx 和 FastAPI 两层 Host 白名单在 Session 签发前
+  拒绝 DNS rebinding Host。
 * MinIO 复用 S3 协议，要求真实 VersionId、固定版本读取、SHA-256/大小/类型验证和防覆盖。
 * DatabaseOutboxQueue 复用 Outbox、WorkflowJob、lease、generation、重试和死信状态。
 * 百炼 OpenAI-compatible 摘要/embedding 适配器；固定 1024 维、有限数值和范数校验，保存
-  provider/model/dimension/document version。
+  provider/model/dimension/document version；畸形成功响应统一进入可持久化重试和死信路径。
 * Compose 明确串行 database-init、migration、local-init，并由 minio-init 开启 Versioning。
 * `bootstrap-local` 幂等创建 User、Team、Owner Membership、Project 和首版正式策略。
 

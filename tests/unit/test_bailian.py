@@ -64,6 +64,31 @@ def test_bailian_summary_rejects_http_empty_and_tool_outputs(
         generator.generate(system_prompt="system", user_prompt="facts")
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"choices": [{"message": None}]},
+        {"choices": [{"message": []}]},
+        {"choices": [None]},
+        {
+            "choices": [{"message": {"content": "summary"}}],
+            "usage": [],
+        },
+    ],
+)
+def test_bailian_summary_normalizes_malformed_success_responses(
+    payload: dict[str, object],
+) -> None:
+    generator = BailianSummaryGenerator(
+        api_key="secret",
+        base_url="https://bailian.example/v1",
+        model_id="qwen-summary",
+        client=_client(lambda _: httpx.Response(200, json=payload)),
+    )
+    with pytest.raises(ServiceUnavailableError, match="无效的摘要响应"):
+        generator.generate(system_prompt="system", user_prompt="facts")
+
+
 def test_bailian_timeout_is_retryable_service_failure() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("timeout", request=request)
@@ -122,5 +147,27 @@ def test_bailian_embedding_rejects_invalid_vectors(vector: list[float]) -> None:
             )
         ),
     )
-    with pytest.raises(ValueError, match="embedding"):
+    with pytest.raises(ServiceUnavailableError, match="embedding"):
+        generator.embed("stable facts")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"data": [{}]},
+        {"data": [None]},
+        {"data": [[]]},
+        {"data": [{"embedding": [1.0, *([0.0] * 1023)]}], "usage": []},
+    ],
+)
+def test_bailian_embedding_normalizes_malformed_success_responses(
+    payload: dict[str, object],
+) -> None:
+    generator = BailianEmbeddingGenerator(
+        api_key="secret",
+        base_url="https://bailian.example/v1",
+        model_id="text-embedding",
+        client=_client(lambda _: httpx.Response(200, json=payload)),
+    )
+    with pytest.raises(ServiceUnavailableError, match="无效的 embedding 响应"):
         generator.embed("stable facts")

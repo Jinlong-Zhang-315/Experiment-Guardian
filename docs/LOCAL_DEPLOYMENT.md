@@ -11,6 +11,8 @@
 `local_owner` 会把任何成功访问登录入口的人认证为 `LOCAL_OWNER_EMAIL` 对应的数据库 Owner。
 因此 API、Web、CockroachDB 和 MinIO 端口默认全部绑定 `127.0.0.1`，不得通过 `0.0.0.0`、
 反向代理、端口转发或公网隧道暴露。Settings 在 `production` 环境会拒绝 local 模式启动。
+FastAPI 只接受 `WEB_PUBLIC_BASE_URL`/`WEB_FRONTEND_URL` 中明确配置的回环 Host，Compose
+Nginx 只接受 `127.0.0.1` 和 `localhost`；其他 Host 会在签发 Owner Session 前被拒绝。
 
 百炼 API Key 仅注入 API/Worker 容器环境，不进入浏览器、数据库或仓库。`.env.local` 已被
 Git 忽略；不要把真实 Key 写入 `.env.local.example`。

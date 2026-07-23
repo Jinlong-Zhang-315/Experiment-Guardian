@@ -1013,6 +1013,33 @@
 * 本轮未持有真实百炼 Key，因此实际 Compose 闭环使用 HTTP mock 完成模型协议验收；真实百炼
   双模型调用保留为显式 integration gate。
 
+## 2026-07-23 / R14 Local 安全与模型失败边界修复
+
+版本：working tree。
+
+### 修复的问题
+
+* local_owner 模式新增 FastAPI `TrustedHostMiddleware`，只接受配置 URL 中的
+  `127.0.0.1`/`localhost`；非回环 Web URL 在 Settings 启动校验阶段直接失败。
+* 本地 Compose 的 Nginx 使用运行时模板，允许 Host 由部署环境提供；本地值只允许
+  `127.0.0.1 localhost`，默认 server 对其他 Host 返回 421，阻止 DNS rebinding 在登录前
+  获得 Owner Session。云端镜像继续使用独立的可配置 Host 模式。
+* 百炼摘要严格验证 choice、message、usage 为 JSON 对象；embedding 严格验证 data item、
+  vector 和 usage。所有 HTTP 200 畸形结构统一转换为 `ServiceUnavailableError`，继续进入
+  现有 Job 错误持久化、最大尝试次数和死信流程。
+
+### 验证结果
+
+* 新增恶意 Host、非回环 URL、`message=null/list`、`data=[null]/[{}]` 和非法 usage 回归。
+* 后端全量测试 `219 passed, 8 skipped`；Ruff 和 mypy（63 个源码文件）通过。
+* Web ESLint、Vitest、production build 和 Playwright desktop/mobile 2 个场景通过。
+* Compose 重建后 API、Worker、Web 正常启动；合法回环 Host 可登录，恶意 Host 由 Nginx
+  返回 421，绕过 Nginx 直连 API 时由 FastAPI 返回 400。
+
+### 已知遗留项
+
+* Host 白名单不把 local_owner 变成远程安全认证；本地服务仍不得暴露到局域网或公网。
+
 ## 新日志模板
 
 ```text

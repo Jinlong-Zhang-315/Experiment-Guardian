@@ -111,13 +111,21 @@ class BailianSummaryGenerator(SummaryTextGenerator):
             choices = payload["choices"]
             if not isinstance(choices, list) or len(choices) != 1:
                 raise ValueError("choices 数量无效")
-            message = choices[0]["message"]
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                raise ValueError("choice 不是对象")
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                raise ValueError("message 不是对象")
             if message.get("tool_calls"):
                 raise ValueError("响应包含工具调用")
-            text = message["content"]
+            text = message.get("content")
             if not isinstance(text, str) or not text.strip():
                 raise ValueError("摘要为空")
-            usage = payload.get("usage") or {}
+            raw_usage = payload.get("usage")
+            if raw_usage is not None and not isinstance(raw_usage, dict):
+                raise ValueError("usage 不是对象")
+            usage = raw_usage or {}
             return SummaryModelOutput(
                 text=text.strip(),
                 input_tokens=_optional_nonnegative_int(usage.get("prompt_tokens")),
@@ -184,7 +192,10 @@ class BailianEmbeddingGenerator(EmbeddingGenerator):
             data = payload["data"]
             if not isinstance(data, list) or len(data) != 1:
                 raise ValueError("embedding data 数量无效")
-            raw_vector = data[0]["embedding"]
+            item = data[0]
+            if not isinstance(item, dict):
+                raise ValueError("embedding item 不是对象")
+            raw_vector = item.get("embedding")
             if not isinstance(raw_vector, list) or len(raw_vector) != self._dimension:
                 raise ValueError("embedding 维度错误")
             vector: list[float] = []
@@ -199,15 +210,18 @@ class BailianEmbeddingGenerator(EmbeddingGenerator):
             if not math.isfinite(norm) or norm <= 1e-12:
                 raise ValueError("embedding 范数无效")
             normalized = [item / norm for item in vector]
-            usage = payload.get("usage") or {}
+            raw_usage = payload.get("usage")
+            if raw_usage is not None and not isinstance(raw_usage, dict):
+                raise ValueError("usage 不是对象")
+            usage = raw_usage or {}
             return EmbeddingModelOutput(
                 vector=normalized,
                 input_tokens=_optional_nonnegative_int(
                     usage.get("prompt_tokens", usage.get("total_tokens"))
                 ),
             )
-        except (KeyError, TypeError, ValueError):
-            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ServiceUnavailableError("百炼返回了无效的 embedding 响应") from exc
 
 
 def _optional_nonnegative_int(value: object) -> int | None:

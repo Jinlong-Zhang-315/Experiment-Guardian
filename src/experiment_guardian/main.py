@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from experiment_guardian import __version__
 from experiment_guardian.api.errors import application_error_handler
@@ -28,6 +29,11 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Idempotency-Key", "X-CSRF-Token"],
     )
+    if settings.web_auth_mode == "local_owner":
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=settings.local_web_allowed_hosts(),
+        )
     app.include_router(api_router, prefix=settings.api_prefix)
     return app
 
