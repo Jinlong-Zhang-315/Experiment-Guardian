@@ -19,7 +19,7 @@ locals {
   ])
   mcp_oauth_scopes = [for name in sort(tolist(local.mcp_scope_names)) : "${local.mcp_scope_prefix}/${name}"]
 
-  common_environment = [
+  common_environment = concat([
     { name = "APP_ENV", value = "production" },
     { name = "DEPLOYMENT_MODE", value = "cloud" },
     { name = "LOG_LEVEL", value = "INFO" },
@@ -38,14 +38,21 @@ locals {
     { name = "COGNITO_ISSUER_URL", value = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.main.id}" },
     { name = "COGNITO_DOMAIN", value = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${var.aws_region}.amazoncognito.com" },
     { name = "COGNITO_WEB_CLIENT_ID", value = aws_cognito_user_pool_client.web.id },
-  ]
+    { name = "AGENT_ENABLED", value = tostring(var.agent_enabled) },
+    ], var.agent_enabled ? [
+    { name = "AGENT_PROVIDER", value = "bailian" },
+    { name = "BAILIAN_BASE_URL", value = var.bailian_agent_base_url },
+    { name = "BAILIAN_AGENT_MODEL", value = var.bailian_agent_model },
+  ] : [])
 
-  common_secrets = [
+  common_secrets = concat([
     { name = "DATABASE_URL", valueFrom = "${aws_secretsmanager_secret.runtime.arn}:database_url::" },
     { name = "WEB_OIDC_STATE_KEY", valueFrom = "${aws_secretsmanager_secret.runtime.arn}:web_oidc_state_key::" },
     { name = "WEB_CSRF_SECRET", valueFrom = "${aws_secretsmanager_secret.runtime.arn}:web_csrf_secret::" },
     { name = "COGNITO_WEB_CLIENT_SECRET", valueFrom = "${aws_secretsmanager_secret.runtime.arn}:cognito_web_client_secret::" },
-  ]
+    ], var.agent_enabled ? [
+    { name = "BAILIAN_API_KEY", valueFrom = "${aws_secretsmanager_secret.runtime.arn}:bailian_agent_api_key::" },
+  ] : [])
 }
 
 data "aws_availability_zones" "available" {

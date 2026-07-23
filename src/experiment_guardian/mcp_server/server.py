@@ -56,7 +56,8 @@ def _build_mcp() -> FastMCP:
         instructions=(
             "读取经过用户确认的团队实验上下文、执行训练前配置一致性检查，并提交可追溯的"
             "实验草稿。系统提高一致性、可追溯性和风险可见性，不保证实验行为或结果正确。"
-            "LOCAL_ATTESTED 字段仅代表本地 Agent 声明。"
+            "LOCAL_ATTESTED 字段仅代表本地 Agent 声明。project_get_context 返回的"
+            "human_readable 仅用于理解，执行与治理必须使用同一响应中的结构化字段。"
         ),
         host=settings.mcp_host,
         port=settings.mcp_port,
@@ -77,7 +78,7 @@ async def health(_: Request) -> JSONResponse:
 
 @mcp.tool()
 def project_get_context(project_id: str) -> dict[str, Any]:
-    """读取当前正式上下文、Active 意图、已确认约束及其不可省略的版本信息。"""
+    """同时读取人类可读说明和完整结构化正式事实；所有治理决策必须以结构化数据为准。"""
 
     identity = get_identity_provider().current_identity()
     result = get_guardian_use_cases().project_get_context(

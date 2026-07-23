@@ -1,5 +1,6 @@
 """项目正式上下文的 SQLAlchemy 仓储。"""
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -14,6 +15,7 @@ from experiment_guardian.application.errors import (
 from experiment_guardian.domain.contracts import (
     ExperimentIntentPayload,
     ExperimentIntentReference,
+    HumanReadablePolicy,
     ParameterConstraint,
     ProjectContextBundle,
     ProjectContextPayload,
@@ -21,13 +23,24 @@ from experiment_guardian.domain.contracts import (
 )
 from experiment_guardian.domain.enums import (
     ContextStatus,
+    ExperimentMode,
     IntentStatus,
     ProtectionLevel,
     TeamRole,
     VerificationStatus,
 )
+from experiment_guardian.domain.policy_narrative import (
+    POLICY_NARRATIVE_FORMAT,
+    POLICY_NARRATIVE_GENERATOR,
+    POLICY_NARRATIVE_NOTICE,
+    POLICY_NARRATIVE_VERSION,
+    build_policy_narrative_source,
+    policy_narrative_source_hash,
+    render_policy_narrative,
+)
 from experiment_guardian.infrastructure.models import (
     ExperimentIntent,
+    PolicyNarrative,
     Project,
     ProjectContext,
     ProtectedParameter,
@@ -95,53 +108,124 @@ class SqlAlchemyProjectRepository:
         constraint_contracts = [self._constraint_contract(item) for item in constraints]
         self._validate_policy_consistency(intent, constraint_contracts)
 
-        return ProjectContextBundle(
-            context=ProjectContextReference(
-                context_id=context.id,
-                version=context.version,
-                confirmed_by=context.confirmed_by,
-                confirmed_at=context.confirmed_at,
-                effective_at=context.effective_at,
-                change_reason=context.change_reason,
-            ),
-            active_intent=ExperimentIntentReference(
-                intent_id=intent.id,
-                version=intent.version,
-                context_id=context.id,
-                context_version=context.version,
-                status=intent.status,
-                mode=intent.experiment_mode,
-            ),
+        context_reference, intent_reference, context_payload, intent_payload = (
+            self._policy_contracts(project, context, intent)
+        )
+        human_readable = self._resolve_policy_narrative(
+            session,
+            context=context_reference,
+            intent=intent_reference,
+            context_payload=context_payload,
+            intent_payload=intent_payload,
             constraints=constraint_contracts,
-            context_payload=ProjectContextPayload(
-                project_id=project.id,
-                project_name=project.name,
-                description=project.description,
-                repository_url=project.repository_url,
-                goal=context.goal,
-                non_goals=context.non_goals,
-                mainline_model=context.mainline_model,
-                baseline=context.baseline,
-                dataset=context.dataset,
-                protocol=context.protocol,
-                primary_metric=context.primary_metric,
-                default_seeds=context.default_seeds,
-                active_branch=context.active_branch,
-                active_config=context.active_config,
-                deprecated_items=context.deprecated_items,
-                key_decisions=context.key_decisions,
-            ),
-            intent_payload=ExperimentIntentPayload(
-                name=intent.name,
-                objective=intent.objective,
-                hypothesis=intent.hypothesis,
-                allowed_variables=intent.allowed_variables,
-                controlled_variables=intent.controlled_variables,
-                expected_outputs=intent.expected_outputs,
-                acceptance_criteria=intent.acceptance_criteria,
-                original_message=intent.original_message,
-                intent_receipt=intent.intent_receipt,
-            ),
+        )
+        return ProjectContextBundle(
+            context=context_reference,
+            active_intent=intent_reference,
+            constraints=constraint_contracts,
+            context_payload=context_payload,
+            intent_payload=intent_payload,
+            human_readable=human_readable,
+        )
+
+    def load_policy_narrative(
+        self,
+        session: Session,
+        *,
+        project_id: UUID,
+        context_id: UUID,
+    ) -> HumanReadablePolicy:
+        project, context, intent, constraints = self._load_policy_version(
+            session,
+            project_id=project_id,
+            context_id=context_id,
+        )
+        context_reference, intent_reference, context_payload, intent_payload = (
+            self._policy_contracts(project, context, intent)
+        )
+        return self._resolve_policy_narrative(
+            session,
+            context=context_reference,
+            intent=intent_reference,
+            context_payload=context_payload,
+            intent_payload=intent_payload,
+            constraints=constraints,
+        )
+
+    def regenerate_policy_narrative(
+        self,
+        session: Session,
+        *,
+        project_id: UUID,
+        context_id: UUID,
+        generated_by: UUID,
+    ) -> HumanReadablePolicy:
+        """重建派生文本；模板失败会持久化 FAILED，不影响正式结构化版本。"""
+
+        project, context, intent, constraints = self._load_policy_version(
+            session,
+            project_id=project_id,
+            context_id=context_id,
+        )
+        context_reference, intent_reference, context_payload, intent_payload = (
+            self._policy_contracts(project, context, intent)
+        )
+        source_hash: str | None = None
+        content: str | None = None
+        error: str | None = None
+        try:
+            source = build_policy_narrative_source(
+                context=context_reference,
+                intent=intent_reference,
+                context_payload=context_payload,
+                intent_payload=intent_payload,
+                constraints=constraints,
+            )
+            source_hash = policy_narrative_source_hash(source)
+            content = render_policy_narrative(source)
+        except Exception as exc:
+            # 该边界只包围纯派生计算；后续数据库错误仍由事务正常上抛。
+            error = f"人类可读说明生成失败：{str(exc)[:1800]}"
+
+        record = session.scalar(
+            select(PolicyNarrative)
+            .where(
+                PolicyNarrative.context_id == context.id,
+                PolicyNarrative.intent_id == intent.id,
+            )
+            .with_for_update()
+        )
+        now = datetime.now(UTC)
+        values = {
+            "project_id": project.id,
+            "context_id": context.id,
+            "context_version": context.version,
+            "intent_id": intent.id,
+            "intent_version": intent.version,
+            "source_hash": source_hash,
+            "format": POLICY_NARRATIVE_FORMAT,
+            "generator": POLICY_NARRATIVE_GENERATOR,
+            "generator_version": POLICY_NARRATIVE_VERSION,
+            "status": "FAILED" if error else "READY",
+            "content": None if error else content,
+            "error": error,
+            "generated_by": generated_by,
+            "generated_at": now,
+        }
+        if record is None:
+            record = PolicyNarrative(**values)
+            session.add(record)
+        else:
+            for key, value in values.items():
+                setattr(record, key, value)
+        session.flush()
+        return self._resolve_policy_narrative(
+            session,
+            context=context_reference,
+            intent=intent_reference,
+            context_payload=context_payload,
+            intent_payload=intent_payload,
+            constraints=constraints,
         )
 
     @staticmethod
@@ -200,6 +284,202 @@ class SqlAlchemyProjectRepository:
             raise ConflictError("项目存在多个 ACTIVE Intent，请先修复数据完整性")
         return context, intents[0]
 
+    @staticmethod
+    def _load_policy_version(
+        session: Session,
+        *,
+        project_id: UUID,
+        context_id: UUID,
+    ) -> tuple[Project, ProjectContext, ExperimentIntent, list[ParameterConstraint]]:
+        project = session.get(Project, project_id)
+        context = session.get(ProjectContext, context_id)
+        if project is None or context is None or context.project_id != project_id:
+            raise ResourceNotFoundError("项目中不存在该 Context 版本")
+        intents = session.scalars(
+            select(ExperimentIntent)
+            .where(
+                ExperimentIntent.project_id == project_id,
+                ExperimentIntent.context_id == context_id,
+                ExperimentIntent.context_version == context.version,
+                ExperimentIntent.experiment_mode == ExperimentMode.FORMAL,
+                ExperimentIntent.verification_status == VerificationStatus.CONFIRMED,
+            )
+            .order_by(ExperimentIntent.version.desc())
+        ).all()
+        if not intents:
+            raise ResourceNotFoundError("Context 没有已确认的正式 Experiment Intent")
+        intent = intents[0]
+        rows = session.scalars(
+            select(ProtectedParameter)
+            .where(
+                ProtectedParameter.project_id == project_id,
+                ProtectedParameter.context_id == context_id,
+                ProtectedParameter.context_version == context.version,
+                ProtectedParameter.confirmed_by.is_not(None),
+                ProtectedParameter.verification_status.in_(
+                    [VerificationStatus.CONFIRMED, VerificationStatus.SUPERSEDED]
+                ),
+                or_(
+                    ProtectedParameter.intent_id.is_(None),
+                    ProtectedParameter.intent_id == intent.id,
+                ),
+            )
+            .order_by(ProtectedParameter.parameter_path, ProtectedParameter.version.desc())
+        ).all()
+        latest_by_path: dict[str, ProtectedParameter] = {}
+        for item in rows:
+            latest_by_path.setdefault(item.parameter_path, item)
+        constraints = [
+            SqlAlchemyProjectRepository._constraint_contract(item)
+            for item in latest_by_path.values()
+        ]
+        return project, context, intent, constraints
+
+    @staticmethod
+    def _policy_contracts(
+        project: Project,
+        context: ProjectContext,
+        intent: ExperimentIntent,
+    ) -> tuple[
+        ProjectContextReference,
+        ExperimentIntentReference,
+        ProjectContextPayload,
+        ExperimentIntentPayload,
+    ]:
+        if (
+            context.confirmed_by is None
+            or context.confirmed_at is None
+            or context.effective_at is None
+        ):
+            raise ConflictError("正式 Context 版本缺少确认或生效信息")
+        return (
+            ProjectContextReference(
+                context_id=context.id,
+                version=context.version,
+                confirmed_by=context.confirmed_by,
+                confirmed_at=context.confirmed_at,
+                effective_at=context.effective_at,
+                change_reason=context.change_reason,
+            ),
+            ExperimentIntentReference(
+                intent_id=intent.id,
+                version=intent.version,
+                context_id=context.id,
+                context_version=context.version,
+                status=intent.status,
+                mode=intent.experiment_mode,
+            ),
+            ProjectContextPayload(
+                project_id=project.id,
+                project_name=project.name,
+                description=project.description,
+                repository_url=project.repository_url,
+                goal=context.goal,
+                non_goals=context.non_goals,
+                mainline_model=context.mainline_model,
+                baseline=context.baseline,
+                dataset=context.dataset,
+                protocol=context.protocol,
+                primary_metric=context.primary_metric,
+                default_seeds=context.default_seeds,
+                active_branch=context.active_branch,
+                active_config=context.active_config,
+                deprecated_items=context.deprecated_items,
+                key_decisions=context.key_decisions,
+            ),
+            ExperimentIntentPayload(
+                name=intent.name,
+                objective=intent.objective,
+                hypothesis=intent.hypothesis,
+                allowed_variables=intent.allowed_variables,
+                controlled_variables=intent.controlled_variables,
+                expected_outputs=intent.expected_outputs,
+                acceptance_criteria=intent.acceptance_criteria,
+                original_message=intent.original_message,
+                intent_receipt=intent.intent_receipt,
+            ),
+        )
+
+    @staticmethod
+    def _resolve_policy_narrative(
+        session: Session,
+        *,
+        context: ProjectContextReference,
+        intent: ExperimentIntentReference,
+        context_payload: ProjectContextPayload,
+        intent_payload: ExperimentIntentPayload,
+        constraints: list[ParameterConstraint],
+    ) -> HumanReadablePolicy:
+        source_hash: str | None
+        try:
+            source_hash = policy_narrative_source_hash(
+                build_policy_narrative_source(
+                    context=context,
+                    intent=intent,
+                    context_payload=context_payload,
+                    intent_payload=intent_payload,
+                    constraints=constraints,
+                )
+            )
+        except Exception:
+            source_hash = None
+        record = session.scalar(
+            select(PolicyNarrative).where(
+                PolicyNarrative.context_id == context.context_id,
+                PolicyNarrative.intent_id == intent.intent_id,
+            )
+        )
+        common = {
+            "format": POLICY_NARRATIVE_FORMAT,
+            "generator": POLICY_NARRATIVE_GENERATOR,
+            "generator_version": POLICY_NARRATIVE_VERSION,
+            "context_id": context.context_id,
+            "context_version": context.version,
+            "intent_id": intent.intent_id,
+            "intent_version": intent.version,
+            "current_source_hash": source_hash,
+            "governance_notice": POLICY_NARRATIVE_NOTICE,
+        }
+        if record is None:
+            return HumanReadablePolicy(
+                status="MISSING",
+                error="该结构化版本尚未生成对应的人类可读说明",
+                **common,
+            )
+        record_values = {
+            "source_hash": record.source_hash,
+            "generated_by": record.generated_by,
+            "generated_at": record.generated_at,
+        }
+        if record.status == "FAILED":
+            return HumanReadablePolicy(
+                status="FAILED",
+                error=record.error or "人类可读说明生成失败",
+                **common,
+                **record_values,
+            )
+        if (
+            source_hash is None
+            or record.source_hash != source_hash
+            or record.context_version != context.version
+            or record.intent_version != intent.version
+            or record.generator != POLICY_NARRATIVE_GENERATOR
+            or record.generator_version != POLICY_NARRATIVE_VERSION
+        ):
+            return HumanReadablePolicy(
+                status="STALE",
+                error="已保存说明与当前结构化来源或模板版本不一致，旧内容已隐藏",
+                **common,
+                **record_values,
+            )
+        return HumanReadablePolicy(
+            status="READY",
+            content=record.content,
+            error=None,
+            **common,
+            **record_values,
+        )
+
     def load_pending_constraints(
         self,
         session: Session,
@@ -256,6 +536,8 @@ class SqlAlchemyProjectRepository:
         allowed_range = item.allowed_range or {}
         try:
             return ParameterConstraint(
+                constraint_id=item.id,
+                version=item.version,
                 parameter_path=item.parameter_path,
                 context_id=item.context_id,
                 context_version=item.context_version,

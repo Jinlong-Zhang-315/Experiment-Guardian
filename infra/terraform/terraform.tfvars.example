@@ -9,6 +9,10 @@ cognito_domain_prefix         = "experiment-guardian-demo-example"
 cockroach_database_url        = "cockroachdb+psycopg://user:password@cluster.example:26257/defaultdb?sslmode=verify-full"
 bedrock_summary_model_id      = "anthropic.claude-3-haiku-20240307-v1:0"
 container_image_tag           = "r14-demo"
+agent_enabled                 = false
+bailian_agent_base_url        = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+bailian_agent_model           = ""
+bailian_agent_api_key         = ""
 
 mcp_clients = {
   codex = {

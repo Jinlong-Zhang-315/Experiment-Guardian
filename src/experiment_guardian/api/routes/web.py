@@ -11,7 +11,11 @@ from experiment_guardian.application.container import (
     get_web_management_service,
 )
 from experiment_guardian.application.errors import InputValidationError
-from experiment_guardian.domain.contracts import ExperimentQueryCommand, ExperimentQueryResult
+from experiment_guardian.domain.contracts import (
+    ExperimentQueryCommand,
+    ExperimentQueryResult,
+    HumanReadablePolicy,
+)
 from experiment_guardian.domain.web_management import (
     ArtifactDownloadResult,
     ExperimentPage,
@@ -55,6 +59,24 @@ async def publish_policy_version(
         identity=identity,
         idempotency_key=idempotency_key,
         request=request,
+    )
+
+
+@router.post(
+    "/{project_id}/contexts/{context_id}/human-readable/regenerate",
+    response_model=HumanReadablePolicy,
+)
+async def regenerate_policy_narrative(
+    project_id: UUID,
+    context_id: UUID,
+    identity: CsrfIdentity,
+) -> HumanReadablePolicy:
+    """重建结构化策略的派生说明；不会修改正式 Context、Intent 或 Constraints。"""
+
+    return get_web_management_service().regenerate_policy_narrative(
+        project_id=project_id,
+        context_id=context_id,
+        identity=identity,
     )
 
 

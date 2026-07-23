@@ -139,3 +139,18 @@ def test_unknown_infrastructure_backend_names_fail_during_settings_validation(
 def test_bailian_dimension_must_match_fixed_vector_schema() -> None:
     with pytest.raises(ValidationError, match="BAILIAN_EMBEDDING_DIMENSION"):
         Settings.model_validate(_local_settings(bailian_embedding_dimension=1536))
+
+
+def test_agent_configuration_is_conditional_and_uses_a_separate_model_slot() -> None:
+    disabled = Settings.model_validate(_local_settings(agent_enabled=False))
+    assert disabled.bailian_agent_model == ""
+
+    with pytest.raises(ValidationError, match="BAILIAN_AGENT_MODEL"):
+        Settings.model_validate(_local_settings(agent_enabled=True))
+
+    enabled = Settings.model_validate(
+        _local_settings(agent_enabled=True, bailian_agent_model="qwen-agent")
+    )
+    assert enabled.agent_provider == "bailian"
+    assert enabled.bailian_summary_model == "summary-model"
+    assert enabled.bailian_agent_model == "qwen-agent"

@@ -10,6 +10,7 @@ export interface Session {
   csrf_token: string;
   recent_authentication: boolean;
   absolute_expires_at: string;
+  agent_enabled: boolean;
 }
 
 export interface Project {
@@ -22,6 +23,25 @@ export interface Project {
 
 export interface ProjectList { items: Project[] }
 
+export interface HumanReadablePolicy {
+  status: "READY" | "FAILED" | "STALE" | "MISSING";
+  format: "MARKDOWN";
+  generator: "DETERMINISTIC_TEMPLATE";
+  generator_version: string;
+  content?: string;
+  context_id: string;
+  context_version: number;
+  intent_id: string;
+  intent_version: number;
+  source_hash?: string;
+  current_source_hash?: string;
+  generated_by?: string;
+  generated_at?: string;
+  error?: string;
+  authoritative: false;
+  governance_notice: string;
+}
+
 export interface SettingsView {
   project: Project;
   current: {
@@ -30,6 +50,7 @@ export interface SettingsView {
     constraints: Array<Record<string, unknown> & { parameter_path: string; protection_level: string }>;
     context_payload: Record<string, unknown>;
     intent_payload: Record<string, unknown>;
+    human_readable?: HumanReadablePolicy;
   };
   context_history: Array<{
     context_id: string;
@@ -38,6 +59,7 @@ export interface SettingsView {
     change_reason: string;
     confirmed_by?: string;
     effective_at?: string;
+    human_readable?: HumanReadablePolicy;
   }>;
 }
 
@@ -104,3 +126,61 @@ export interface Experiment {
 }
 
 export interface Page<T> { items: T[]; next_cursor?: string }
+
+export type AgentThreadStatus = "ACTIVE" | "ARCHIVED";
+export type AgentRunStatus = "PENDING" | "RUNNING" | "RETRYABLE_FAILURE" | "SUCCEEDED" | "FAILED" | "DEAD_LETTER";
+
+export interface AgentThread {
+  thread_id: string;
+  project_id: string;
+  title: string;
+  status: AgentThreadStatus;
+  created_at: string;
+  updated_at: string;
+  archived_at?: string;
+}
+
+export interface AgentCitation {
+  evidence_id: string;
+  evidence_kind: "CONFIRMED_FACT" | "USER_PROVIDED" | "ANALYSIS" | "HYPOTHESIS";
+  entity_type: string;
+  entity_id?: string;
+  entity_version?: string;
+  label: string;
+  excerpt: string;
+}
+
+export interface AgentMessage {
+  message_id: string;
+  sequence: number;
+  role: "USER" | "ASSISTANT";
+  content: string;
+  run_id?: string;
+  citations: AgentCitation[];
+  created_at: string;
+}
+
+export interface AgentThreadView {
+  thread: AgentThread;
+  messages: AgentMessage[];
+}
+
+export interface AgentRunReceipt {
+  run_id: string;
+  thread_id: string;
+  trigger_message_id: string;
+  status: AgentRunStatus;
+  events_url: string;
+}
+
+export interface AgentRun extends AgentRunReceipt {
+  attempt_count: number;
+  max_attempts: number;
+  provider: string;
+  model_id: string;
+  error?: { code?: string; message?: string; retryable?: boolean };
+  final_message_id?: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+}

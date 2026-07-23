@@ -1,9 +1,14 @@
 """不依赖外部服务的 API 启动冒烟测试。"""
 
+from uuid import uuid4
+
 import httpx
 import pytest
 
+import experiment_guardian.api.routes.agent as agent_routes
 import experiment_guardian.main as main_module
+from experiment_guardian.application.identity import RequestIdentity
+from experiment_guardian.domain.enums import AgentRunStatus
 
 create_app = main_module.create_app
 
@@ -60,3 +65,61 @@ async def test_local_owner_mode_rejects_dns_rebinding_host_before_routing(
     assert allowed.status_code == 200
     assert rebinding.status_code == 400
     assert rebinding.text == "Invalid host header"
+
+
+@pytest.mark.asyncio
+async def test_agent_sse_replays_persisted_events_and_prechecks_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = uuid4()
+    run_id = uuid4()
+    identity = RequestIdentity(
+        user_id=uuid4(),
+        team_id=uuid4(),
+        token_id=uuid4(),
+        scopes=frozenset({"project:read"}),
+        authentication_method="WEB_SESSION",
+    )
+
+    class FakeAgentService:
+        get_calls = 0
+        event_calls = 0
+
+        def get_run(self, **_: object) -> object:
+            self.get_calls += 1
+            return object()
+
+        def list_run_events(self, **_: object) -> tuple[list[dict[str, object]], AgentRunStatus]:
+            self.event_calls += 1
+            if self.event_calls == 1:
+                return (
+                    [
+                        {
+                            "id": 4,
+                            "event": "run.completed",
+                            "data": {"status": "SUCCEEDED"},
+                        }
+                    ],
+                    AgentRunStatus.SUCCEEDED,
+                )
+            return [], AgentRunStatus.SUCCEEDED
+
+    service = FakeAgentService()
+    monkeypatch.setattr(
+        agent_routes, "get_agent_conversation_service", lambda: service
+    )
+    response = await agent_routes.stream_agent_run_events(
+        project_id=project_id,
+        run_id=run_id,
+        identity=identity,
+        after=0,
+        last_event_id="3",
+    )
+    chunks = [chunk async for chunk in response.body_iterator]
+    body = "".join(item.decode() if isinstance(item, bytes) else item for item in chunks)
+
+    assert response.status_code == 200
+    assert response.media_type == "text/event-stream"
+    assert "id: 4" in body
+    assert "event: run.completed" in body
+    assert service.get_calls == 1

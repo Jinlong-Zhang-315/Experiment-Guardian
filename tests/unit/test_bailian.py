@@ -7,7 +7,9 @@ import httpx
 import pytest
 
 from experiment_guardian.application.errors import ServiceUnavailableError
+from experiment_guardian.domain.agent import AgentChatMessage, AgentToolSpec
 from experiment_guardian.infrastructure.bailian import (
+    BailianAgentChatModel,
     BailianEmbeddingGenerator,
     BailianSummaryGenerator,
 )
@@ -171,3 +173,184 @@ def test_bailian_embedding_normalizes_malformed_success_responses(
     )
     with pytest.raises(ServiceUnavailableError, match="无效的 embedding 响应"):
         generator.embed("stable facts")
+
+
+def _sse(*chunks: dict[str, object]) -> bytes:
+    return (
+        "".join(
+            f"data: {json.dumps(item, ensure_ascii=False)}\n\n" for item in chunks
+        )
+        + "data: [DONE]\n\n"
+    ).encode()
+
+
+def test_bailian_agent_streams_text_usage_and_json_mode() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "id": "req-1",
+                    "choices": [{"delta": {"content": '{"answer_markdown":"ok"'}}],
+                },
+                {
+                    "id": "req-1",
+                    "choices": [
+                        {
+                            "delta": {"content": "}"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+                {
+                    "choices": [],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+                },
+            ),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    model = BailianAgentChatModel(
+        api_key="secret",
+        base_url="https://bailian.example/v1",
+        model_id="qwen-agent",
+        client=_client(handler),
+    )
+    events = list(
+        model.stream_turn(
+            messages=[AgentChatMessage(role="user", content="status")],
+            tools=[],
+            tool_choice="none",
+            max_output_tokens=200,
+            response_json=True,
+        )
+    )
+    assert "".join(item.text or "" for item in events) == '{"answer_markdown":"ok"}'
+    assert captured["stream"] is True
+    assert captured["response_format"] == {"type": "json_object"}
+    assert any(
+        item.usage is not None and item.usage.input_tokens == 12 for item in events
+    )
+
+
+def test_bailian_agent_assembles_fragmented_tool_call() -> None:
+    model = BailianAgentChatModel(
+        api_key="secret",
+        base_url="https://bailian.example/v1",
+        model_id="qwen-agent",
+        client=_client(
+            lambda _: httpx.Response(
+                200,
+                content=_sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_1",
+                                            "function": {
+                                                "name": "experiment_",
+                                                "arguments": '{"experiment_',
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {
+                                            "name": "get_v1",
+                                            "arguments": (
+                                                'id":"00000000-0000-0000-0000-'
+                                                '000000000001"}'
+                                            ),
+                                            },
+                                        }
+                                    ]
+                                },
+                                "finish_reason": "tool_calls",
+                            }
+                        ]
+                    },
+                ),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        ),
+    )
+    events = list(
+        model.stream_turn(
+            messages=[AgentChatMessage(role="user", content="get")],
+            tools=[
+                AgentToolSpec(
+                    name="experiment_get_v1",
+                    version="1",
+                    description="get",
+                    input_schema={"type": "object"},
+                )
+            ],
+            tool_choice="auto",
+            max_output_tokens=200,
+        )
+    )
+    call = next(item.tool_call for item in events if item.tool_call is not None)
+    assert call.name == "experiment_get_v1"
+    assert str(call.arguments["experiment_id"]).endswith("0001")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"data: not-json\n\ndata: [DONE]\n\n",
+        b'data: {"choices":[]}\n\n',
+        _sse({"choices": [{"delta": None}]}),
+        _sse(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call",
+                                    "function": {"name": "x", "arguments": "{"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ),
+    ],
+)
+def test_bailian_agent_normalizes_malformed_streams(content: bytes) -> None:
+    model = BailianAgentChatModel(
+        api_key="secret",
+        base_url="https://bailian.example/v1",
+        model_id="qwen-agent",
+        client=_client(
+            lambda _: httpx.Response(
+                200, content=content, headers={"Content-Type": "text/event-stream"}
+            )
+        ),
+    )
+    with pytest.raises(ServiceUnavailableError):
+        list(
+            model.stream_turn(
+                messages=[AgentChatMessage(role="user", content="x")],
+                tools=[],
+                tool_choice="auto",
+                max_output_tokens=100,
+            )
+        )

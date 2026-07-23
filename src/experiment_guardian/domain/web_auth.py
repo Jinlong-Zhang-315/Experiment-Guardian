@@ -23,6 +23,7 @@ class AuthSessionView(ContractModel):
     idle_expires_at: datetime
     absolute_expires_at: datetime
     recent_authentication: bool
+    agent_enabled: bool = False
 
 
 class LogoutResult(ContractModel):

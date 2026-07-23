@@ -4,7 +4,7 @@
 
 ## 演示前准备
 
-1. AWS 资源、revision `20260722_13`、API/MCP/Worker 和 Web 已部署。
+1. AWS 资源、revision `20260723_14`、API/MCP/Worker 和 Web 已部署。
 2. Cognito 中有一名 Owner 和一名 Researcher；CockroachDB 中存在同邮箱 User 与成员关系。
 3. 远程 MCP 客户端已同时在 Cognito 与 `mcp_oauth_clients` 预注册，并绑定演示 Project。
 4. Artifact Bucket Versioning/KMS、SQS/DLQ 和 Bedrock 模型访问可用。

@@ -1,5 +1,9 @@
 """CockroachDB 仓储适配器目录。"""
 
+from experiment_guardian.infrastructure.repositories.agent import (
+    AgentRunClaim,
+    SqlAlchemyAgentRepository,
+)
 from experiment_guardian.infrastructure.repositories.governance import (
     SqlAlchemyGovernanceRepository,
 )
@@ -15,6 +19,8 @@ from experiment_guardian.infrastructure.repositories.workflows import (
 )
 
 __all__ = [
+    "AgentRunClaim",
+    "SqlAlchemyAgentRepository",
     "SqlAlchemyGovernanceRepository",
     "SqlAlchemyPlanCheckRepository",
     "SqlAlchemyProjectRepository",

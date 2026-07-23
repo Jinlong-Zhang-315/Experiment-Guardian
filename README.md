@@ -28,6 +28,7 @@ Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Contex
 
 * Owner/Researcher 实时角色与项目权限；
 * Context、Intent、Constraint 全版本、确认人、生效时间、修改原因和 supersedes 关系；
+* 正式策略同时保存结构化事实与版本绑定的人类可读说明，来源哈希不一致时隐藏过期文本；
 * YAML/JSON 重复键拒绝、JSON 标量语义、严格类型比较、无碰撞参数路径；
 * LOCKED、APPROVAL_REQUIRED、EXPERIMENT_VARIABLE 确定性判定；
 * 核心本地证据不可 `NOT_APPLICABLE`，所有证据保留来源、时间和采集工具；
@@ -38,11 +39,13 @@ Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Contex
 * CockroachDB Outbox、SQS 或数据库队列、租约 Worker、Bedrock/百炼摘要和 1024 维 embedding；
 * High/Critical 强制展开的短审核回执，Critical 不能批准；
 * 正式确认单事务和 project/protocol/status 等结构化过滤先行的向量候选查询；
-* React/Vite 四页 Web 工作台；
+* React/Vite 五页 Web 工作台，包含只读内部实验治理 Agent；
 * Cognito Managed Login、服务端 Web Session、CSRF、撤销和近期认证；
 * MCP 2025-11-25 OAuth Resource Server、RFC 9728、PKCE、RFC 8707 和预注册客户端；
 * AWS CloudFront/WAF/ALB/ECS/S3/SQS/Cognito/Bedrock Terraform 部署定义；
-* CockroachDB、MinIO、数据库队列、百炼和 local_owner 的单机 Compose 部署模式。
+* CockroachDB、MinIO、数据库队列、百炼和 local_owner 的单机 Compose 部署模式；
+* R15a 内部治理 Agent：持久化对话、四个只读工具、百炼流式 Function Calling、证据引用、
+  有界执行、独立 Worker 和可恢复 SSE。
 
 MCP 只暴露七个工具：
 
@@ -55,6 +58,9 @@ submission_finalize
 submission_get_status
 experiments_query
 ```
+
+`project_get_context` 同时返回 `human_readable` 和完整结构化 Context/Intent/Constraints。
+自然语言说明只用于阅读和 Agent 理解，任何执行、检查和治理决定仍以结构化字段为准。
 
 本地 Agent 不能通过 MCP 修改正式策略、批准计划、确认正式实验、运行训练或修改代码。
 
@@ -121,6 +127,25 @@ docker compose --env-file .env.local logs local-init
 ```
 
 完整操作、验收和故障排查见 [`docs/LOCAL_DEPLOYMENT.md`](docs/LOCAL_DEPLOYMENT.md)。
+双表示的数据关系、降级和 CockroachDB 能力取舍见
+[`docs/POLICY_DUAL_REPRESENTATION.md`](docs/POLICY_DUAL_REPRESENTATION.md)。
+内部实验治理 Agent 的能力边界、工具目录、上下文压缩、确认协议和分期计划见
+[`docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md`](docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md)；
+当前只完成 R15a 只读纵向切片，不表示已开放 Agent 草稿或正式写操作。
+
+启用本地治理 Agent 时，在 `.env.local` 设置：
+
+```text
+AGENT_ENABLED=true
+AGENT_PROVIDER=bailian
+BAILIAN_AGENT_MODEL=<支持 Function Calling 的百炼模型>
+```
+
+然后带 `agent` profile 启动。Agent Worker 与 Submission Worker 独立部署：
+
+```bash
+docker compose --env-file .env.local --profile agent up -d --build
+```
 
 ## 本地源码开发
 
@@ -137,7 +162,7 @@ experiment-guardian-api
 
 默认 API：`http://127.0.0.1:8000`，OpenAPI：`/docs`。
 
-当前 Alembic head 为 `20260722_13`：
+当前 Alembic head 为 `20260723_15`：
 
 ```text
 01 foundation/context
@@ -152,6 +177,8 @@ experiment-guardian-api
 11 Cognito binding/web sessions/OIDC transactions
 12 pre-registered MCP OAuth clients/grants
 13 local backends/outbox terminal status/model provider metadata
+14 version-bound human-readable policy narratives
+15 durable read-only governance Agent conversations/runs/tool evidence/events
 ```
 
 初始化现有团队和首个项目仍可使用可信本地 CLI/API：
@@ -179,6 +206,12 @@ Worker 按配置集中装配 S3/SQS/Bedrock 或 MinIO/数据库队列/百炼：
 
 ```bash
 experiment-guardian-worker
+```
+
+启用治理 Agent 后，另行运行专用 Worker：
+
+```bash
+experiment-guardian-agent-worker
 ```
 
 ## Web 源码开发

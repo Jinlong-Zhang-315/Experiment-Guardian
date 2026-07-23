@@ -23,6 +23,18 @@ SUBMISSION_ANALYSIS_TABLES = frozenset(
 FORMAL_EXPERIMENT_TABLES = frozenset({"experiments", "experiment_metrics", "memories"})
 WEB_AUTH_TABLES = frozenset({"web_sessions", "oidc_transactions"})
 MCP_OAUTH_TABLES = frozenset({"mcp_oauth_clients", "mcp_oauth_grants"})
+POLICY_NARRATIVE_TABLES = frozenset({"policy_narratives"})
+AGENT_TABLES = frozenset(
+    {
+        "agent_threads",
+        "agent_messages",
+        "agent_runs",
+        "agent_model_calls",
+        "agent_tool_calls",
+        "agent_citations",
+        "agent_run_events",
+    }
+)
 MIGRATED_TABLES = (
     FOUNDATION_TABLES
     | PLAN_CHECK_TABLES
@@ -32,6 +44,8 @@ MIGRATED_TABLES = (
     | FORMAL_EXPERIMENT_TABLES
     | WEB_AUTH_TABLES
     | MCP_OAUTH_TABLES
+    | POLICY_NARRATIVE_TABLES
+    | AGENT_TABLES
 )
 
 

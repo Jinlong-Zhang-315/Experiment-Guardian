@@ -12,6 +12,15 @@ const settings = {
     ],
     context_payload: { goal: "验证多模态融合策略", dataset: "NTU60", protocol: "40/20", mainline_model: "shift-gcn", baseline: { checkpoint: "baseline.pt" }, active_config: { dataset: { protocol: "40/20" }, model: { backbone: "shift-gcn", fusion: 0.2 } } },
     intent_payload: { name: "fusion sweep", objective: "评估融合系数", hypothesis: "局部调整可提升 top1", intent_receipt: "Owner 已确认该正式实验意图。" },
+    human_readable: {
+      status: "READY", format: "MARKDOWN", generator: "DETERMINISTIC_TEMPLATE",
+      generator_version: "policy-narrative-v1",
+      content: "# NTU60 Governance：正式实验策略\n\n## 项目目标\n验证多模态融合策略\n\n## 锁定参数\n- `dataset.protocol` = `\"40/20\"`：不得在实验配置中修改",
+      context_id: "context-1", context_version: 3, intent_id: "intent-1", intent_version: 5,
+      source_hash: "a".repeat(64), current_source_hash: "a".repeat(64),
+      generated_by: "owner-1", generated_at: "2026-07-22T10:00:00Z",
+      authoritative: false, governance_notice: "结构化数据为准",
+    },
   },
   context_history: [
     { context_id: "context-1", version: 3, status: "ACTIVE", change_reason: "确认主线", effective_at: "2026-07-22T10:00:00Z" },
@@ -35,8 +44,12 @@ test.beforeEach(async ({ page }) => {
 
 test("four-page workspace remains readable without horizontal overflow", async ({ page }, testInfo) => {
   await page.goto("/projects/p1/settings");
-  await expect(page.getByRole("heading", { name: "NTU60 Governance" })).toBeVisible();
-  await expect(page.getByText("dataset.protocol")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "NTU60 Governance", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "项目正式说明" })).toBeVisible();
+  await expect(
+    page.locator(".narrative-content").getByText("验证多模态融合策略", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("cell", { name: "dataset.protocol" })).toBeVisible();
   await expectNoPageOverflow(page);
   await page.screenshot({ path: testInfo.outputPath("settings.png"), fullPage: true });
 

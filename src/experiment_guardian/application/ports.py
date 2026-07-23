@@ -4,13 +4,18 @@
 后续实现适配器时不会让 MCP 工具或 FastAPI 路由直接依赖某个云厂商 SDK。
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
 from experiment_guardian.application.identity import RequestIdentity
+from experiment_guardian.domain.agent import (
+    AgentChatMessage,
+    AgentModelEvent,
+    AgentToolSpec,
+)
 from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanCommand,
     ExperimentCheckPlanResult,
@@ -196,3 +201,23 @@ class EmbeddingGenerator(Protocol):
     def dimension(self) -> int: ...
 
     def embed(self, input_text: str) -> EmbeddingModelOutput: ...
+
+
+class AgentChatModel(Protocol):
+    """支持受控工具调用的对话模型；与纯文本摘要模型保持独立。"""
+
+    @property
+    def provider(self) -> str: ...
+
+    @property
+    def model_id(self) -> str: ...
+
+    def stream_turn(
+        self,
+        *,
+        messages: Sequence[AgentChatMessage],
+        tools: Sequence[AgentToolSpec],
+        tool_choice: str,
+        max_output_tokens: int,
+        response_json: bool = False,
+    ) -> Iterator[AgentModelEvent]: ...

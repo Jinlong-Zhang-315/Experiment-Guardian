@@ -94,9 +94,10 @@ alembic upgrade head
 alembic current
 ```
 
-当前 head 为 `20260722_13`：revision 11 增加 Cognito subject、Web Session 和 OIDC 事务；
+当前 head 为 `20260723_14`：revision 11 增加 Cognito subject、Web Session 和 OIDC 事务；
 revision 12 增加预注册 MCP Client 与可撤销 Grant；revision 13 增加摘要/embedding provider
-元数据和数据库 Outbox 终态。部署应用前先升级，降级前先停止新流量。
+元数据和数据库 Outbox 终态；revision 14 增加与正式策略版本绑定的人类可读派生表示。
+部署应用前先升级，降级前先停止新流量。
 
 ## 5. 创建用户和绑定客户端
 

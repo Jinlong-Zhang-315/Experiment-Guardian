@@ -111,5 +111,6 @@ resource "aws_secretsmanager_secret_version" "runtime" {
     web_oidc_state_key        = random_password.oidc_state_key.result
     web_csrf_secret           = random_password.csrf_secret.result
     cognito_web_client_secret = aws_cognito_user_pool_client.web.client_secret
+    bailian_agent_api_key     = var.bailian_agent_api_key
   })
 }

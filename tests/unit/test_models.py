@@ -8,6 +8,7 @@ def test_p0_tables_are_registered() -> None:
         "access_tokens",
         "projects",
         "project_contexts",
+        "policy_narratives",
         "experiment_intents",
         "protected_parameters",
         "plan_checks",

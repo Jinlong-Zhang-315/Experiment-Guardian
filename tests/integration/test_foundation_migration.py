@@ -116,6 +116,21 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         item["name"] for item in inspector.get_columns("submission_embeddings")
     }
     assert set(inspector.get_table_names()) >= FORMAL_EXPERIMENT_TABLES
+    assert "policy_narratives" in inspector.get_table_names()
+    assert {
+        "context_id",
+        "context_version",
+        "intent_id",
+        "intent_version",
+        "source_hash",
+        "generator_version",
+        "status",
+        "content",
+        "error",
+    } <= {item["name"] for item in inspector.get_columns("policy_narratives")}
+    assert "uq_policy_narratives_source_version" in {
+        item["name"] for item in inspector.get_unique_constraints("policy_narratives")
+    }
     assert {
         "approval_record_id",
         "summary_snapshot",

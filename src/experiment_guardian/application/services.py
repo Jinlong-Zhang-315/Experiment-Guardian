@@ -2098,6 +2098,12 @@ class ProjectAdministrationService:
             )
         session.flush()
 
+        narrative = self._projects.regenerate_policy_narrative(
+            session,
+            project_id=project.id,
+            context_id=context.id,
+            generated_by=identity.user_id,
+        )
         session.add(
             AuditLog(
                 team_id=identity.team_id,
@@ -2113,6 +2119,8 @@ class ProjectAdministrationService:
                     "intent_id": str(intent.id),
                     "intent_version": 1,
                     "constraint_count": len(request.constraints),
+                    "human_readable_status": narrative.status,
+                    "human_readable_source_hash": narrative.source_hash,
                 },
             )
         )

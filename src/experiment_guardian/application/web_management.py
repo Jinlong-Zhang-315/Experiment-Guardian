@@ -19,6 +19,7 @@ from experiment_guardian.application.errors import (
 )
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.ports import ArtifactStorage
+from experiment_guardian.domain.contracts import HumanReadablePolicy
 from experiment_guardian.domain.enums import (
     ApprovalStatus,
     CheckResult,
@@ -160,6 +161,11 @@ class WebManagementService:
                         confirmed_at=item.confirmed_at,
                         effective_at=item.effective_at,
                         created_at=item.created_at,
+                        human_readable=self._projects.load_policy_narrative(
+                            session,
+                            project_id=project_id,
+                            context_id=item.id,
+                        ),
                     )
                     for item in contexts
                 ],
@@ -326,6 +332,12 @@ class WebManagementService:
                     )
                 )
             session.flush()
+            narrative = self._projects.regenerate_policy_narrative(
+                session,
+                project_id=project_id,
+                context_id=context.id,
+                generated_by=identity.user_id,
+            )
             bundle = self._projects.load_context_bundle(
                 session,
                 project_id=project_id,
@@ -353,6 +365,8 @@ class WebManagementService:
                             "version": context.version,
                             "intent_id": str(intent.id),
                             "intent_version": intent.version,
+                            "human_readable_status": narrative.status,
+                            "human_readable_source_hash": narrative.source_hash,
                             "session_id": str(identity.token_id),
                         },
                     ),
@@ -366,6 +380,50 @@ class WebManagementService:
                         expires_at=now + timedelta(days=7),
                     ),
                 ]
+            )
+            return result
+
+    def regenerate_policy_narrative(
+        self,
+        *,
+        project_id: UUID,
+        context_id: UUID,
+        identity: RequestIdentity,
+    ) -> HumanReadablePolicy:
+        self._require_scope(identity, "project:write")
+        with self._session_factory() as session, session.begin():
+            project = self._require_project(session, project_id, identity, owner=True)
+            before = self._projects.load_policy_narrative(
+                session,
+                project_id=project_id,
+                context_id=context_id,
+            )
+            result = self._projects.regenerate_policy_narrative(
+                session,
+                project_id=project_id,
+                context_id=context_id,
+                generated_by=identity.user_id,
+            )
+            session.add(
+                AuditLog(
+                    team_id=project.team_id,
+                    project_id=project_id,
+                    actor_type="USER",
+                    actor_id=identity.user_id,
+                    action="project.policy_narrative.regenerate",
+                    target_type="PROJECT_CONTEXT",
+                    target_id=context_id,
+                    before_value={
+                        "status": before.status,
+                        "source_hash": before.source_hash,
+                    },
+                    after_value={
+                        "status": result.status,
+                        "source_hash": result.source_hash,
+                        "generator_version": result.generator_version,
+                        "session_id": str(identity.token_id),
+                    },
+                )
             )
             return result
 

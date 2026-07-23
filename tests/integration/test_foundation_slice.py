@@ -36,6 +36,7 @@ from experiment_guardian.infrastructure.models import (
     AccessToken,
     AuditLog,
     IdempotencyRecord,
+    PolicyNarrative,
     Project,
     ProtectedParameter,
     Team,
@@ -366,9 +367,14 @@ def test_project_initialization_is_atomic_idempotent_and_readable(
         "model.fusion",
     ]
     assert bundle.context_payload.protocol == "40/20"
+    assert bundle.human_readable is not None
+    assert bundle.human_readable.status == "READY"
+    assert "dataset.protocol" in (bundle.human_readable.content or "")
+    assert bundle.human_readable.authoritative is False
 
     with foundation_session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Project)) == 1
+        assert session.scalar(select(func.count()).select_from(PolicyNarrative)) == 1
         assert session.scalar(select(func.count()).select_from(IdempotencyRecord)) == 1
         assert session.scalar(select(func.count()).select_from(AuditLog)) == 1
 

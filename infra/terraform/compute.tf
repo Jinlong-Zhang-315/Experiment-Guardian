@@ -23,6 +23,12 @@ resource "aws_cloudwatch_log_group" "worker" {
   retention_in_days = 30
 }
 
+resource "aws_cloudwatch_log_group" "agent_worker" {
+  count             = var.agent_enabled ? 1 : 0
+  name              = "/ecs/${local.name}/agent-worker"
+  retention_in_days = 30
+}
+
 resource "aws_iam_role" "ecs_execution" {
   name = "${local.name}-ecs-execution"
   assume_role_policy = jsonencode({
@@ -211,6 +217,33 @@ resource "aws_ecs_task_definition" "worker" {
   }])
 }
 
+resource "aws_ecs_task_definition" "agent_worker" {
+  count                    = var.agent_enabled ? 1 : 0
+  family                   = "${local.name}-agent-worker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 1024
+  memory                   = 2048
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.task.arn
+  container_definitions = jsonencode([{
+    name        = "agent-worker"
+    image       = "${aws_ecr_repository.app.repository_url}:${var.container_image_tag}"
+    essential   = true
+    command     = ["experiment-guardian-agent-worker"]
+    environment = local.common_environment
+    secrets     = local.common_secrets
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.agent_worker[0].name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "agent-worker"
+      }
+    }
+  }])
+}
+
 resource "random_password" "origin_verify" {
   length  = 48
   special = false
@@ -358,6 +391,24 @@ resource "aws_ecs_service" "worker" {
   name            = "worker"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.worker.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.ecs.id]
+    assign_public_ip = false
+  }
+}
+
+resource "aws_ecs_service" "agent_worker" {
+  count           = var.agent_enabled ? 1 : 0
+  name            = "agent-worker"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.agent_worker[0].arn
   desired_count   = 1
   launch_type     = "FARGATE"
   deployment_circuit_breaker {

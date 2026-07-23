@@ -105,6 +105,24 @@ class Settings(BaseSettings):
     bailian_connect_timeout_seconds: int = Field(default=5, ge=1, le=60)
     bailian_read_timeout_seconds: int = Field(default=60, ge=1, le=300)
 
+    # 内部治理 Agent 与摘要/Embedding 使用独立模型槽位。默认关闭，避免已有部署被迫
+    # 配置新的模型和 Worker。
+    agent_enabled: bool = False
+    agent_provider: Literal["bailian"] = "bailian"
+    bailian_agent_model: str = ""
+    agent_max_model_calls: int = Field(default=4, ge=1, le=8)
+    agent_max_tool_calls: int = Field(default=8, ge=1, le=20)
+    agent_max_wall_seconds: int = Field(default=90, ge=10, le=300)
+    agent_context_token_budget: int = Field(default=24000, ge=2000, le=100000)
+    agent_recent_message_limit: int = Field(default=12, ge=2, le=50)
+    agent_tool_output_max_bytes: int = Field(default=32768, ge=1024, le=131072)
+    agent_max_output_tokens: int = Field(default=1800, ge=256, le=8192)
+    agent_run_lease_seconds: int = Field(default=120, ge=30, le=900)
+    agent_run_max_attempts: int = Field(default=3, ge=1, le=10)
+    agent_run_poll_interval_seconds: float = Field(default=1.0, ge=0.1, le=30)
+    agent_sse_poll_interval_seconds: float = Field(default=0.5, ge=0.1, le=10)
+    agent_sse_heartbeat_seconds: int = Field(default=15, ge=5, le=60)
+
     @field_validator("log_level", mode="before")
     @classmethod
     def normalize_log_level(cls, value: object) -> object:
@@ -128,6 +146,19 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_deployment_backends(self) -> "Settings":
+        if self.agent_enabled:
+            required_agent = {
+                "BAILIAN_API_KEY": (
+                    self.bailian_api_key.get_secret_value() if self.bailian_api_key else ""
+                ),
+                "BAILIAN_BASE_URL": self.bailian_base_url,
+                "BAILIAN_AGENT_MODEL": self.bailian_agent_model,
+            }
+            missing_agent = [
+                name for name, value in required_agent.items() if not value.strip()
+            ]
+            if missing_agent:
+                raise ValueError("治理 Agent 缺少配置: " + ", ".join(missing_agent))
         if self.deployment_mode == "local":
             if self.app_env not in {"development", "test"}:
                 raise ValueError("DEPLOYMENT_MODE=local 只能用于 development 或 test 环境")

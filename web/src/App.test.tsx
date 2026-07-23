@@ -59,6 +59,14 @@ describe("Experiment Guardian Web shell", () => {
             constraints: [],
             context_payload: { goal: "复现实验", dataset: "NTU60", protocol: "40/20", mainline_model: "shift-gcn", baseline: {}, active_config: {} },
             intent_payload: { name: "baseline", objective: "复现", hypothesis: "一致", intent_receipt: "confirmed" },
+            human_readable: {
+              status: "READY", format: "MARKDOWN", generator: "DETERMINISTIC_TEMPLATE",
+              generator_version: "policy-narrative-v1", content: "# NTU60 正式策略\n\n## 项目目标\n复现实验",
+              context_id: "c1", context_version: 1, intent_id: "i1", intent_version: 1,
+              source_hash: "a".repeat(64), current_source_hash: "a".repeat(64),
+              generated_by: "u1", generated_at: "2026-07-22T00:00:00Z",
+              authoritative: false, governance_notice: "结构化数据为准",
+            },
           },
           context_history: [],
         });
@@ -66,6 +74,8 @@ describe("Experiment Guardian Web shell", () => {
     );
     renderApp("/projects/p1/settings");
     expect(await screen.findByRole("heading", { name: "NTU60" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "项目正式说明" })).toBeInTheDocument();
+    expect(screen.getByText("复现实验")).toBeInTheDocument();
     for (const name of ["项目设置", "计划审批", "实验审核", "实验查询"]) {
       expect(screen.getByRole("link", { name })).toBeInTheDocument();
     }

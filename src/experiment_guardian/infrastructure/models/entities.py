@@ -21,10 +21,15 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from experiment_guardian.domain.enums import (
+    AgentCallStatus,
+    AgentMessageRole,
+    AgentRunStatus,
+    AgentThreadStatus,
     ApprovalDecision,
     ApprovalStatus,
     ApprovalTargetType,
@@ -241,6 +246,41 @@ class ProjectContext(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PolicyNarrative(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """绑定一个正式 Context/Intent 版本的可重建阅读表示。"""
+
+    __tablename__ = "policy_narratives"
+    __table_args__ = (
+        UniqueConstraint("context_id", "intent_id", name="uq_policy_narratives_source_version"),
+        Index("ix_policy_narrative_project_version", "project_id", "context_version"),
+        CheckConstraint(
+            "status IN ('READY', 'FAILED')",
+            name="status_valid",
+        ),
+        CheckConstraint(
+            "(status = 'READY' AND content IS NOT NULL AND source_hash IS NOT NULL "
+            "AND generated_at IS NOT NULL AND error IS NULL) OR "
+            "(status = 'FAILED' AND content IS NULL AND error IS NOT NULL)",
+            name="state_consistent",
+        ),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    context_id: Mapped[UUID] = mapped_column(ForeignKey("project_contexts.id"), nullable=False)
+    context_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_id: Mapped[UUID] = mapped_column(ForeignKey("experiment_intents.id"), nullable=False)
+    intent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_hash: Mapped[str | None] = mapped_column(String(64))
+    format: Mapped[str] = mapped_column(String(20), nullable=False)
+    generator: Mapped[str] = mapped_column(String(50), nullable=False)
+    generator_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    generated_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ExperimentIntent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -845,3 +885,186 @@ class IdempotencyRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentThread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """一个用户在单个项目中的私有治理对话。"""
+
+    __tablename__ = "agent_threads"
+    __table_args__ = (
+        Index(
+            "ix_agent_threads_owner_status_updated",
+            "project_id",
+            "created_by",
+            "status",
+            "updated_at",
+        ),
+    )
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[AgentThreadStatus] = mapped_column(
+        enum_column(AgentThreadStatus, "agent_thread_status", length=16), nullable=False
+    )
+    last_sequence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentMessage(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """追加式对话消息；失败 Run 不伪造 Assistant 消息。"""
+
+    __tablename__ = "agent_messages"
+    __table_args__ = (
+        UniqueConstraint("thread_id", "sequence", name="uq_agent_messages_thread_sequence"),
+        Index("ix_agent_messages_thread_created", "thread_id", "created_at"),
+        CheckConstraint("length(content_sha256) = 64", name="content_sha256_length"),
+    )
+
+    thread_id: Mapped[UUID] = mapped_column(ForeignKey("agent_threads.id"), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[AgentMessageRole] = mapped_column(
+        enum_column(AgentMessageRole, "agent_message_role", length=16), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    # 不建立循环外键；AgentRun.trigger_message_id 是用户消息的权威关联。
+    run_id: Mapped[UUID | None] = mapped_column()
+
+
+class AgentRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """持久化 Agent 执行，同时承担 CockroachDB 租约队列。"""
+
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        UniqueConstraint("thread_id", "idempotency_key", name="uq_agent_runs_thread_idempotency"),
+        Index(
+            "ix_agent_runs_claim",
+            "status",
+            "available_at",
+            "lease_expires_at",
+            "created_at",
+        ),
+        Index("ix_agent_runs_thread_created", "thread_id", "created_at"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
+        CheckConstraint("max_attempts >= 1", name="max_attempts_positive"),
+        CheckConstraint("generation >= 0", name="generation_nonnegative"),
+    )
+
+    thread_id: Mapped[UUID] = mapped_column(ForeignKey("agent_threads.id"), nullable=False)
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    auth_session_id: Mapped[UUID] = mapped_column(ForeignKey("web_sessions.id"), nullable=False)
+    trigger_message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_messages.id"), nullable=False
+    )
+    idempotency_key: Mapped[UUID] = mapped_column(nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[AgentRunStatus] = mapped_column(
+        enum_column(AgentRunStatus, "agent_run_status", length=32), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    tool_catalog_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    context_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    final_message_id: Mapped[UUID | None] = mapped_column()
+    generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(300))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentModelCall(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "agent_model_calls"
+    __table_args__ = (
+        UniqueConstraint("run_id", "generation", "ordinal", name="uq_agent_model_call_order"),
+        Index("ix_agent_model_calls_run", "run_id", "generation", "ordinal"),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[AgentCallStatus] = mapped_column(
+        enum_column(AgentCallStatus, "agent_call_status", length=16), nullable=False
+    )
+    request_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    response_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    provider_request_id: Mapped[str | None] = mapped_column(String(500))
+    finish_reason: Mapped[str | None] = mapped_column(String(100))
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentToolCall(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "agent_tool_calls"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "generation", "call_id", name="uq_agent_tool_calls_provider_call"
+        ),
+        UniqueConstraint("run_id", "generation", "sequence", name="uq_agent_tool_calls_order"),
+        CheckConstraint("length(arguments_hash) = 64", name="arguments_hash_length"),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    call_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    tool_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[AgentCallStatus] = mapped_column(
+        enum_column(AgentCallStatus, "agent_tool_call_status", length=16), nullable=False
+    )
+    arguments: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    arguments_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    output: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    output_hash: Mapped[str | None] = mapped_column(String(64))
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentCitation(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "agent_citations"
+    __table_args__ = (
+        UniqueConstraint("message_id", "evidence_id", name="uq_agent_citations_message_evidence"),
+        Index("ix_agent_citations_run", "run_id"),
+    )
+
+    message_id: Mapped[UUID] = mapped_column(ForeignKey("agent_messages.id"), nullable=False)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    tool_call_id: Mapped[UUID] = mapped_column(ForeignKey("agent_tool_calls.id"), nullable=False)
+    evidence_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    evidence_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    entity_id: Mapped[UUID | None] = mapped_column()
+    entity_version: Mapped[str | None] = mapped_column(String(100))
+    label: Mapped[str] = mapped_column(String(300), nullable=False)
+    excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AgentRunEvent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    __tablename__ = "agent_run_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_agent_run_events_sequence"),
+        Index("ix_agent_run_events_replay", "run_id", "sequence"),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)

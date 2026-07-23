@@ -214,6 +214,39 @@ class IdempotencyOperationStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class AgentThreadStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+
+
+class AgentMessageRole(StrEnum):
+    USER = "USER"
+    ASSISTANT = "ASSISTANT"
+
+
+class AgentRunStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    RETRYABLE_FAILURE = "RETRYABLE_FAILURE"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    DEAD_LETTER = "DEAD_LETTER"
+
+
+class AgentCallStatus(StrEnum):
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    ABANDONED = "ABANDONED"
+
+
+class AgentEvidenceKind(StrEnum):
+    CONFIRMED_FACT = "CONFIRMED_FACT"
+    USER_PROVIDED = "USER_PROVIDED"
+    ANALYSIS = "ANALYSIS"
+    HYPOTHESIS = "HYPOTHESIS"
+
+
 class ConfigFormat(StrEnum):
     YAML = "yaml"
     JSON = "json"

@@ -327,6 +327,7 @@ class WebAuthService:
                 + timedelta(seconds=self._settings.web_session_idle_seconds),
                 absolute_expires_at=web_session.absolute_expires_at,
                 recent_authentication=identity.recent_authentication,
+                agent_enabled=self._settings.agent_enabled,
             )
 
     def csrf_token(self, raw_session: str) -> str:

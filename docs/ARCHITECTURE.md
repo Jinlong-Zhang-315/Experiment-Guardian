@@ -1,11 +1,14 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-23
-当前实现：R14 + Local deployment profile
-数据库 head：`20260722_13`
+当前实现：R15a 只读内部实验治理 Agent
 
-本文只描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与自动化验证，`[EXTERNAL]`
-表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
+下一计划：R15b 确定性比较、统计、诊断和上下文压缩。R15 总体边界见
+`INTERNAL_GOVERNANCE_AGENT_PLAN.md`。
+数据库 head：`20260723_15`
+
+除明确标记“计划”的章节外，本文描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与
+自动化验证，`[EXTERNAL]` 表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
 
 ## 总体运行图
 
@@ -23,6 +26,7 @@
 | - Plan approval  | + CSRF   | - web_sessions      | exchange | - human client   |
 | - Submission     |          | - live RBAC         |          | - MCP clients    |
 | - Experiments    |          | - recent auth       |          +------------------+
+| - Governance AI |          | - Agent SSE API     |
 +---------+--------+          | - management APIs   |
           |                   +----------+-----------+
           |                              |
@@ -31,6 +35,7 @@
           |                   | Application services|
           |                   | [DONE]               |
           |                   | deterministic rules  |
+          |                   | policy narrative     |
           |                   | transactions/retries |
           |                   +----------+-----------+
           |                              |
@@ -86,6 +91,10 @@ private ECS API/MCP/Worker
    |-- SQS Standard -> DLQ
    +-- Bedrock Converse / Titan Embeddings V2
 
+optional private Agent Worker
+   +-- Bailian streaming Function Calling
+   +-- CockroachDB Agent run/event/tool/citation tables
+
 ECR -> immutable application image
 CloudWatch Logs/Metrics -> API/MCP/Worker, ALB, WAF, SQS
 ```
@@ -120,6 +129,14 @@ FastAPI TrustedHost -> local_owner login --------+--> CockroachDB
                                malformed upstream output
                                -> ServiceUnavailableError
                                -> persisted retry/dead letter
+                 |
+                 +--> Agent API -> agent_runs/events
+                                  |
+                                  v
+                            Agent Worker lease
+                                  |
+                                  +--> BailianAgentChatModel
+                                  +--> four authorized read-only tools
 
 minio-init: create bucket + enable/verify Versioning, then exit
 database-init -> migration -> local-init: ordered one-shot services
@@ -138,6 +155,7 @@ src/experiment_guardian/
 |   +-- web.py                  四页读取、策略发布、下载 URL、查询
 |   +-- plan_checks.py          Owner 计划决定
 |   +-- submissions.py          草稿最终决定
+|   +-- agent.py                Thread/Message/Run/SSE/retry API
 |
 +-- mcp_server/server.py        七个 MCP 工具 + HTTP health
 |
@@ -149,8 +167,12 @@ src/experiment_guardian/
 |   +-- submission_analysis.py  可恢复确定性分析
 |   +-- async_summary.py        Outbox/SQS/摘要
 |   +-- async_review.py         embedding/确定性回执
+|   +-- agent.py                对话、幂等入队、归档、恢复与身份解析
+|   +-- agent_runtime.py        有界 LangGraph loop、lease、审计与最终提交
+|   +-- agent_tools.py          四个实时鉴权的只读工具
 |
 +-- domain/                     Pydantic 契约、状态、纯确定性规则
+|   +-- policy_narrative.py     结构化策略来源哈希与确定性 Markdown
 |
 +-- infrastructure/
 |   +-- cognito.py              人类 OIDC Provider adapter
@@ -159,13 +181,15 @@ src/experiment_guardian/
 |   +-- database.py/models/     SQLAlchemy/CockroachDB
 |   +-- queue.py                SQS/DatabaseOutboxQueue adapters
 |   +-- bedrock.py/bailian.py   摘要与 embedding adapters
+|   +-- repositories/agent.py   Agent event/claim/lease/generation persistence
 |
 +-- workflows/                  LangGraph 固定拓扑，DB 游标负责恢复
 +-- worker.py                   批量轮询、可租约/可恢复 Worker
++-- agent_worker.py             独立 Agent Worker
 +-- admin_cli.py                本地幂等初始化/成员/token/MCP client 管理
 
 web/                            React 19 + Vite + TanStack Query + Lucide
-docker-compose.yml              CRDB/MinIO/API/Worker/Web 本地一键部署
+docker-compose.yml              CRDB/MinIO/API/Worker/Web + 可选 Agent profile
 infra/terraform/                AWS/Cognito/ECS/CloudFront/S3/SQS IaC
 demo/r14/                       最终演示输入文件
 scripts/verify_r14_deployment.py 公开部署认证/发现验收
@@ -174,6 +198,46 @@ scripts/verify_r14_deployment.py 公开部署认证/发现验收
 依赖方向保持：接口层 -> 应用层 -> 领域层；基础设施实现应用端口。前端不重新计算风险、
 审批资格或角色权限。
 
+## R15a Agent 当前框架图
+
+```text
+Web 治理 Agent 页
+   |
+   | existing WebSession + project binding
+   v
+Agent API
+   |
+   +--> AgentConversationService
+   |       +--> Thread / Message / Run / Citation [DONE]
+   |       +--> idempotent enqueue / archive / retry [DONE]
+   |       +--> durable SSE replay / heartbeat [DONE]
+   |
+   +--> CockroachDB agent_runs
+           |
+           v
+       dedicated Agent Worker
+           |
+   +--> GovernanceAgentRuntime [DONE]
+   |       +--> bounded single-agent LangGraph, max calls/tools/wall time
+   |       +--> AgentChatModel
+   |       |       +--> Bailian streaming Function Calling [DONE]
+   |       |       +--> other provider adapters [PLANNED]
+   |       +--> AgentToolRegistry
+   |               +--> project_status_get_v1 [DONE]
+   |               +--> experiments_list_v1 [DONE]
+   |               +--> experiment_get_v1 [DONE]
+   |               +--> pending_work_list_v1 [DONE]
+   |               +--> ANALYSIS/DRAFT/EXECUTE [NOT REGISTERED]
+   +--> validated AgentAnswer + evidence/citations + AuditLog [DONE]
+
+Experiment Memory VECTOR(1024)       formal confirmed experiments only
+Agent Research Memory                not present; planned R15e separate store
+```
+
+R15a 没有草稿或正式写工具。模型参数不能传入 `user_id`、`team_id` 或 `project_id`；服务端从
+Web Session 绑定身份和项目，每次工具执行重新校验 Membership。模型只看到受限结构化结果，
+最终回答必须引用本轮实际取得的 evidence ID。
+
 ## 数据关系
 
 ```text
@@ -181,6 +245,7 @@ User(cognito_sub)
   +--< TeamMember >-- Team --< Project
   |                            |
   +--< WebSession              +--< ProjectContext(version, supersedes)
+  |                            |      +--0..1 PolicyNarrative(source hash/template version)
   |      idle/absolute/recent   +--< ExperimentIntent(version, context version)
   |                            +--< ProtectedParameter(version, confirmation)
   +--< OidcTransaction         |
@@ -199,6 +264,14 @@ User(cognito_sub)
                                       +--< ExperimentMetric
                                       +--< Memory VECTOR(1024)
                                       +--< Artifact association
+                               |
+                               +--< AgentThread
+                                      +--< AgentMessage
+                                      +--< AgentRun(lease/generation/retry)
+                                             +--< AgentModelCall
+                                             +--< AgentToolCall
+                                             +--< AgentRunEvent
+                                             +--< AgentCitation
 
 AccessToken                     local API/stdio MCP compatibility
 IdempotencyRecord               unique actor + operation + key
@@ -210,7 +283,11 @@ AuditLog                        actor, Session/Token/Client/Grant evidence
 ```text
 Owner Cognito login
 -> publish confirmed Context/Intent/Constraint version (recent auth)
+   -> deterministic human-readable representation
+      -> READY: version/hash-bound Markdown
+      -> FAILED: formal policy remains active; Owner may regenerate
 -> Researcher OAuth MCP project_get_context
+   -> human_readable for understanding + complete structured authority
 -> experiment_check_plan
    -> BLOCKED: stop
    -> NEEDS_APPROVAL: Owner Web approval (recent auth)
@@ -225,6 +302,15 @@ Owner Cognito login
 -> Researcher or Owner Web confirmation according to risk policy
 -> one CockroachDB transaction creates formal Experiment/Metric/Memory/artifact links
 -> team Web/MCP query with structured filters before vector candidate ordering
+
+Owner/Researcher Web Agent message
+-> idempotently persist user message + queued AgentRun
+-> Agent Worker atomically claims lease/generation
+-> bounded Bailian Function Calling
+-> authorized read-only tools return structured facts + evidence
+-> validate answer/citations
+-> atomically persist assistant message, citations, completion and AuditLog
+-> browser SSE replays durable events; disconnect does not cancel the run
 ```
 
 ## 不在框架内

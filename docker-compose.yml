@@ -134,6 +134,16 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  agent-worker:
+    profiles: ["agent"]
+    build: *backend-build
+    command: ["experiment-guardian-agent-worker"]
+    env_file: .env.local
+    depends_on:
+      local-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   web:
     build: ./web
     environment:

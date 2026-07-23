@@ -13,6 +13,7 @@ from experiment_guardian.domain.administration import (
 )
 from experiment_guardian.domain.contracts import (
     ContractModel,
+    HumanReadablePolicy,
     PresignedDownload,
     ProjectContextBundle,
 )
@@ -50,6 +51,7 @@ class ContextVersionSummary(ContractModel):
     confirmed_at: datetime | None = None
     effective_at: datetime | None = None
     created_at: datetime
+    human_readable: HumanReadablePolicy | None = None
 
 
 class ProjectSettingsView(ContractModel):

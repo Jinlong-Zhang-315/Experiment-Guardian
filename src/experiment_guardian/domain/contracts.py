@@ -266,6 +266,8 @@ class ParameterConstraint(ContractModel):
     确认的约束只能产生提醒或 NEEDS_APPROVAL。
     """
 
+    constraint_id: UUID | None = None
+    version: int | None = Field(default=None, gt=0)
     parameter_path: str = Field(min_length=1)
     context_id: UUID | None = None
     context_version: int | None = Field(default=None, gt=0)
@@ -915,6 +917,43 @@ class ExperimentIntentPayload(ContractModel):
     intent_receipt: str
 
 
+class HumanReadablePolicy(ContractModel):
+    """一个结构化策略版本的派生阅读表示，不是新的治理事实源。"""
+
+    status: Literal["READY", "FAILED", "STALE", "MISSING"]
+    format: Literal["MARKDOWN"] = "MARKDOWN"
+    generator: Literal["DETERMINISTIC_TEMPLATE"] = "DETERMINISTIC_TEMPLATE"
+    generator_version: str = Field(min_length=1, max_length=100)
+    content: str | None = None
+    context_id: UUID
+    context_version: int = Field(gt=0)
+    intent_id: UUID
+    intent_version: int = Field(gt=0)
+    source_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    current_source_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    generated_by: UUID | None = None
+    generated_at: datetime | None = None
+    error: str | None = None
+    authoritative: Literal[False] = False
+    governance_notice: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_display_state(self) -> "HumanReadablePolicy":
+        if self.status == "READY":
+            if (
+                not self.content
+                or self.source_hash != self.current_source_hash
+                or self.current_source_hash is None
+                or self.generated_by is None
+                or self.generated_at is None
+                or self.error is not None
+            ):
+                raise ValueError("READY 人类可读表示缺少内容、生成信息或来源不一致")
+        elif self.content is not None or not self.error:
+            raise ValueError("非 READY 状态必须隐藏内容并说明原因")
+        return self
+
+
 class ProjectContextBundle(ContractModel):
     """``project_get_context`` 的稳定返回骨架，明确当前生效版本。"""
 
@@ -923,6 +962,7 @@ class ProjectContextBundle(ContractModel):
     constraints: list[ParameterConstraint]
     context_payload: ProjectContextPayload
     intent_payload: ExperimentIntentPayload | None
+    human_readable: HumanReadablePolicy | None = None
 
     @model_validator(mode="after")
     def expose_only_formal_facts(self) -> "ProjectContextBundle":
@@ -943,6 +983,14 @@ class ProjectContextBundle(ContractModel):
             for item in self.constraints
         ):
             raise ValueError("返回约束必须绑定当前生效的 context 版本")
+        if self.human_readable is not None and (
+            self.active_intent is None
+            or self.human_readable.context_id != self.context.context_id
+            or self.human_readable.context_version != self.context.version
+            or self.human_readable.intent_id != self.active_intent.intent_id
+            or self.human_readable.intent_version != self.active_intent.version
+        ):
+            raise ValueError("人类可读表示必须绑定当前 Context 和 Intent 版本")
         return self
 
 

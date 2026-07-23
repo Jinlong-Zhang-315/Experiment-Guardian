@@ -1040,6 +1040,163 @@
 
 * Host 白名单不把 local_owner 变成远程安全认证；本地服务仍不得暴露到局域网或公网。
 
+## 2026-07-23 / R14f 正式策略双表示
+
+版本：working tree。
+
+### 更新内容
+
+* 新增 revision `20260723_14` 和 `policy_narratives`，保存 Context/Intent 版本、结构化来源
+  SHA-256、确定性模板版本、Markdown、生成状态、操作者和时间。
+* 项目初始化和正式策略发布自动生成 `policy-narrative-v1`；模板逐项覆盖目标、协议、基线、
+  Intent、受控变量以及 LOCKED、APPROVAL_REQUIRED、EXPERIMENT_VARIABLE。
+* Repository 在每次读取时重算来源哈希；`STALE` 内容不会返回，旧版本无记录时明确为
+  `MISSING`，渲染错误持久化为 `FAILED`。
+* 增加 Owner 重生成 API，继续使用项目 RBAC、CSRF 和 AuditLog，不提供自然语言直接编辑。
+* Web 设置页默认显示人类可读说明，完整 JSON 放入高级视图，Context 历史可展开各自说明。
+* MCP `project_get_context` 同时返回双表示，并声明结构化字段是唯一治理依据。
+
+### CockroachDB 评估
+
+* 本轮不增加 Context/Intent embedding 或 Distributed Vector Index：当前没有对应查询入口，
+  现有 `experiments_query` 只查询正式 Experiment Memory，混入策略文本没有正确业务语义。
+* 当前环境未安装 CockroachDB Agent Skills；使用现有 metadata、迁移升降级和 CockroachDB
+  integration gate 完成审查，不增加生产依赖。
+* Cloud Managed MCP 只保留为未来 Cloud 只读诊断选项；本轮不涉及 Cloud 集群，排除 ccloud。
+
+### 验证结果
+
+* 确定性模板、来源哈希、初始化、发布、历史版本、STALE 隐藏、FAILED 降级和重生成测试通过。
+* 后端全量 `224 passed, 8 skipped`；Web ESLint、Vitest 2 tests、production build 和
+  Playwright desktop/mobile 2 个场景通过。
+* 在真实 CockroachDB 26.2 本地实例完成 revision 13 -> 14 升级、14 -> 13 降级和再次升级；
+  `policy_narratives` 的外键、唯一约束、状态约束和版本索引均成功创建。
+* Compose 按当前源码重建并健康启动；真实 `local_owner` Session + CSRF 链路验证旧 Context
+  从 `MISSING` 经 Owner 重生成变为 `READY`，返回明确标记 `authoritative=false`。
+
+### 已知遗留项
+
+* revision 14 不猜测性回填旧 Context；升级后显示 `MISSING`，由 Owner 按需重生成。
+* Context/Intent 语义搜索没有真实消费路径，待独立查询契约明确后再评估结构化前缀向量索引。
+
+## 2026-07-23 / R15 内部实验治理 Agent 规划
+
+版本：working tree，仅完成设计，未增加 R15 运行时代码或迁移。
+
+### 现有实现审计
+
+* 现有 WebSession、CSRF、实时 RBAC、近期认证、幂等写入和 AuditLog 可以继续作为 Agent 的
+  身份与正式执行边界。
+* 项目策略、Plan、Submission 和正式 Experiment 已有应用层读取用例；正式策略发布、
+  Plan 决定和 Submission 决定已有不可绕过的业务服务。
+* 现有 `SummaryTextGenerator` 明确禁止工具调用，不能直接改造成 Agent；需要新增独立的
+  provider-neutral `AgentChatModel`。
+* Submission WorkflowJob/Outbox 具有成熟 lease/generation 语义，但 schema 与 Submission
+  强绑定；R15b 如需异步 Agent Run，应新增专用 Job，而不是复用伪造的 submission_id。
+* 当前正式 Experiment Memory 与向量查询已有明确语义，不能混入对话摘要或候选研究结论。
+
+### 规划决策
+
+* 采用有界单 Agent 和类型化工具，不在 R15a 引入多 Agent、任意 SQL、Shell、代码解释器或
+  通用写工具。
+* R15a 只提供项目状态、正式实验列表、实验详情和当前用户待办四个只读工具，并持久化
+  Thread、Message、Run、ToolCall 和 Citation。
+* 百炼 OpenAI-compatible Function Calling 作为首个实现；现有摘要、Agent 和 embedding 使用
+  三个独立模型槽位，Bedrock 通过相同端口在后续补齐。
+* 原始消息由 CockroachDB 保存；上下文压缩使用带 sequence/hash 的 rolling summary 和最近
+  消息窗口，不把百炼 Conversations 或 Context Cache 当作正式记忆源。
+* R15c 才增加完整 Policy Bundle 草稿；R15d 才增加正式操作提案和人类确认。
+* 正式执行不暴露为模型工具。用户确认发起新的 CSRF + recent-auth 请求，服务端锁定提案、
+  复核 digest、当前版本和实时权限后调用既有业务服务。
+* R15e 才增加独立的 Agent Research Memory；其内容始终是带正式引用的候选证据。
+
+### 调研依据
+
+* 百炼 Function Calling 支持标准的模型选工具、应用执行工具、模型总结结果循环。
+* LangGraph 的 checkpointer/store、interrupt 和消息摘要模式适合状态化 Agent，但本项目仍需
+  显式领域表保存审计和正式确认。
+* 轨迹评测需要覆盖最终回答、单步工具选择和完整工具路径；R15a 先建立 20-30 个仓库内 case。
+* Prompt Injection 和 Excessive Agency 通过最小工具集合、严格参数、项目隔离、资源上限和
+  独立人类确认控制，而不是只依赖 system prompt。
+
+### 下一步
+
+* 唯一实现目标为 R15a 只读对话纵向切片。R15a 验收完成前不实现统计诊断、治理草稿、正式
+  写入或长期向量记忆。
+* 完整工具目录、数据设计、上下文策略、提示词版本、确认协议和 R15a-R15e 验收见
+  `docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md`。
+
+### 已知风险
+
+* 尚未选定真实百炼 Agent 模型，实施前必须确认该模型支持 Function Calling 并建立真实调用
+  integration gate。
+* 第一版同步有界 Run 仍可能受 Web 请求时限影响；专用异步 Agent Job 和恢复放在 R15b。
+* LLM 输出质量不能只靠普通单元测试，需要从 R15a 起维护版本化 eval 数据集和模型基线。
+
+## 2026-07-23 / R15a：只读内部实验治理 Agent
+
+版本：working tree，revision `20260723_15`。
+
+### 更新内容
+
+* 新增 provider-neutral `AgentChatModel`、严格消息/工具/事件/回答契约，以及百炼
+  OpenAI-compatible 流式 Function Calling 适配器；摘要模型继续禁止工具调用。
+* 新增 `agent_threads`、`agent_messages`、`agent_runs`、`agent_model_calls`、
+  `agent_tool_calls`、`agent_citations`、`agent_run_events` 七张增量表。对话追加写，Run 保存
+  provider/model/prompt/tool catalog/context/usage，模型与工具调用保留有界输入输出快照。
+* 新增专用 Agent Run 队列和 Worker：CockroachDB 原子 claim、lease、generation、最大尝试、
+  指数等待和 dead-letter；不复用与 Submission 强绑定的 WorkflowJob。
+* 实现有界单 Agent LangGraph loop，限制模型调用、工具调用、工具输出、模型输出、最近消息和
+  wall time。上下文仅来自 CockroachDB，R15a 使用确定性裁剪，不使用 provider 对话缓存。
+* 仅注册 `project_status_get_v1`、`experiments_list_v1`、`experiment_get_v1` 和
+  `pending_work_list_v1`。身份与 project 不接受模型参数，工具执行时用原 Web Session 恢复
+  RequestIdentity 并实时校验 Membership、scope 和项目隔离。
+* 最终回答必须通过 `AgentAnswer` schema，并且正式事实只能引用本 Run 工具返回的 evidence；
+  重复、缺失、跨 Run 或清单不一致的引用会拒绝，不生成 Assistant 消息。
+* 新增 Thread 创建/列表/归档/恢复、幂等消息入队、Run 查询/重试和持久化 SSE API。SSE 支持
+  `Last-Event-ID` 重放和 heartbeat，浏览器断开不会取消后台 Worker。
+* Web 增加第五页“治理 Agent”，支持会话列表、对话、运行状态、正式引用、归档/恢复、错误
+  显示和失败重试；Session capability 控制入口，前端不持有百炼凭据。
+* Compose 增加可选 `agent` profile 和独立 `agent-worker`；Terraform 增加可选私有 ECS Agent
+  Worker、CloudWatch 日志和百炼模型配置，不改变默认 R14 云端部署。
+* 新增 24 个版本化 Agent eval case，覆盖工具选择、权限、引用、澄清、越权和 prompt
+  injection；默认 CI 使用 scripted provider，真实百炼 Function Calling 由
+  `RUN_BAILIAN_AGENT_INTEGRATION=1` 显式开启。
+
+### 修复的问题
+
+* 所有 Agent Thread、Run 和 SSE 读取/写入现在都只接受 `WEB_SESSION`，Bearer API Token 不能
+  读取个人对话或绕过浏览器交互边界。
+* Agent Run 重试补齐用户、原 Run、Session 和新 Run 的不可变审计记录。
+* 分页 cursor 同时捕获 Base64 padding 和数值错误，统一返回输入校验错误，不再泄漏 500。
+* 百炼 SSE 在 `[DONE]` 前结束时统一转换为可重试 `ServiceUnavailableError`，避免把上游截断
+  误判为不可重试的模型业务回答错误。
+* SSE 在发送响应头前完成 feature、身份、项目和 Run 所有权校验，401/403/404 仍可返回标准
+  JSON 错误。
+
+### 验证结果
+
+* Python 全量 `238 passed, 9 skipped`；Ruff、Web ESLint、Vitest 2 tests 和 production
+  build 通过。
+* Terraform 1.9.8 `validate` 和带 `agent` profile 的 `docker compose config --quiet` 通过。
+* 真实 CockroachDB 26.2 完成 revision 14 -> 15 升级、15 -> 14 降级和再次升级；确认七张
+  Agent 表全部创建、降级后为零且 head 恢复为 `20260723_15`。
+* 额外隔离 CockroachDB 全链测试在数据库 DDL 清理阶段长时间等待，已终止并删除其随机临时
+  数据库；默认全量测试和直接真实迁移往返不受影响。
+* 真实百炼 Agent 测试默认跳过，因为本次未提供外部模型凭据；可用文档中的显式 gate 验收。
+
+### 已知遗留项
+
+* R15a 不实现实验比较、统计、异常诊断、rolling summary、治理草稿、正式写操作或长期记忆。
+* 当前只有百炼 `AgentChatModel`；其他 provider parity 留到后续阶段。
+* 真实模型质量、延迟和工具选择稳定性必须在选定具体百炼模型后运行可选 integration gate 和
+  版本化 eval，默认 scripted provider 只能证明协议和治理边界。
+
+### 下一步
+
+* R15b 只增加确定性可比性、基础统计、Plan/Submission 诊断和带来源哈希的 rolling summary。
+  R15c 前不创建治理草稿，R15d 前不开放任何正式写入。
+
 ## 新日志模板
 
 ```text

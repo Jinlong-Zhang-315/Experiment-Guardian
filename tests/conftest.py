@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from experiment_guardian.infrastructure.models import Base
-from migrations.scope import FOUNDATION_TABLES, MIGRATED_TABLES
+from migrations.scope import FOUNDATION_TABLES, MIGRATED_TABLES, POLICY_NARRATIVE_TABLES
 
 
 def session_factory_for_tables(
@@ -36,7 +36,7 @@ def session_factory_for_tables(
 
 @pytest.fixture
 def foundation_session_factory() -> Iterator[sessionmaker[Session]]:
-    yield from session_factory_for_tables(FOUNDATION_TABLES)
+    yield from session_factory_for_tables(FOUNDATION_TABLES | POLICY_NARRATIVE_TABLES)
 
 
 @pytest.fixture

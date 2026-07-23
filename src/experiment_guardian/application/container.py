@@ -2,12 +2,15 @@
 
 from functools import lru_cache
 
+from experiment_guardian.application.agent import AgentConversationService
+from experiment_guardian.application.agent_tools import AgentToolRegistry
 from experiment_guardian.application.experiments import (
     ExperimentQueryService,
     ExperimentReviewService,
 )
 from experiment_guardian.application.identity import IdentityProvider
 from experiment_guardian.application.ports import (
+    AgentChatModel,
     ArtifactStorage,
     EmbeddingGenerator,
     EmbeddingModelOutput,
@@ -21,7 +24,10 @@ from experiment_guardian.application.services import (
 from experiment_guardian.application.web_auth import LocalOwnerWebAuthService, WebAuthService
 from experiment_guardian.application.web_management import WebManagementService
 from experiment_guardian.core.config import get_settings
-from experiment_guardian.infrastructure.bailian import BailianEmbeddingGenerator
+from experiment_guardian.infrastructure.bailian import (
+    BailianAgentChatModel,
+    BailianEmbeddingGenerator,
+)
 from experiment_guardian.infrastructure.bedrock import BedrockTitanV2EmbeddingGenerator
 from experiment_guardian.infrastructure.cognito import CognitoOidcProvider
 from experiment_guardian.infrastructure.database import get_session_factory
@@ -30,6 +36,7 @@ from experiment_guardian.infrastructure.mcp_oauth import (
     OAuthMcpIdentityProvider,
 )
 from experiment_guardian.infrastructure.repositories import (
+    SqlAlchemyAgentRepository,
     SqlAlchemyGovernanceRepository,
     SqlAlchemyPlanCheckRepository,
     SqlAlchemyProjectRepository,
@@ -97,6 +104,11 @@ def get_workflow_repository() -> SqlAlchemyWorkflowRepository:
 
 
 @lru_cache(maxsize=1)
+def get_agent_repository() -> SqlAlchemyAgentRepository:
+    return SqlAlchemyAgentRepository()
+
+
+@lru_cache(maxsize=1)
 def get_artifact_storage() -> ArtifactStorage:
     settings = get_settings()
     if not settings.s3_bucket:
@@ -149,6 +161,39 @@ def get_web_management_service() -> WebManagementService:
         get_project_repository(),
         get_artifact_storage(),
         settings.s3_presign_expires_seconds,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_agent_tool_registry() -> AgentToolRegistry:
+    return AgentToolRegistry(get_session_factory(), get_project_repository())
+
+
+@lru_cache(maxsize=1)
+def get_agent_conversation_service() -> AgentConversationService:
+    return AgentConversationService(
+        get_session_factory(),
+        get_project_repository(),
+        get_agent_repository(),
+        get_settings(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_agent_chat_model() -> AgentChatModel:
+    settings = get_settings()
+    if not settings.agent_enabled:
+        raise ValueError("AGENT_ENABLED=false，不能初始化治理 Agent 模型")
+    api_key = settings.bailian_api_key
+    return BailianAgentChatModel(
+        api_key=api_key.get_secret_value() if api_key else "",
+        base_url=settings.bailian_base_url,
+        model_id=settings.bailian_agent_model,
+        connect_timeout_seconds=settings.bailian_connect_timeout_seconds,
+        read_timeout_seconds=max(
+            settings.bailian_read_timeout_seconds,
+            settings.agent_max_wall_seconds,
+        ),
     )
 
 

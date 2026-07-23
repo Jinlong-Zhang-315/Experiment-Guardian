@@ -45,12 +45,34 @@ docker compose --env-file .env.local logs migration minio-init local-init
 curl -fsS http://127.0.0.1:8000/api/v1/health
 ```
 
-`database-init` 创建数据库，`migration` 单独升级到 `20260722_13`，`minio-init` 创建 Bucket、
+`database-init` 创建数据库，`migration` 单独升级到 `20260723_15`，`minio-init` 创建 Bucket、
 开启并验证 Versioning，`local-init` 再创建初始业务数据。API/Worker 只有在这些一次性任务成功
 后才启动，迁移不会被多个长期服务并发执行。
 
 打开 `http://127.0.0.1:5173`，点击登录。后端查找 `owner@example.com`，验证唯一团队中的
 Owner Membership 后创建正常的 HttpOnly Session Cookie 和 CSRF Cookie。
+
+## 启用内部治理 Agent
+
+R15a Agent 默认关闭，不影响既有本地业务闭环。需要启用时在 `.env.local` 增加：
+
+```text
+AGENT_ENABLED=true
+AGENT_PROVIDER=bailian
+BAILIAN_AGENT_MODEL=<支持流式 Function Calling 的百炼模型>
+```
+
+使用 Compose 的 `agent` profile 启动专用 Worker：
+
+```bash
+docker compose --env-file .env.local --profile agent up -d --build
+docker compose --env-file .env.local logs -f agent-worker
+```
+
+登录后从 Web 的“治理 Agent”页进入。R15a 仅可读取当前项目状态、正式实验列表、单个正式
+实验和当前用户待办；不能创建草稿、审批、确认 Submission、执行 SQL、训练或修改代码。
+每轮运行使用当前 Web Session 对应的真实用户身份，工具执行时再次校验 Team Membership 和
+项目权限。浏览器断开 SSE 不会取消后台运行，重连会从 `Last-Event-ID` 继续读取持久化事件。
 
 ## 幂等初始化
 
@@ -77,9 +99,11 @@ experiment-guardian-admin bootstrap-local \
 
 1. `docker compose ... ps -a` 确认 `migration`、`minio-init`、`local-init` 为退出码 0，API、
    Worker、Web、CockroachDB、MinIO healthy/running。
-2. 浏览器访问 Web 并登录；设置页确认初始 Context、Intent、三条约束、版本和确认人。
+2. 浏览器访问 Web 并登录；设置页默认确认版本绑定的人类可读说明，并在“结构化 JSON
+   （高级视图）”中核对初始 Context、Intent、三条约束、版本和确认人。
 3. 从 `local-init` 日志取得 `project_id`，执行 `issue-mcp-token`，用 stdio MCP 调用
-   `project_get_context`，确认 Context/Intent/Constraint 版本与 Web 一致。
+   `project_get_context`，确认人类可读说明与完整 Context/Intent/Constraint 同时返回，且版本
+   与 Web 一致。执行和治理判断仍只使用结构化字段。
 4. 提交修改 `dataset.protocol` 的配置，确认 Plan Check 为 BLOCKED；提交只修改 backbone 的
    配置，Owner 在 Web 计划页批准后创建不可变 Manifest。
 5. 调用 `submission_prepare`，按返回的全部 required headers 向 MinIO 预签名 PUT URL 上传
@@ -113,18 +137,22 @@ MINIO_TEST_SECRET_KEY=change-this-local-secret \
 pytest tests/integration/test_minio_storage.py
 
 RUN_BAILIAN_INTEGRATION=1 pytest tests/integration/test_bailian_optional.py
+
+RUN_BAILIAN_AGENT_INTEGRATION=1 \
+pytest tests/integration/test_bailian_optional.py \
+  -k real_bailian_agent_supports_function_calling
 ```
 
 默认测试用 HTTP mock 覆盖百炼协议和失败，不需要真实 Key；只有显式设置
-`RUN_BAILIAN_INTEGRATION=1` 才会访问真实百炼。该可选测试会读取 `.env.local`，进程环境变量
-仍具有更高优先级。
+`RUN_BAILIAN_INTEGRATION=1` 或 `RUN_BAILIAN_AGENT_INTEGRATION=1` 才会访问真实百炼。可选
+测试会读取 `.env.local`，进程环境变量仍具有更高优先级。
 
 ## 停止与数据
 
 ```bash
 docker compose --env-file .env.local stop
 docker compose --env-file .env.local start
-docker compose --env-file .env.local logs -f api worker
+docker compose --env-file .env.local --profile agent logs -f api worker agent-worker
 ```
 
 CockroachDB 和 MinIO 使用命名卷，普通 stop/start 不丢数据。不要随意执行 `down -v`；它会

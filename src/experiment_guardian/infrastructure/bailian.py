@@ -1,6 +1,8 @@
 """阿里云百炼 OpenAI-compatible 摘要与 embedding 适配器。"""
 
+import json
 import math
+from collections.abc import Iterator, Sequence
 from typing import Any
 from urllib.parse import urlparse
 
@@ -8,14 +10,23 @@ import httpx
 
 from experiment_guardian.application.errors import ServiceUnavailableError
 from experiment_guardian.application.ports import (
+    AgentChatModel,
     EmbeddingGenerator,
     EmbeddingModelOutput,
     SummaryModelOutput,
     SummaryTextGenerator,
 )
+from experiment_guardian.domain.agent import (
+    AgentChatMessage,
+    AgentModelEvent,
+    AgentModelUsage,
+    AgentToolRequest,
+    AgentToolSpec,
+)
 
 MAX_SUMMARY_RESPONSE_BYTES = 64 * 1024
 MAX_EMBEDDING_RESPONSE_BYTES = 512 * 1024
+MAX_AGENT_RESPONSE_BYTES = 512 * 1024
 REQUIRED_DIMENSION = 1024
 
 
@@ -59,6 +70,42 @@ class _BailianClient:
         if not isinstance(decoded, dict):
             raise ServiceUnavailableError("百炼返回了无效的 JSON 对象")
         return decoded
+
+    def stream_sse(
+        self, path: str, payload: dict[str, Any], *, max_bytes: int
+    ) -> Iterator[dict[str, Any]]:
+        consumed = 0
+        completed = False
+        try:
+            with self._client.stream(
+                "POST", f"{self._base_url}{path}", json=payload
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    consumed += len(line.encode("utf-8"))
+                    if consumed > max_bytes:
+                        raise ServiceUnavailableError("百炼流式响应超过大小上限")
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if raw == "[DONE]":
+                        completed = True
+                        break
+                    try:
+                        decoded = json.loads(raw)
+                    except ValueError as exc:
+                        raise ServiceUnavailableError("百炼返回了无效 SSE JSON") from exc
+                    if not isinstance(decoded, dict):
+                        raise ServiceUnavailableError("百炼 SSE 数据不是 JSON 对象")
+                    yield decoded
+            if not completed:
+                raise ServiceUnavailableError("百炼流式响应在完成标记前中断")
+        except ServiceUnavailableError:
+            raise
+        except (httpx.HTTPError, OSError) as exc:
+            raise ServiceUnavailableError("百炼模型流式服务暂时不可用") from exc
 
 
 class BailianSummaryGenerator(SummaryTextGenerator):
@@ -222,6 +269,197 @@ class BailianEmbeddingGenerator(EmbeddingGenerator):
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ServiceUnavailableError("百炼返回了无效的 embedding 响应") from exc
+
+
+class BailianAgentChatModel(AgentChatModel):
+    """百炼 OpenAI-compatible 流式 Function Calling 适配器。"""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model_id: str,
+        connect_timeout_seconds: int = 5,
+        read_timeout_seconds: int = 90,
+        client: httpx.Client | None = None,
+    ) -> None:
+        if not model_id.strip():
+            raise ValueError("BAILIAN_AGENT_MODEL 未配置")
+        self._model_id = model_id.strip()
+        self._api = _BailianClient(
+            api_key=api_key,
+            base_url=base_url,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            client=client,
+        )
+
+    @property
+    def provider(self) -> str:
+        return "bailian"
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    def stream_turn(
+        self,
+        *,
+        messages: Sequence[AgentChatMessage],
+        tools: Sequence[AgentToolSpec],
+        tool_choice: str,
+        max_output_tokens: int,
+        response_json: bool = False,
+    ) -> Iterator[AgentModelEvent]:
+        if tool_choice not in {"auto", "none"}:
+            raise ValueError("百炼 Agent tool_choice 只允许 auto 或 none")
+        payload: dict[str, Any] = {
+            "model": self._model_id,
+            "messages": [self._message_payload(item) for item in messages],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": item.name,
+                        "description": item.description,
+                        "parameters": item.input_schema,
+                    },
+                }
+                for item in tools
+            ],
+            "tool_choice": tool_choice,
+            "temperature": 0,
+            "max_tokens": max_output_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if response_json:
+            payload["response_format"] = {"type": "json_object"}
+
+        tool_fragments: dict[int, dict[str, str]] = {}
+        usage: AgentModelUsage | None = None
+        finish_reason: str | None = None
+        provider_request_id: str | None = None
+        saw_text = False
+        for chunk in self._api.stream_sse(
+            "/chat/completions", payload, max_bytes=MAX_AGENT_RESPONSE_BYTES
+        ):
+            try:
+                raw_id = chunk.get("id")
+                if raw_id is not None and not isinstance(raw_id, str):
+                    raise ValueError("响应 id 无效")
+                provider_request_id = raw_id or provider_request_id
+                raw_usage = chunk.get("usage")
+                if raw_usage is not None:
+                    if not isinstance(raw_usage, dict):
+                        raise ValueError("usage 不是对象")
+                    usage = AgentModelUsage(
+                        input_tokens=_optional_nonnegative_int(
+                            raw_usage.get("prompt_tokens")
+                        ),
+                        output_tokens=_optional_nonnegative_int(
+                            raw_usage.get("completion_tokens")
+                        ),
+                    )
+                choices = chunk.get("choices", [])
+                if not isinstance(choices, list) or len(choices) > 1:
+                    raise ValueError("choices 数量无效")
+                if not choices:
+                    continue
+                choice = choices[0]
+                if not isinstance(choice, dict):
+                    raise ValueError("choice 不是对象")
+                raw_finish = choice.get("finish_reason")
+                if raw_finish is not None and not isinstance(raw_finish, str):
+                    raise ValueError("finish_reason 无效")
+                finish_reason = raw_finish or finish_reason
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    raise ValueError("delta 不是对象")
+                content = delta.get("content")
+                if content is not None:
+                    if not isinstance(content, str):
+                        raise ValueError("content delta 不是字符串")
+                    if content:
+                        saw_text = True
+                        yield AgentModelEvent(event_type="text_delta", text=content)
+                raw_calls = delta.get("tool_calls")
+                if raw_calls is not None:
+                    if not isinstance(raw_calls, list):
+                        raise ValueError("tool_calls delta 不是数组")
+                    for raw_call in raw_calls:
+                        self._merge_tool_fragment(tool_fragments, raw_call)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ServiceUnavailableError("百炼返回了无效的 Agent 流式响应") from exc
+
+        if tool_fragments and saw_text:
+            raise ServiceUnavailableError("百炼 Agent 响应同时包含正文和工具调用")
+        for index in sorted(tool_fragments):
+            fragment = tool_fragments[index]
+            try:
+                raw_arguments = json.loads(fragment["arguments"] or "{}")
+                if not isinstance(raw_arguments, dict):
+                    raise ValueError("工具参数不是对象")
+                call = AgentToolRequest(
+                    call_id=fragment["id"],
+                    name=fragment["name"],
+                    arguments=raw_arguments,
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ServiceUnavailableError("百炼返回了无效的工具调用") from exc
+            yield AgentModelEvent(event_type="tool_call", tool_call=call)
+        if usage is not None:
+            yield AgentModelEvent(event_type="usage", usage=usage)
+        yield AgentModelEvent(
+            event_type="completed",
+            finish_reason=finish_reason,
+            provider_request_id=provider_request_id,
+        )
+
+    @staticmethod
+    def _message_payload(message: AgentChatMessage) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "role": message.role,
+            "content": message.content,
+        }
+        if message.tool_call_id is not None:
+            payload["tool_call_id"] = message.tool_call_id
+        if message.tool_calls:
+            payload["tool_calls"] = message.tool_calls
+        return payload
+
+    @staticmethod
+    def _merge_tool_fragment(
+        fragments: dict[int, dict[str, str]], raw_call: object
+    ) -> None:
+        if not isinstance(raw_call, dict):
+            raise ValueError("tool_call 不是对象")
+        index = raw_call.get("index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise ValueError("tool_call index 无效")
+        target = fragments.setdefault(
+            index, {"id": "", "name": "", "arguments": ""}
+        )
+        call_id = raw_call.get("id")
+        if call_id is not None:
+            if not isinstance(call_id, str):
+                raise ValueError("tool_call id 无效")
+            target["id"] += call_id
+        function = raw_call.get("function")
+        if function is not None:
+            if not isinstance(function, dict):
+                raise ValueError("tool_call function 无效")
+            name = function.get("name")
+            arguments = function.get("arguments")
+            if name is not None:
+                if not isinstance(name, str):
+                    raise ValueError("tool_call name 无效")
+                target["name"] += name
+            if arguments is not None:
+                if not isinstance(arguments, str):
+                    raise ValueError("tool_call arguments 无效")
+                target["arguments"] += arguments
 
 
 def _optional_nonnegative_int(value: object) -> int | None:

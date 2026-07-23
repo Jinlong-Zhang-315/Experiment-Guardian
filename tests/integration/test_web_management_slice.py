@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+import experiment_guardian.infrastructure.repositories.projects as project_repository_module
 from experiment_guardian.application.errors import (
     ConflictError,
     RecentAuthenticationRequiredError,
@@ -19,6 +20,7 @@ from experiment_guardian.domain.web_management import PolicyPublishRequest
 from experiment_guardian.infrastructure.models import (
     Artifact,
     ExperimentIntent,
+    PolicyNarrative,
     Project,
     ProjectContext,
     ProtectedParameter,
@@ -100,6 +102,8 @@ def test_policy_publish_versions_and_supersedes_without_overwriting_history(
     assert result.context_bundle.context.version == 2
     assert result.context_bundle.active_intent is not None
     assert result.context_bundle.active_intent.version == 2
+    assert result.context_bundle.human_readable is not None
+    assert result.context_bundle.human_readable.status == "READY"
 
     with plan_check_session_factory() as session:
         contexts = session.scalars(
@@ -124,6 +128,10 @@ def test_policy_publish_versions_and_supersedes_without_overwriting_history(
             if item.context_version == 1
         )
         assert all(item.active for item in constraints if item.context_version == 2)
+        narratives = session.scalars(
+            select(PolicyNarrative).order_by(PolicyNarrative.context_version)
+        ).all()
+        assert [item.status for item in narratives] == ["READY", "READY"]
         assert session.scalar(select(func.count()).select_from(ProjectContext)) == 2
 
 
@@ -169,6 +177,62 @@ def test_web_project_settings_expose_current_and_history(
     assert len(projects.items) == 1
     assert settings.current.context.version == 1
     assert settings.context_history[0].confirmed_by == identity.user_id
+    assert settings.current.human_readable is not None
+    assert settings.current.human_readable.status == "READY"
+    assert settings.context_history[0].human_readable is not None
+    assert settings.context_history[0].human_readable.status == "READY"
+
+
+def test_policy_narrative_stale_content_is_hidden_and_owner_can_regenerate(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    service, identity, initialized = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    context_id = initialized.context_bundle.context.context_id  # type: ignore[attr-defined]
+    with plan_check_session_factory() as session, session.begin():
+        context = session.get(ProjectContext, context_id)
+        assert context is not None
+        context.goal = "通过异常直接写入模拟结构化来源漂移"
+
+    stale = service.get_settings(project_id=project_id, identity=identity)
+    assert stale.current.human_readable is not None
+    assert stale.current.human_readable.status == "STALE"
+    assert stale.current.human_readable.content is None
+
+    regenerated = service.regenerate_policy_narrative(
+        project_id=project_id,
+        context_id=context_id,
+        identity=identity,
+    )
+    assert regenerated.status == "READY"
+    assert "通过异常直接写入模拟结构化来源漂移" in (regenerated.content or "")
+
+
+def test_policy_narrative_render_failure_does_not_rollback_formal_policy(
+    plan_check_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_render(_: dict[str, object]) -> str:
+        raise RuntimeError("template unavailable")
+
+    with monkeypatch.context() as context:
+        context.setattr(project_repository_module, "render_policy_narrative", fail_render)
+        service, identity, initialized = _setup(plan_check_session_factory)
+
+    failed = initialized.context_bundle.human_readable  # type: ignore[attr-defined]
+    assert failed is not None and failed.status == "FAILED"
+    assert failed.content is None
+    with plan_check_session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(ProjectContext)) == 1
+        assert session.scalar(select(func.count()).select_from(ExperimentIntent)) == 1
+        assert session.scalar(select(func.count()).select_from(ProtectedParameter)) == 2
+
+    regenerated = service.regenerate_policy_narrative(
+        project_id=initialized.project_id,  # type: ignore[attr-defined]
+        context_id=initialized.context_bundle.context.context_id,  # type: ignore[attr-defined]
+        identity=identity,
+    )
+    assert regenerated.status == "READY"
 
 
 def test_artifact_download_rejects_cross_project_access(

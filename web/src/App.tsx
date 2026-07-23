@@ -1,13 +1,14 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
-import { FlaskConical, LogOut, Search, Settings, ShieldCheck, UploadCloud } from "lucide-react";
+import { Bot, FlaskConical, LogOut, Search, Settings, ShieldCheck, UploadCloud } from "lucide-react";
 import { api, setActiveSession } from "./api";
 import { ErrorNotice } from "./components";
 import { ExperimentPage } from "./pages/ExperimentPage";
 import { PlanPage } from "./pages/PlanPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SubmissionPage } from "./pages/SubmissionPage";
+import { AgentPage } from "./pages/AgentPage";
 import type { ProjectList, Session } from "./types";
 
 function LoginView() {
@@ -51,6 +52,7 @@ function Shell({ session, projects }: { session: Session; projects: ProjectList 
           <NavLink to={`${base}/plans`}><FlaskConical aria-hidden />计划审批</NavLink>
           <NavLink to={`${base}/submissions`}><UploadCloud aria-hidden />实验审核</NavLink>
           <NavLink to={`${base}/experiments`}><Search aria-hidden />实验查询</NavLink>
+          {session.agent_enabled && <NavLink to={`${base}/agent`}><Bot aria-hidden />治理 Agent</NavLink>}
         </nav>
         <div className="session-block">
           <strong>{session.name}</strong><span>{session.role}</span><span>{session.email}</span>
@@ -63,6 +65,7 @@ function Shell({ session, projects }: { session: Session; projects: ProjectList 
           <Route path="/projects/:projectId/plans" element={<PlanPage />} />
           <Route path="/projects/:projectId/submissions" element={<SubmissionPage />} />
           <Route path="/projects/:projectId/experiments" element={<ExperimentPage />} />
+          <Route path="/projects/:projectId/agent" element={<AgentPage />} />
           <Route path="*" element={<ProjectRedirect projects={projects} />} />
         </Routes>
       </div>

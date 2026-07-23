@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
 更新时间：2026-07-23
-当前完成轮次：R14 + Local deployment profile
-下一步：真实百炼与真实 AWS 双环境验收，不扩展 MVP
+当前完成轮次：R15a 只读内部实验治理 Agent
+下一步：R15b 确定性比较、统计、诊断和上下文压缩
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -26,6 +26,65 @@
 | R14d | AWS 部署定义 | 完成 | Terraform ECS/CloudFront/Cognito/S3/SQS/WAF |
 | R14e | 最终演示与运维材料 | 完成 | 验收脚本、双角色 Runbook、文档同步 |
 | R14 Local | 单机可替换基础设施 | 完成 | local_owner、MinIO、DB Queue、百炼、Compose |
+| R14f | 正式策略双表示 | 完成 | 结构化事实、确定性说明、来源哈希、失败重生成 |
+| R15a | 内部治理 Agent 只读对话 | 完成 | 持久化、百炼工具调用、只读工具、引用、独立 Worker |
+| R15b | 比较、统计与诊断 | 计划 | 可比性门禁、确定性统计、上下文压缩、Agent Job |
+| R15c | 治理草稿与影响分析 | 计划 | 完整 Policy Bundle 草稿、diff、歧义和影响 |
+| R15d | 人类确认后的正式操作 | 计划 | 提案摘要、版本复核、近期认证、白名单执行 |
+| R15e | 研究总结与长期记忆 | 计划 | 可追溯结论、独立候选记忆、provider parity |
+
+## R15：内部实验治理 Agent 路线
+
+完整设计见 `INTERNAL_GOVERNANCE_AGENT_PLAN.md`。
+
+关键决策：
+
+* 采用单 Agent 和受控工具，不在首版引入多 Agent 或任意 SQL/代码执行。
+* 新增 `AgentChatModel`，保留现有禁止工具的 `SummaryTextGenerator`。
+* R15a 只开放项目状态、正式实验、实验详情和当前用户待办四个只读工具。
+* Agent 使用当前 Web 身份，工具执行器重新验证实时 RBAC 和项目隔离。
+* R15a 由 CockroachDB 保存原始消息并确定性裁剪最近窗口；带来源 hash 的 rolling summary
+  留到 R15b。百炼 provider 对话或缓存不是真实记忆源。
+* R15c 前不创建治理草稿，R15d 前不执行任何正式写操作。
+* R15d 的正式操作不暴露为模型执行工具：Agent 生成提案，人类通过独立 CSRF + recent-auth
+  请求确认，服务端重查版本和状态后调用既有业务服务。
+* Agent Research Memory 与正式 Experiment Memory 分离，且最早在 R15e 接入。
+
+## R15a：只读内部实验治理 Agent
+
+交付：
+
+* 新增独立 `AgentChatModel` 端口和百炼 OpenAI-compatible 流式 Function Calling 适配器，
+  不改变禁止工具调用的摘要模型契约。
+* 增加 Thread、Message、Run、ModelCall、ToolCall、Citation 和 durable Event 七组实体；
+  Run 具有 claim、lease、generation、最大重试和永久失败语义。
+* 仅注册项目状态、正式实验列表、正式实验详情和当前用户待办四个只读工具；工具参数不能
+  指定身份或项目，执行时使用 Web Session 身份重新校验实时 Membership 和项目隔离。
+* 使用有界单 Agent LangGraph loop，限制模型调用数、工具数、输出和总时长；不注册 SQL、
+  Shell、草稿或正式写工具。
+* 最终回答使用严格 `AgentAnswer`，正式陈述只能引用本 Run 实际取得的 evidence；消息、模型
+  调用、工具输入输出、引用、事件和最终 AuditLog 均持久化。
+* API 提供会话创建/归档/恢复、幂等消息入队、Run 查询/重试和可断线重放的 SSE；浏览器断开
+  不会中断独立 Agent Worker。
+* Web 增加第五页治理 Agent，显示会话、运行状态、回答、正式引用、失败原因和重试操作。
+* 建立 24 个版本化权限、工具选择、引用、澄清和 prompt injection eval case；默认测试使用
+  scripted provider，真实百炼 Function Calling 通过显式 integration gate 验收。
+* revision `20260723_15` 增加 Agent 表，已在真实 CockroachDB 完成升级、降级和再次升级。
+
+## R14f：结构化 JSON + 人类可读自然语言
+
+交付：
+
+* `policy_narratives` 将派生 Markdown 绑定到 Context/Intent ID 与版本、结构化来源 SHA-256
+  和 `policy-narrative-v1` 模板版本；结构化表仍是唯一事实源。
+* 初始化和策略发布自动生成确定性说明，完整覆盖目标、协议、基线、Intent、受控变量及三类
+  参数保护级别，不调用 LLM，也不推断正式数据中不存在的事实。
+* `READY/FAILED/STALE/MISSING` 明确区分展示状态；来源或模板不一致时不返回旧内容。
+* 模板失败不会回滚正式版本，Owner 可通过受 CSRF、实时 RBAC 和审计保护的接口重新生成。
+* Web 默认展示说明，完整 JSON 保留在高级视图；历史 Context 同时显示各自绑定的说明。
+* `project_get_context` 同时返回双表示，并明确所有执行和治理决定以结构化字段为准。
+* 暂不为 Context/Intent 增加向量：当前没有策略语义查询消费路径，现有实验 Memory 查询不混入
+  不同类型记录；未来可在独立历史策略查询中使用 project/status/protocol 前缀过滤后接入。
 
 ## R14 Local：可替换基础设施部署
 
@@ -115,20 +174,22 @@
 * README、开发日志和框架图同步至 R14。
 * 本地真实 CockroachDB 完成 revision 12 升级、跨版本降级和再升级验收。
 
-## 下一步唯一目标
+## 下一步唯一实现目标
 
-不开始 R15 功能开发，只执行真实环境验收：
+只实现 R15b，不提前实现治理草稿、正式确认执行或长期记忆：
 
-1. 在目标 AWS 账号执行 `terraform plan/apply`，完成域名、证书和 Bedrock model access。
-2. 构建推送不可变镜像，升级 Cockroach Cloud 到 revision `20260722_13`，发布 Web 静态文件。
-3. 创建 Owner/Researcher Cognito 用户并完成现有 User sub 绑定。
-4. 用一个真实预注册 MCP Client 跑通 OAuth discovery/code/PKCE/resource 和七个工具。
-5. 按 `R14_DEMO.md` 完成六场景并保存无敏感信息的验收证据。
-6. 建立报警接收人、备份恢复和回滚演练记录。
-7. 使用真实百炼摘要和 1024 维 embedding 模型跑一次本地 Submission 全链路。
+1. 增加只读的实验可比性检查和两实验配置/指标比较，先覆盖 dataset、protocol、metric、
+   model、Context 和 Intent 一致性。
+2. 增加确定性重复实验聚合与基础统计；所有数值由程序计算，模型只负责解释。
+3. 增加 Plan 原因解释和 Submission 材料/任务失败诊断，输出明确拆分为正式事实、可能原因和
+   待验证假设。
+4. 增加带 source sequence/hash/version 的 rolling summary，并保留最近消息窗口；摘要失败
+   时退回确定性裁剪，不丢失原始消息。
+5. 扩展 eval 数据集和观测指标，重点验证不可比实验拒绝、统计正确性、诊断分层、摘要过期和
+   prompt injection。
 
-只有真实验收发现缺陷时修复对应模块；不增加自动训练、自动改代码、复杂成员管理、动态
-客户端注册、向量索引或 baseline 自动晋升。
+R15a 已提前完成专用 Agent Worker、lease、generation、重试和死信，本阶段复用而不重做。
+仍不增加任意 SQL、训练/改代码、治理草稿、自动审批、正式写工具或 Agent 长期向量记忆。
 
 ## 每轮更新规则
 

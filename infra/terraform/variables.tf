@@ -85,3 +85,28 @@ variable "mcp_desired_count" {
   type    = number
   default = 1
 }
+
+variable "agent_enabled" {
+  type        = bool
+  default     = false
+  description = "Create the optional R15a governance Agent worker and expose the Web feature."
+}
+
+variable "bailian_agent_base_url" {
+  type        = string
+  default     = ""
+  description = "Alibaba Cloud Model Studio OpenAI-compatible base URL."
+}
+
+variable "bailian_agent_model" {
+  type        = string
+  default     = ""
+  description = "Function-calling model used by the internal governance Agent."
+}
+
+variable "bailian_agent_api_key" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Alibaba Cloud Model Studio API key; stored in the encrypted runtime secret."
+}
