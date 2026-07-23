@@ -4,8 +4,11 @@ from experiment_guardian.infrastructure.models.base import Base
 from experiment_guardian.infrastructure.models.entities import (
     AccessToken,
     AgentCitation,
+    AgentContextSummary,
     AgentMessage,
     AgentModelCall,
+    AgentPolicyDraft,
+    AgentPolicyDraftRevision,
     AgentRun,
     AgentRunEvent,
     AgentThread,
@@ -41,8 +44,11 @@ from experiment_guardian.infrastructure.models.entities import (
 __all__ = [
     "AccessToken",
     "AgentCitation",
+    "AgentContextSummary",
     "AgentMessage",
     "AgentModelCall",
+    "AgentPolicyDraft",
+    "AgentPolicyDraftRevision",
     "AgentRun",
     "AgentRunEvent",
     "AgentThread",

@@ -142,7 +142,7 @@ export interface AgentThread {
 
 export interface AgentCitation {
   evidence_id: string;
-  evidence_kind: "CONFIRMED_FACT" | "USER_PROVIDED" | "ANALYSIS" | "HYPOTHESIS";
+  evidence_kind: AgentEvidenceKind;
   entity_type: string;
   entity_id?: string;
   entity_version?: string;
@@ -156,13 +156,35 @@ export interface AgentMessage {
   role: "USER" | "ASSISTANT";
   content: string;
   run_id?: string;
+  sections?: AgentAnswerSection[];
   citations: AgentCitation[];
   created_at: string;
+}
+
+export interface AgentAnswerSection {
+  evidence_kind: AgentEvidenceKind;
+  title: string;
+  content: string;
+  citation_ids: string[];
+}
+
+export interface AgentContextSummary {
+  summary_id?: string;
+  status?: "READY" | "FAILED";
+  covered_sequence_from?: number;
+  covered_sequence_to?: number;
+  provider?: string;
+  model_id?: string;
+  generated_at?: string;
+  degraded: boolean;
+  warning?: string;
+  authoritative: false;
 }
 
 export interface AgentThreadView {
   thread: AgentThread;
   messages: AgentMessage[];
+  context_summary?: AgentContextSummary;
 }
 
 export interface AgentRunReceipt {
@@ -183,4 +205,168 @@ export interface AgentRun extends AgentRunReceipt {
   created_at: string;
   started_at?: string;
   completed_at?: string;
+}
+
+export type AgentEvidenceKind =
+  "CONFIRMED_FACT" | "USER_PROVIDED" | "CANDIDATE_DRAFT" | "ANALYSIS" | "HYPOTHESIS";
+export type PolicyDraftStatus = "ACTIVE" | "ABANDONED";
+export type PolicyDraftReadiness = "READY" | "NEEDS_CLARIFICATION" | "INVALID";
+
+export interface PolicyContextCandidate {
+  goal: string;
+  non_goals: string[];
+  mainline_model: string;
+  baseline: Record<string, unknown>;
+  dataset: string;
+  protocol: string;
+  primary_metric: Record<string, unknown>;
+  default_seeds: number[];
+  active_branch: string;
+  active_config: Record<string, unknown>;
+  deprecated_items: unknown[];
+  key_decisions: unknown[];
+  change_reason: string;
+}
+
+export interface PolicyIntentCandidate {
+  name: string;
+  objective: string;
+  hypothesis: string;
+  allowed_variables: string[];
+  controlled_variables: string[];
+  expected_outputs: string[];
+  acceptance_criteria: string[];
+  original_message: string;
+}
+
+export interface PolicyConstraintCandidate {
+  parameter_path: string;
+  protection_level: "LOCKED" | "APPROVAL_REQUIRED" | "EXPERIMENT_VARIABLE";
+  expected_value: unknown;
+  allowed_values?: unknown[];
+  minimum?: number;
+  maximum?: number;
+  reason: string;
+  original_message: string;
+}
+
+export interface PolicyDraftCandidate {
+  context: PolicyContextCandidate;
+  intent: PolicyIntentCandidate;
+  constraints: PolicyConstraintCandidate[];
+}
+
+export interface PolicyDraftAmbiguity {
+  field_path: string;
+  question: string;
+  source_text: string;
+}
+
+export interface PolicyDraftSummary {
+  draft_id: string;
+  project_id: string;
+  created_by: string;
+  status: PolicyDraftStatus;
+  freshness: "CURRENT" | "STALE";
+  base_context_id: string;
+  base_context_version: number;
+  base_intent_id: string;
+  base_intent_version: number;
+  current_revision: number;
+  readiness: PolicyDraftReadiness;
+  ambiguity_count: number;
+  change_summary: string;
+  created_at: string;
+  updated_at: string;
+  abandoned_at?: string;
+}
+
+export interface PolicyDraftRevisionSummary {
+  revision_id: string;
+  revision: number;
+  author_id: string;
+  source: "AGENT" | "WEB";
+  readiness: PolicyDraftReadiness;
+  candidate_hash: string;
+  change_summary: string;
+  ambiguity_count: number;
+  created_at: string;
+}
+
+export interface PolicyDraftDiff {
+  field_path: string;
+  change_type: "ADDED" | "MODIFIED" | "REMOVED";
+  previous_value?: unknown;
+  candidate_value?: unknown;
+  attention_level: "LOW" | "MEDIUM" | "HIGH";
+  impact: string;
+}
+
+export interface PolicyDraftImpact {
+  status: "COMPLETE" | "PARTIAL" | "NOT_EVALUATED";
+  generated_at: string;
+  pending_state_hash: string;
+  attention_level: "LOW" | "MEDIUM" | "HIGH";
+  future_policy_effects: string[];
+  plan_simulations: Array<{
+    plan_check_id: string;
+    original_check_result: string;
+    original_approval_status: string;
+    simulated_check_result?: string;
+    simulated_approval_status?: string;
+    simulated_risk_codes: string[];
+    changed: boolean;
+    status: "SIMULATED" | "FAILED";
+    error?: string;
+    governance_notice: string;
+  }>;
+  plan_simulations_truncated: boolean;
+  submission_impacts: Array<{
+    submission_id: string;
+    status: string;
+    context_version: number;
+    intent_version: number;
+    classification: "IMMUTABLE_VERSION_REFERENCE";
+    message: string;
+  }>;
+  submission_impacts_truncated: boolean;
+  warnings: string[];
+}
+
+export interface PolicyDraftRevision {
+  revision_id: string;
+  draft_id: string;
+  revision: number;
+  author_id: string;
+  source: "AGENT" | "WEB";
+  source_run_id?: string;
+  candidate: PolicyDraftCandidate;
+  candidate_hash: string;
+  change_summary: string;
+  unresolved_ambiguities: PolicyDraftAmbiguity[];
+  validation: {
+    readiness: PolicyDraftReadiness;
+    issues: Array<{ code: string; field_path: string; message: string }>;
+    unresolved_ambiguities: PolicyDraftAmbiguity[];
+  };
+  diff: PolicyDraftDiff[];
+  narrative: {
+    status: "READY" | "FAILED";
+    generator_version: string;
+    source_hash: string;
+    content?: string;
+    error?: string;
+    authoritative: false;
+    governance_notice: string;
+  };
+  stored_impact: PolicyDraftImpact;
+  current_impact: PolicyDraftImpact;
+  impact_changed_since_revision: boolean;
+  created_at: string;
+}
+
+export interface PolicyDraftView {
+  summary: PolicyDraftSummary;
+  current: PolicyDraftRevision;
+  revisions: PolicyDraftRevisionSummary[];
 }

@@ -113,8 +113,10 @@ class Settings(BaseSettings):
     agent_max_model_calls: int = Field(default=4, ge=1, le=8)
     agent_max_tool_calls: int = Field(default=8, ge=1, le=20)
     agent_max_wall_seconds: int = Field(default=90, ge=10, le=300)
-    agent_context_token_budget: int = Field(default=24000, ge=2000, le=100000)
+    agent_context_token_budget: int = Field(default=12000, ge=2000, le=100000)
     agent_recent_message_limit: int = Field(default=12, ge=2, le=50)
+    agent_summary_min_new_messages: int = Field(default=6, ge=2, le=50)
+    agent_summary_max_output_tokens: int = Field(default=1200, ge=256, le=4096)
     agent_tool_output_max_bytes: int = Field(default=32768, ge=1024, le=131072)
     agent_max_output_tokens: int = Field(default=1800, ge=256, le=8192)
     agent_run_lease_seconds: int = Field(default=120, ge=30, le=900)
@@ -154,9 +156,7 @@ class Settings(BaseSettings):
                 "BAILIAN_BASE_URL": self.bailian_base_url,
                 "BAILIAN_AGENT_MODEL": self.bailian_agent_model,
             }
-            missing_agent = [
-                name for name, value in required_agent.items() if not value.strip()
-            ]
+            missing_agent = [name for name, value in required_agent.items() if not value.strip()]
             if missing_agent:
                 raise ValueError("治理 Agent 缺少配置: " + ", ".join(missing_agent))
         if self.deployment_mode == "local":
@@ -185,8 +185,7 @@ class Settings(BaseSettings):
             ]
             if invalid_urls:
                 raise ValueError(
-                    "本地 Web URL 必须使用 127.0.0.1 或 localhost: "
-                    + ", ".join(invalid_urls)
+                    "本地 Web URL 必须使用 127.0.0.1 或 localhost: " + ", ".join(invalid_urls)
                 )
             required_local = {
                 "LOCAL_OWNER_EMAIL": self.local_owner_email,
@@ -217,9 +216,7 @@ class Settings(BaseSettings):
             "QUEUE_BACKEND": (self.queue_backend, "sqs"),
             "LLM_PROVIDER": (self.llm_provider, "bedrock"),
         }
-        invalid_cloud = [
-            name for name, values in expected_cloud.items() if values[0] != values[1]
-        ]
+        invalid_cloud = [name for name, values in expected_cloud.items() if values[0] != values[1]]
         if invalid_cloud:
             raise ValueError("云端部署后端配置不一致: " + ", ".join(invalid_cloud))
         if self.app_env != "production":
@@ -258,10 +255,7 @@ class Settings(BaseSettings):
         if self.mcp_transport == "streamable-http":
             if not self.mcp_public_url.startswith("https://"):
                 raise ValueError("生产环境远程 MCP_PUBLIC_URL 必须使用 HTTPS")
-            if (
-                self.mcp_oauth_resource_identifier.rstrip("/")
-                != self.mcp_public_url.rstrip("/")
-            ):
+            if self.mcp_oauth_resource_identifier.rstrip("/") != self.mcp_public_url.rstrip("/"):
                 raise ValueError("MCP OAuth resource identifier 必须与 MCP_PUBLIC_URL 一致")
         return self
 

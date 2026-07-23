@@ -1,8 +1,8 @@
 # 内部实验治理 Agent 开发计划
 
-更新时间：2026-07-23  
-计划轮次：R15a-R15e  
-当前状态：R15a 已完成；下一步只实施 R15b
+更新时间：2026-07-24
+计划轮次：R15a-R15e
+当前状态：R15c 已完成；下一步只实施 R15d
 
 ## 1. 目标与定位
 
@@ -39,15 +39,14 @@ Agent 的职责是提高查询、分析、解释和草稿准备效率，不成�
 * `Memory VECTOR(1024)` 只保存已确认 Experiment 记忆，并执行 project/protocol/status 等
   结构化过滤后再做向量排序。
 
-### R15a 后的当前缺口
+### R15c 后的当前缺口
 
 * `SummaryTextGenerator` 继续拒绝 `tool_calls`；R15a 已新增独立 `AgentChatModel` 和百炼适配器。
-* Thread、Message、Run、ModelCall、ToolCall、Citation 和 Event 已完成；Policy Draft 与 Action
-  Proposal 仍未实现。
-* 有界 Agent loop、提示词版本、资源预算和基础轨迹评测已完成；rolling summary 和确定性分析
-  工具仍未实现。
-* Web 已增加第五页治理 Agent，但目前只支持只读状态问答，尚无比较、诊断或草稿编辑。
-* `IntentInterpretation` 已表达候选约束语义，但还没有由模型生成、编辑和确认的完整用例。
+* Thread、Message、Run、ModelCall、ToolCall、Citation、Event 和 Policy Draft 已完成；
+  Action Proposal 仍未实现。
+* 有界 Agent loop、版本化 Prompt/工具目录、rolling summary、确定性分析和候选草稿工具已完成。
+* Web 治理 Agent 已支持只读问答、比较、统计、诊断和完整 Bundle 草稿工作台；没有正式确认页。
+* 草稿已表达候选约束语义、未解决歧义、diff 和影响，但不能转换为可确认的正式操作提案。
 * 现有业务服务适合复用，但不应直接把大量 ORM 对象或内部方法暴露为模型工具。
 
 ## 3. 本轮采纳、调整和拒绝
@@ -162,8 +161,10 @@ BEDROCK_AGENT_MODEL_ID=
 AGENT_MAX_MODEL_CALLS=4
 AGENT_MAX_TOOL_CALLS=8
 AGENT_MAX_WALL_SECONDS=90
-AGENT_CONTEXT_TOKEN_BUDGET=24000
+AGENT_CONTEXT_TOKEN_BUDGET=12000
 AGENT_RECENT_MESSAGE_LIMIT=12
+AGENT_SUMMARY_MIN_NEW_MESSAGES=6
+AGENT_SUMMARY_MAX_OUTPUT_TOKENS=1200
 AGENT_TOOL_OUTPUT_MAX_BYTES=32768
 AGENT_MAX_OUTPUT_TOKENS=1800
 ```
@@ -195,10 +196,9 @@ AGENT_MAX_OUTPUT_TOKENS=1800
 
 | 工具 | 作用 | 确定性要求 |
 | --- | --- | --- |
-| `experiments_compare_v1` | 配置、运行条件和指标差异 | 先返回 FULL/PARTIAL/NONE 可比性 |
-| `repeat_group_summarize_v1` | count/mean/std/min/max/seed coverage | 有限数值、最小样本提示 |
-| `project_progress_get_v1` | 正式主指标下的最佳结果和近期进展 | dataset/protocol/metric 同域 |
-| `plan_explain_v1` | 解释 diff、确定性结果、风险和历史相似项 | 不重算或覆盖 Plan Check |
+| `experiments_compare_v1` | 两个显式 ID 的配置、运行条件和指标差异 | 分层返回 COMPARABLE/CAVEATS/NOT |
+| `experiment_group_stats_v1` | 显式 2-20 ID 的 count/mean/std/median/min/max | 严格重复组；不自动分组 |
+| `plan_check_explain_v1` | 解释快照、diff、当前审批和 Manifest 资格 | 不信任旧 report 派生审批状态 |
 | `submission_diagnose_v1` | 材料、工作流、风险、失败和计划一致性 | 事实/可能原因/待验证假设分栏 |
 
 参数与指标关联只返回样本量、分组差异或简单相关系数，并明确混杂条件，不输出“参数导致结果”
@@ -235,8 +235,7 @@ R15a 实际新增：
 * title、status、last_sequence；
 * created_at、updated_at、archived_at。
 
-rolling summary、summary source range/hash/version 明确留到 R15b 增量迁移；R15a 不伪造摘要
-状态。
+R15b 已增加 `current_summary_id` 指向最近 READY 摘要；失败尝试不会覆盖该指针。
 
 ### `agent_messages`
 
@@ -275,8 +274,8 @@ rolling summary、summary source range/hash/version 明确留到 R15b 增量迁�
 * durable event 使用 `(run_id, sequence)` 唯一顺序，支持 SSE 断线重放；
 * 不保存隐藏 reasoning 或 chain-of-thought。
 
-R15c 增加 `agent_policy_drafts`，R15d 增加 `agent_action_proposals`。这些表只保存候选和执行
-回执，不能替代正式业务表。
+R15c 已增加 `agent_policy_drafts`；R15d 再增加 `agent_action_proposals`。这些表只保存候选和
+执行回执，不能替代正式业务表。
 
 迁移只做增量建表，不修改现有正式记录，也不回填历史对话。
 
@@ -440,21 +439,28 @@ R15a 继续使用现有 `httpx` 调用百炼，不为了 OpenAI-compatible 协�
 
 ### R15b：比较、统计、诊断和上下文压缩
 
-1. 增加可比性检查、重复实验聚合、进展统计、Plan 解释和 Submission 诊断工具。
-2. 比较前强制检查 dataset、protocol、metric、model/context/intent 等条件。
-3. 诊断输出拆成已确认事实、可能原因和待验证假设。
-4. 增加 rolling summary 和 token budget 策略。
-5. 复用 R15a 已完成的专用 Agent Worker、lease、generation、重试和死信，不重复设计队列。
-6. 增加 Run 取消的明确状态转换，并保持 Thread 同时只允许一个活动 Run。
+已完成：
+
+1. 四个新增只读工具采用分层可比性、显式重复组、动态审批解释和 Submission 元数据诊断。
+2. dataset/protocol/完成状态/指标语义/指标方向冲突为硬阻断；其他运行差异明确列为 caveat。
+3. 确定性分析产生独立 `ANALYSIS` evidence；服务端验证回答分段和 evidence kind 一致。
+4. revision 16 增加 rolling summary、来源消息范围/ID/hash、provider/model/prompt 和失败记录。
+5. 摘要更新失败保留旧 READY 摘要或退回最近消息，不影响 Run，不丢失原始对话。
+6. R15a/R15b Prompt 和工具目录按 Run 固化兼容；旧 Pending Run 不会看到新增工具。
+
+明确延期：Run 取消不是本轮分析与压缩的必要条件，留待出现真实交互需求后单独设计。
 
 ### R15c：治理草稿和影响分析
 
-1. 增加完整 Policy Bundle 草稿、revision 和编辑 API。
+已完成：
+
+1. 完整 Policy Bundle 草稿、追加式 revision、编辑和取消 API。
 2. 模型输出通过严格 schema，含糊内容进入 `unresolved_ambiguities`。
-3. 复用正式发布校验，生成确定性结构化 diff 和人类可读 impact。
-4. 分析对未来 Plan、待处理 Plan/Submission、主线、基线和评价标准的影响。
-5. Web 提供结构化编辑器、原始 JSON、差异、冲突和取消。
-6. 本阶段没有任何正式发布入口。
+3. 复用正式发布语义校验，生成确定性结构化 diff、候选说明和影响等级。
+4. 对待审批 Plan 执行无写入模拟，对进行中 Submission 只展示不可变版本追溯。
+5. Web 提供结构化编辑器、原始 JSON、差异、冲突、历史和取消。
+6. `r15c-v1` Prompt/目录与摘要 schema v2 固化，旧 Run 继续使用 R15a/R15b 目录。
+7. 本阶段没有任何正式发布入口。
 
 ### R15d：用户确认后的白名单正式操作
 
@@ -474,7 +480,8 @@ R15a 继续使用现有 `httpx` 调用百炼，不为了 OpenAI-compatible 协�
 5. 实现 Bedrock AgentChatModel，并用同一 provider contract/eval suite 验证。
 6. 增加成本、token、延迟、工具错误和模型回归观测。
 
-一次只实现一个阶段。当前只开始 R15b，R15c 验收完成前不开放任何正式写入。
+一次只实现一个阶段。当前下一步只开始 R15d，R15d 的任何正式操作仍必须由独立人类确认请求
+执行，模型本身不获得 execute 工具。
 
 ## 13. 测试与评测
 
@@ -534,12 +541,15 @@ CI 使用 Fake/脚本化模型做严格 trajectory match，不访问外网。真
   <https://genai.owasp.org/llmrisk/llm01-prompt-injection/>
   <https://genai.owasp.org/llmrisk/llm062025-excessive-agency/>
 
-## 15. R15a 验收结果与 R15b 门禁
+## 15. R15c 验收结果与 R15d 门禁
 
-* revision `20260723_15` 已在真实 CockroachDB 完成升级、降级和再次升级。
-* 四个工具的输入/输出 schema 与权限边界已冻结；模型参数不接受身份和项目。
-* 已建立 24 个版本化 trajectory/security case；真实百炼调用使用
+* revision `20260724_17` 已在真实 CockroachDB 完成 16→17→16→17；新增两张表可逆且没有
+  修改正式业务表。
+* 八个只读/分析工具与四个候选草稿工具的 schema 和权限边界已冻结；模型参数不接受身份和项目。
+* 已建立 38 个 R15c trajectory/security case；真实百炼调用使用
   `RUN_BAILIAN_AGENT_INTEGRATION=1` 显式验收，不进入默认 CI。
-* Agent 对话只允许归档/恢复，不提供普通用户物理删除审计数据。
+* Researcher 只能管理自己的草稿，Owner 可以代管项目草稿且 revision 保留真实 author。
+* 草稿过期后只读，不静默 rebase；Plan 模拟和 Submission 影响不会回写正式状态。
 * 七个产品 MCP 工具和正式 Policy、Plan、Manifest、Submission、Experiment 状态机未修改。
-* R15b 开始前先冻结可比性字段矩阵、统计舍入规则、诊断证据分类和 rolling summary 来源哈希。
+* R15d 必须使用不可变 Proposal + digest + base version + 独立人类确认 API；不得把正式执行注册
+  为模型工具，也不得让草稿直接发布。

@@ -39,13 +39,13 @@ Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Contex
 * CockroachDB Outbox、SQS 或数据库队列、租约 Worker、Bedrock/百炼摘要和 1024 维 embedding；
 * High/Critical 强制展开的短审核回执，Critical 不能批准；
 * 正式确认单事务和 project/protocol/status 等结构化过滤先行的向量候选查询；
-* React/Vite 五页 Web 工作台，包含只读内部实验治理 Agent；
+* React/Vite 五页 Web 工作台，治理 Agent 页内含完整 Policy Bundle 草稿工作台；
 * Cognito Managed Login、服务端 Web Session、CSRF、撤销和近期认证；
 * MCP 2025-11-25 OAuth Resource Server、RFC 9728、PKCE、RFC 8707 和预注册客户端；
 * AWS CloudFront/WAF/ALB/ECS/S3/SQS/Cognito/Bedrock Terraform 部署定义；
 * CockroachDB、MinIO、数据库队列、百炼和 local_owner 的单机 Compose 部署模式；
-* R15a 内部治理 Agent：持久化对话、四个只读工具、百炼流式 Function Calling、证据引用、
-  有界执行、独立 Worker 和可恢复 SSE。
+* R15c 内部治理 Agent：持久化对话、八个只读查询/分析工具、四个候选草稿工具、分层可比性、
+  显式重复组统计、Plan/Submission 诊断、滚动摘要、确定性 diff/影响、独立 Worker 和 SSE。
 
 MCP 只暴露七个工具：
 
@@ -131,7 +131,8 @@ docker compose --env-file .env.local logs local-init
 [`docs/POLICY_DUAL_REPRESENTATION.md`](docs/POLICY_DUAL_REPRESENTATION.md)。
 内部实验治理 Agent 的能力边界、工具目录、上下文压缩、确认协议和分期计划见
 [`docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md`](docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md)；
-当前只完成 R15a 只读纵向切片，不表示已开放 Agent 草稿或正式写操作。
+当前完成 R15c 治理草稿纵向切片。草稿可由 Agent 创建、由 Web 修订和取消，但没有正式发布、
+审批或 Submission 确认执行入口。
 
 启用本地治理 Agent 时，在 `.env.local` 设置：
 
@@ -162,7 +163,7 @@ experiment-guardian-api
 
 默认 API：`http://127.0.0.1:8000`，OpenAPI：`/docs`。
 
-当前 Alembic head 为 `20260723_15`：
+当前 Alembic head 为 `20260724_17`：
 
 ```text
 01 foundation/context
@@ -179,6 +180,8 @@ experiment-guardian-api
 13 local backends/outbox terminal status/model provider metadata
 14 version-bound human-readable policy narratives
 15 durable read-only governance Agent conversations/runs/tool evidence/events
+16 deterministic Agent analysis context summaries/model-call purpose
+17 append-only full Policy Bundle drafts/revisions
 ```
 
 初始化现有团队和首个项目仍可使用可信本地 CLI/API：

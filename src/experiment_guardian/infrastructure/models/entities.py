@@ -27,7 +27,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from experiment_guardian.domain.enums import (
     AgentCallStatus,
+    AgentContextSummaryStatus,
     AgentMessageRole,
+    AgentModelCallPurpose,
     AgentRunStatus,
     AgentThreadStatus,
     ApprovalDecision,
@@ -43,6 +45,9 @@ from experiment_guardian.domain.enums import (
     IdempotencyOperationStatus,
     IntentStatus,
     OutboxStatus,
+    PolicyDraftReadiness,
+    PolicyDraftSource,
+    PolicyDraftStatus,
     ProtectionLevel,
     RiskSeverity,
     SubmissionStatus,
@@ -796,9 +801,7 @@ class Experiment(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
 class ExperimentMetric(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "experiment_metrics"
-    __table_args__ = (
-        UniqueConstraint("experiment_id", "name", name="uq_experiment_metrics_name"),
-    )
+    __table_args__ = (UniqueConstraint("experiment_id", "name", name="uq_experiment_metrics_name"),)
 
     experiment_id: Mapped[UUID] = mapped_column(ForeignKey("experiments.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -813,9 +816,7 @@ class Memory(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "memories"
     __table_args__ = (
         UniqueConstraint("experiment_id", "memory_type", name="uq_memories_experiment_type"),
-        CheckConstraint(
-            "embedding_dimension = 1024", name="memory_embedding_dimension_1024"
-        ),
+        CheckConstraint("embedding_dimension = 1024", name="memory_embedding_dimension_1024"),
         CheckConstraint("embedding_normalized", name="memory_embedding_normalized"),
         CheckConstraint("length(content_sha256) = 64", name="memory_content_sha256_length"),
         Index(
@@ -910,6 +911,9 @@ class AgentThread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     last_sequence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 指向最近一次 READY 摘要。为避免与摘要表形成循环建表依赖，不添加数据库外键；
+    # 应用层只会在同一事务中写入已成功持久化的摘要 ID。
+    current_summary_id: Mapped[UUID | None] = mapped_column()
 
 
 class AgentMessage(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -996,6 +1000,11 @@ class AgentModelCall(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    purpose: Mapped[AgentModelCallPurpose] = mapped_column(
+        enum_column(AgentModelCallPurpose, "agent_model_call_purpose", length=24),
+        default=AgentModelCallPurpose.AGENT_TURN,
+        nullable=False,
+    )
     status: Mapped[AgentCallStatus] = mapped_column(
         enum_column(AgentCallStatus, "agent_call_status", length=16), nullable=False
     )
@@ -1007,6 +1016,52 @@ class AgentModelCall(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentContextSummary(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """对较早对话消息的非权威滚动摘要；失败尝试也保留审计记录。"""
+
+    __tablename__ = "agent_context_summaries"
+    __table_args__ = (
+        UniqueConstraint("run_id", "generation", name="uq_agent_context_summaries_run_generation"),
+        Index(
+            "ix_agent_context_summaries_thread_created",
+            "thread_id",
+            "created_at",
+        ),
+        CheckConstraint(
+            "(status = 'READY' AND payload IS NOT NULL AND error IS NULL) OR "
+            "(status = 'FAILED' AND payload IS NULL AND error IS NOT NULL)",
+            name="state_consistent",
+        ),
+        CheckConstraint(
+            "covered_sequence_to >= covered_sequence_from",
+            name="sequence_range_valid",
+        ),
+        CheckConstraint("length(source_hash) = 64", name="source_hash_length"),
+    )
+
+    thread_id: Mapped[UUID] = mapped_column(ForeignKey("agent_threads.id"), nullable=False)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[AgentContextSummaryStatus] = mapped_column(
+        enum_column(
+            AgentContextSummaryStatus,
+            "agent_context_summary_status",
+            length=16,
+        ),
+        nullable=False,
+    )
+    covered_sequence_from: Mapped[int] = mapped_column(Integer, nullable=False)
+    covered_sequence_to: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_message_ids: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    model_call_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_model_calls.id"))
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True))
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True))
 
 
 class AgentToolCall(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -1035,6 +1090,111 @@ class AgentToolCall(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentPolicyDraft(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """完整 Policy Bundle 候选的稳定容器；当前 revision 指向追加式历史。"""
+
+    __tablename__ = "agent_policy_drafts"
+    __table_args__ = (
+        Index(
+            "ix_agent_policy_drafts_project_status_updated",
+            "project_id",
+            "status",
+            "updated_at",
+        ),
+        Index(
+            "ix_agent_policy_drafts_creator_status_updated",
+            "created_by",
+            "status",
+            "updated_at",
+        ),
+        CheckConstraint("current_revision >= 1", name="current_revision_positive"),
+        CheckConstraint("length(base_policy_hash) = 64", name="base_policy_hash_length"),
+    )
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    originating_thread_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_threads.id"), nullable=False
+    )
+    status: Mapped[PolicyDraftStatus] = mapped_column(
+        enum_column(PolicyDraftStatus, "agent_policy_draft_status", length=16),
+        nullable=False,
+    )
+    base_context_id: Mapped[UUID] = mapped_column(
+        ForeignKey("project_contexts.id"), nullable=False
+    )
+    base_context_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_intent_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_intents.id"), nullable=False
+    )
+    base_intent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    base_policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    current_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    abandoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    abandoned_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    abandon_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class AgentPolicyDraftRevision(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """不可变草稿 revision；模型失败重试通过 source_run_id 返回原结果。"""
+
+    __tablename__ = "agent_policy_draft_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "draft_id",
+            "revision",
+            name="uq_agent_policy_draft_revisions_draft_revision",
+        ),
+        UniqueConstraint(
+            "source_run_id",
+            name="uq_agent_policy_draft_revisions_source_run",
+        ),
+        Index(
+            "ix_agent_policy_draft_revisions_draft_created",
+            "draft_id",
+            "created_at",
+        ),
+        CheckConstraint("revision >= 1", name="revision_positive"),
+        CheckConstraint("length(candidate_hash) = 64", name="candidate_hash_length"),
+        CheckConstraint("length(source_request_hash) = 64", name="source_request_hash_length"),
+        CheckConstraint("length(pending_state_hash) = 64", name="pending_state_hash_length"),
+    )
+
+    draft_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_policy_drafts.id"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    author_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    source: Mapped[PolicyDraftSource] = mapped_column(
+        enum_column(PolicyDraftSource, "agent_policy_draft_source", length=16),
+        nullable=False,
+    )
+    source_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_runs.id"))
+    source_tool_call_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_tool_calls.id")
+    )
+    candidate_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    candidate_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    change_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    unresolved_ambiguities: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    readiness: Mapped[PolicyDraftReadiness] = mapped_column(
+        enum_column(
+            PolicyDraftReadiness,
+            "agent_policy_draft_readiness",
+            length=32,
+        ),
+        nullable=False,
+    )
+    validation_report: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    diff_snapshot: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    narrative_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    impact_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    pending_state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class AgentCitation(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

@@ -12,6 +12,7 @@ from pydantic import Field, model_validator
 
 from experiment_guardian.domain.contracts import ContractModel
 from experiment_guardian.domain.enums import (
+    AgentContextSummaryStatus,
     AgentEvidenceKind,
     AgentMessageRole,
     AgentRunStatus,
@@ -73,13 +74,28 @@ class AgentMessageView(ContractModel):
     role: AgentMessageRole
     content: str
     run_id: UUID | None = None
+    sections: list["AgentAnswerSection"] = Field(default_factory=list)
     citations: list[AgentCitationView] = Field(default_factory=list)
     created_at: datetime
+
+
+class AgentContextSummaryView(ContractModel):
+    summary_id: UUID | None = None
+    status: AgentContextSummaryStatus | None = None
+    covered_sequence_from: int | None = None
+    covered_sequence_to: int | None = None
+    provider: str | None = None
+    model_id: str | None = None
+    generated_at: datetime | None = None
+    degraded: bool = False
+    warning: str | None = None
+    authoritative: bool = False
 
 
 class AgentThreadView(ContractModel):
     thread: AgentThreadSummary
     messages: list[AgentMessageView]
+    context_summary: AgentContextSummaryView | None = None
 
 
 class AgentRunReceipt(ContractModel):
@@ -148,6 +164,38 @@ class AgentAnswer(ContractModel):
     sections: list[AgentAnswerSection] = Field(min_length=1, max_length=20)
     citations: list[str] = Field(default_factory=list, max_length=100)
     follow_up_required: bool = False
+
+
+class AgentDraftSummaryReference(ContractModel):
+    draft_id: UUID
+    revision: int = Field(ge=1)
+    status: str = Field(min_length=1, max_length=32)
+    unresolved_ambiguities: list[str] = Field(default_factory=list, max_length=20)
+
+
+class AgentContextSummaryPayload(ContractModel):
+    schema_version: Literal[1, 2] = 1
+    covered_sequence_from: int = Field(ge=1)
+    covered_sequence_to: int = Field(ge=1)
+    user_requests_and_context: list[str] = Field(default_factory=list, max_length=30)
+    prior_answers_and_analysis: list[str] = Field(default_factory=list, max_length=30)
+    open_questions: list[str] = Field(default_factory=list, max_length=20)
+    source_message_ids: list[UUID] = Field(min_length=1, max_length=200)
+    formal_reference_labels: list[str] = Field(default_factory=list, max_length=50)
+    draft_references: list[AgentDraftSummaryReference] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+    @model_validator(mode="after")
+    def validate_sequence_range(self) -> "AgentContextSummaryPayload":
+        if self.covered_sequence_to < self.covered_sequence_from:
+            raise ValueError("上下文摘要的消息序号范围无效")
+        if len(set(self.source_message_ids)) != len(self.source_message_ids):
+            raise ValueError("上下文摘要的 source_message_ids 不能重复")
+        if self.schema_version == 1 and self.draft_references:
+            raise ValueError("schema_version=1 的上下文摘要不能包含 draft_references")
+        return self
 
 
 class AgentEvidence(ContractModel):

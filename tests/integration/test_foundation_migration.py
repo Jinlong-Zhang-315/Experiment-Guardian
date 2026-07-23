@@ -112,11 +112,41 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     assert "uq_submission_embeddings_submission_id" in {
         item["name"] for item in inspector.get_unique_constraints("submission_embeddings")
     }
-    assert "provider" in {
-        item["name"] for item in inspector.get_columns("submission_embeddings")
-    }
+    assert "provider" in {item["name"] for item in inspector.get_columns("submission_embeddings")}
     assert set(inspector.get_table_names()) >= FORMAL_EXPERIMENT_TABLES
     assert "policy_narratives" in inspector.get_table_names()
+    assert "agent_context_summaries" in inspector.get_table_names()
+    assert {
+        "agent_policy_drafts",
+        "agent_policy_draft_revisions",
+    } <= set(inspector.get_table_names())
+    assert "current_summary_id" in {item["name"] for item in inspector.get_columns("agent_threads")}
+    assert "purpose" in {item["name"] for item in inspector.get_columns("agent_model_calls")}
+    assert {
+        "covered_sequence_from",
+        "covered_sequence_to",
+        "source_message_ids",
+        "source_hash",
+        "payload",
+        "error",
+    } <= {item["name"] for item in inspector.get_columns("agent_context_summaries")}
+    assert {
+        "base_policy_snapshot",
+        "base_policy_hash",
+        "current_revision",
+        "abandoned_at",
+    } <= {item["name"] for item in inspector.get_columns("agent_policy_drafts")}
+    assert {
+        "candidate_payload",
+        "candidate_hash",
+        "source_request_hash",
+        "validation_report",
+        "diff_snapshot",
+        "impact_snapshot",
+    } <= {
+        item["name"]
+        for item in inspector.get_columns("agent_policy_draft_revisions")
+    }
     assert {
         "context_id",
         "context_version",
@@ -157,6 +187,17 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         item["name"] for item in inspector.get_unique_constraints("outbox_events")
     }
     engine.dispose()
+
+    run_alembic("downgrade", "20260723_16")
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    assert not (
+        {"agent_policy_drafts", "agent_policy_draft_revisions"}
+        & set(inspector.get_table_names())
+    )
+    assert "agent_context_summaries" in inspector.get_table_names()
+    engine.dispose()
+    run_alembic("upgrade", "head")
 
     # revision 09 降级保留摘要与 Summary Job，但删除 R12b 的向量、回执和 Review Job。
     engine = create_engine(database_url)

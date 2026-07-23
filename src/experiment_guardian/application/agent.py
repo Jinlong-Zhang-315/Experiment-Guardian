@@ -23,7 +23,9 @@ from experiment_guardian.application.transactions import run_with_serialization_
 from experiment_guardian.application.web_auth import OWNER_WEB_SCOPES, RESEARCHER_WEB_SCOPES
 from experiment_guardian.core.config import Settings
 from experiment_guardian.domain.agent import (
+    AgentAnswerSection,
     AgentCitationView,
+    AgentContextSummaryView,
     AgentMessageCreateRequest,
     AgentMessageView,
     AgentRunReceipt,
@@ -35,6 +37,7 @@ from experiment_guardian.domain.agent import (
     AgentThreadView,
 )
 from experiment_guardian.domain.enums import (
+    AgentContextSummaryStatus,
     AgentEvidenceKind,
     AgentMessageRole,
     AgentRunStatus,
@@ -43,6 +46,7 @@ from experiment_guardian.domain.enums import (
 )
 from experiment_guardian.infrastructure.models import (
     AgentCitation,
+    AgentContextSummary,
     AgentMessage,
     AgentRun,
     AgentThread,
@@ -55,8 +59,8 @@ from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyProjectRepository,
 )
 
-PROMPT_VERSION = "r15a-v1"
-TOOL_CATALOG_VERSION = "r15a-v1"
+PROMPT_VERSION = "r15c-v1"
+TOOL_CATALOG_VERSION = "r15c-v1"
 TERMINAL_RUN_STATUSES = {
     AgentRunStatus.SUCCEEDED,
     AgentRunStatus.FAILED,
@@ -70,9 +74,9 @@ ACTIVE_RUN_STATUSES = {
 
 
 def _hash_json(value: object) -> str:
-    payload = json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
+    payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -173,9 +177,7 @@ class AgentConversationService:
                 user_id=identity.user_id,
                 team_id=identity.team_id,
             )
-            target_status = (
-                AgentThreadStatus.ARCHIVED if archived else AgentThreadStatus.ACTIVE
-            )
+            target_status = AgentThreadStatus.ARCHIVED if archived else AgentThreadStatus.ACTIVE
             rows = session.scalars(
                 select(AgentThread)
                 .where(
@@ -208,13 +210,28 @@ class AgentConversationService:
                     .order_by(AgentMessage.sequence)
                 ).all()
             )
-            citations = list(
-                session.scalars(
-                    select(AgentCitation).where(
-                        AgentCitation.message_id.in_([item.id for item in messages])
-                    )
-                ).all()
-            ) if messages else []
+            citations = (
+                list(
+                    session.scalars(
+                        select(AgentCitation).where(
+                            AgentCitation.message_id.in_([item.id for item in messages])
+                        )
+                    ).all()
+                )
+                if messages
+                else []
+            )
+            run_ids = {item.run_id for item in messages if item.run_id is not None}
+            runs = (
+                {
+                    item.id: item
+                    for item in session.scalars(
+                        select(AgentRun).where(AgentRun.id.in_(run_ids))
+                    ).all()
+                }
+                if run_ids
+                else {}
+            )
             by_message: dict[UUID, list[AgentCitationView]] = {}
             for item in citations:
                 by_message.setdefault(item.message_id, []).append(
@@ -228,7 +245,54 @@ class AgentConversationService:
                         excerpt=item.excerpt,
                     )
                 )
-            return AgentThreadView(
+            current_summary = (
+                session.get(AgentContextSummary, thread.current_summary_id)
+                if thread.current_summary_id is not None
+                else None
+            )
+            latest_summary = session.scalar(
+                select(AgentContextSummary)
+                .where(AgentContextSummary.thread_id == thread.id)
+                .order_by(
+                    AgentContextSummary.created_at.desc(),
+                    AgentContextSummary.id.desc(),
+                )
+                .limit(1)
+            )
+            summary_view: AgentContextSummaryView | None = None
+            if current_summary is not None:
+                degraded = bool(
+                    latest_summary is not None
+                    and latest_summary.id != current_summary.id
+                    and latest_summary.status is AgentContextSummaryStatus.FAILED
+                )
+                summary_view = AgentContextSummaryView(
+                    summary_id=current_summary.id,
+                    status=current_summary.status,
+                    covered_sequence_from=current_summary.covered_sequence_from,
+                    covered_sequence_to=current_summary.covered_sequence_to,
+                    provider=current_summary.provider,
+                    model_id=current_summary.model_id,
+                    generated_at=current_summary.created_at,
+                    degraded=degraded,
+                    warning=(
+                        "最近一次摘要更新失败，当前对话继续使用上一版非权威摘要。"
+                        if degraded
+                        else None
+                    ),
+                )
+            elif latest_summary is not None:
+                summary_view = AgentContextSummaryView(
+                    status=latest_summary.status,
+                    covered_sequence_from=latest_summary.covered_sequence_from,
+                    covered_sequence_to=latest_summary.covered_sequence_to,
+                    provider=latest_summary.provider,
+                    model_id=latest_summary.model_id,
+                    generated_at=latest_summary.created_at,
+                    degraded=True,
+                    warning="对话摘要生成失败，当前回答使用最近消息降级上下文。",
+                )
+            view = AgentThreadView(
                 thread=self._thread_summary(thread),
                 messages=[
                     AgentMessageView(
@@ -237,12 +301,22 @@ class AgentConversationService:
                         role=item.role,
                         content=item.content,
                         run_id=item.run_id,
+                        sections=[
+                            AgentAnswerSection.model_validate(section)
+                            for section in (
+                                runs[item.run_id].context_snapshot.get("answer_sections", [])
+                                if item.run_id in runs
+                                else []
+                            )
+                        ],
                         citations=by_message.get(item.id, []),
                         created_at=item.created_at,
                     )
                     for item in messages
                 ],
+                context_summary=summary_view,
             )
+            return view
 
     def update_thread(
         self,
@@ -321,9 +395,7 @@ class AgentConversationService:
                 )
                 if existing is not None:
                     if existing.request_hash != request_hash:
-                        raise ConflictError(
-                            "相同 Idempotency-Key 已用于不同的 Agent 消息"
-                        )
+                        raise ConflictError("相同 Idempotency-Key 已用于不同的 Agent 消息")
                     return self._run_receipt(existing)
                 if thread.status is AgentThreadStatus.ARCHIVED:
                     raise ConflictError("归档会话不能发送消息，请先恢复")
@@ -400,9 +472,7 @@ class AgentConversationService:
 
         return run_with_serialization_retry(operation)
 
-    def get_run(
-        self, *, project_id: UUID, run_id: UUID, identity: RequestIdentity
-    ) -> AgentRunView:
+    def get_run(self, *, project_id: UUID, run_id: UUID, identity: RequestIdentity) -> AgentRunView:
         self._require_enabled()
         self._require_web_identity(identity)
         with self._session_factory() as session:
@@ -445,9 +515,7 @@ class AgentConversationService:
                 retry_hash = _hash_json({"retry_of": str(old.id)})
                 if existing is not None:
                     if existing.request_hash != retry_hash:
-                        raise ConflictError(
-                            "相同 Idempotency-Key 已用于不同的 Agent 重试"
-                        )
+                        raise ConflictError("相同 Idempotency-Key 已用于不同的 Agent 重试")
                     return self._run_receipt(existing)
                 active = session.scalar(
                     select(AgentRun.id).where(
@@ -469,8 +537,8 @@ class AgentConversationService:
                     status=AgentRunStatus.PENDING,
                     provider=self._settings.agent_provider,
                     model_id=self._settings.bailian_agent_model,
-                    prompt_version=PROMPT_VERSION,
-                    tool_catalog_version=TOOL_CATALOG_VERSION,
+                    prompt_version=old.prompt_version,
+                    tool_catalog_version=old.tool_catalog_version,
                     context_snapshot={"retry_of": str(old.id)},
                     usage={},
                     generation=0,
@@ -623,8 +691,7 @@ class AgentConversationService:
             trigger_message_id=run.trigger_message_id,
             status=run.status,
             events_url=(
-                f"{self._settings.api_prefix}/projects/{run.project_id}/agent/runs/"
-                f"{run.id}/events"
+                f"{self._settings.api_prefix}/projects/{run.project_id}/agent/runs/{run.id}/events"
             ),
         )
 
@@ -667,11 +734,7 @@ class AgentRunIdentityResolver:
         membership = session.get(TeamMember, (run.team_id, run.created_by))
         if membership is None:
             raise AuthorizationError("发起 Agent Run 的团队成员关系已失效")
-        scopes = (
-            OWNER_WEB_SCOPES
-            if membership.role is TeamRole.OWNER
-            else RESEARCHER_WEB_SCOPES
-        )
+        scopes = OWNER_WEB_SCOPES if membership.role is TeamRole.OWNER else RESEARCHER_WEB_SCOPES
         return RequestIdentity(
             user_id=run.created_by,
             team_id=run.team_id,

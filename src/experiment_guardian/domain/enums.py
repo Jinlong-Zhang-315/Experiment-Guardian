@@ -240,11 +240,43 @@ class AgentCallStatus(StrEnum):
     ABANDONED = "ABANDONED"
 
 
+class AgentModelCallPurpose(StrEnum):
+    AGENT_TURN = "AGENT_TURN"
+    CONTEXT_SUMMARY = "CONTEXT_SUMMARY"
+
+
+class AgentContextSummaryStatus(StrEnum):
+    READY = "READY"
+    FAILED = "FAILED"
+
+
 class AgentEvidenceKind(StrEnum):
     CONFIRMED_FACT = "CONFIRMED_FACT"
     USER_PROVIDED = "USER_PROVIDED"
+    CANDIDATE_DRAFT = "CANDIDATE_DRAFT"
     ANALYSIS = "ANALYSIS"
     HYPOTHESIS = "HYPOTHESIS"
+
+
+class PolicyDraftStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    ABANDONED = "ABANDONED"
+
+
+class PolicyDraftReadiness(StrEnum):
+    READY = "READY"
+    NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
+    INVALID = "INVALID"
+
+
+class PolicyDraftFreshness(StrEnum):
+    CURRENT = "CURRENT"
+    STALE = "STALE"
+
+
+class PolicyDraftSource(StrEnum):
+    AGENT = "AGENT"
+    WEB = "WEB"
 
 
 class ConfigFormat(StrEnum):

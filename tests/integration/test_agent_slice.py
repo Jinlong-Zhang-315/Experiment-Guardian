@@ -22,6 +22,7 @@ from experiment_guardian.application.agent_tools import AgentToolRegistry
 from experiment_guardian.application.errors import (
     AuthorizationError,
     InputValidationError,
+    ServiceUnavailableError,
 )
 from experiment_guardian.application.ports import AgentChatModel
 from experiment_guardian.application.services import ProjectAdministrationService
@@ -36,10 +37,16 @@ from experiment_guardian.domain.agent import (
     AgentToolRequest,
     AgentToolSpec,
 )
-from experiment_guardian.domain.enums import AgentRunStatus
+from experiment_guardian.domain.enums import (
+    AgentContextSummaryStatus,
+    AgentModelCallPurpose,
+    AgentRunStatus,
+)
 from experiment_guardian.infrastructure.models import (
     AgentCitation,
+    AgentContextSummary,
     AgentMessage,
+    AgentModelCall,
     AgentRun,
     AgentRunEvent,
     AuditLog,
@@ -113,6 +120,90 @@ class ScriptedAgentModel(AgentChatModel):
         )
 
 
+class SummaryAwareAgentModel(AgentChatModel):
+    def __init__(self, *, fail_summary: bool = False) -> None:
+        self.fail_summary = fail_summary
+
+    @property
+    def provider(self) -> str:
+        return "scripted"
+
+    @property
+    def model_id(self) -> str:
+        return "scripted-r15b"
+
+    def stream_turn(
+        self,
+        *,
+        messages: Sequence[AgentChatMessage],
+        tools: Sequence[AgentToolSpec],
+        tool_choice: str,
+        max_output_tokens: int,
+        response_json: bool = False,
+    ) -> Iterator[AgentModelEvent]:
+        del tools, tool_choice, max_output_tokens, response_json
+        if messages[0].content.startswith("你负责压缩"):
+            if self.fail_summary:
+                raise ServiceUnavailableError("summary provider unavailable")
+            source = json.loads(messages[1].content.split("\n", 1)[1])
+            schema_version = 2 if "schema_version=2" in messages[1].content else 1
+            payload = {
+                "schema_version": schema_version,
+                "covered_sequence_from": source["covered_sequence_from"],
+                "covered_sequence_to": source["covered_sequence_to"],
+                "user_requests_and_context": ["用户持续查询项目状态"],
+                "prior_answers_and_analysis": ["此前回答为非权威对话历史"],
+                "open_questions": [],
+                "source_message_ids": source["source_message_ids"],
+                "formal_reference_labels": [],
+            }
+            if schema_version == 2:
+                payload["draft_references"] = []
+            yield AgentModelEvent(event_type="text_delta", text=json.dumps(payload))
+            yield AgentModelEvent(event_type="completed", finish_reason="stop")
+            return
+        answer = {
+            "answer_markdown": "已收到本轮问题。",
+            "sections": [
+                {
+                    "evidence_kind": "USER_PROVIDED",
+                    "title": "本轮输入",
+                    "content": "已收到本轮问题。",
+                    "citation_ids": [],
+                }
+            ],
+            "citations": [],
+            "follow_up_required": False,
+        }
+        yield AgentModelEvent(event_type="text_delta", text=json.dumps(answer))
+        yield AgentModelEvent(event_type="completed", finish_reason="stop")
+
+
+class CatalogInspectingModel(SummaryAwareAgentModel):
+    def stream_turn(
+        self,
+        *,
+        messages: Sequence[AgentChatMessage],
+        tools: Sequence[AgentToolSpec],
+        tool_choice: str,
+        max_output_tokens: int,
+        response_json: bool = False,
+    ) -> Iterator[AgentModelEvent]:
+        assert {item.name for item in tools} == {
+            "project_status_get_v1",
+            "experiments_list_v1",
+            "experiment_get_v1",
+            "pending_work_list_v1",
+        }
+        yield from super().stream_turn(
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_output_tokens=max_output_tokens,
+            response_json=response_json,
+        )
+
+
 def _settings() -> Settings:
     return Settings(
         _env_file=None,
@@ -165,9 +256,7 @@ def _setup(
     )
     settings = _settings()
     return (
-        AgentConversationService(
-            factory, projects, SqlAlchemyAgentRepository(), settings
-        ),
+        AgentConversationService(factory, projects, SqlAlchemyAgentRepository(), settings),
         identity,
         initialized,
         settings,
@@ -206,9 +295,7 @@ def test_agent_run_is_idempotent_and_persists_verified_answer(
     runtime = GovernanceAgentRuntime(
         plan_check_session_factory,
         repository,
-        AgentToolRegistry(
-            plan_check_session_factory, SqlAlchemyProjectRepository()
-        ),
+        AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
         ScriptedAgentModel(),
         settings,
     )
@@ -222,12 +309,8 @@ def test_agent_run_is_idempotent_and_persists_verified_answer(
     )
     assert processor.process_once()
 
-    run = service.get_run(
-        project_id=project_id, run_id=receipt.run_id, identity=identity
-    )
-    view = service.get_thread(
-        project_id=project_id, thread_id=thread.thread_id, identity=identity
-    )
+    run = service.get_run(project_id=project_id, run_id=receipt.run_id, identity=identity)
+    view = service.get_thread(project_id=project_id, thread_id=thread.thread_id, identity=identity)
     assert run.status is AgentRunStatus.SUCCEEDED
     assert len(view.messages) == 2
     assert view.messages[-1].content == "当前项目正式目标已读取。"
@@ -291,9 +374,7 @@ def test_expired_agent_lease_increments_generation_and_blocks_stale_owner(
             session, claim=second, lease_seconds=settings.agent_run_lease_seconds
         )
     with plan_check_session_factory() as session:
-        assert session.scalar(
-            select(AgentMessage).where(AgentMessage.role == "ASSISTANT")
-        ) is None
+        assert session.scalar(select(AgentMessage).where(AgentMessage.role == "ASSISTANT")) is None
 
 
 def test_agent_conversations_require_web_session_and_validate_cursor(
@@ -325,6 +406,114 @@ def test_agent_conversations_require_web_session_and_validate_cursor(
             cursor="a",
             limit=20,
         )
+
+
+@pytest.mark.parametrize("fail_summary", [False, True])
+def test_agent_rolling_summary_is_audited_and_failure_degrades_safely(
+    plan_check_session_factory: sessionmaker[Session],
+    fail_summary: bool,
+) -> None:
+    service, identity, initialized, base_settings = _setup(plan_check_session_factory)
+    settings = base_settings.model_copy(
+        update={
+            "agent_recent_message_limit": 2,
+            "agent_summary_min_new_messages": 2,
+        }
+    )
+    # Service 只读取 Feature 和 Run 配置；替换后保证新 Run 使用相同阈值。
+    service = AgentConversationService(
+        plan_check_session_factory,
+        SqlAlchemyProjectRepository(),
+        SqlAlchemyAgentRepository(),
+        settings,
+    )
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    thread = service.create_thread(
+        project_id=project_id,
+        identity=identity,
+        request=AgentThreadCreateRequest(),
+    )
+    repository = SqlAlchemyAgentRepository()
+    model = SummaryAwareAgentModel(fail_summary=fail_summary)
+    runtime = GovernanceAgentRuntime(
+        plan_check_session_factory,
+        repository,
+        AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+        model,
+        settings,
+    )
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        runtime,
+        settings,
+        worker_id="summary-agent-worker",
+    )
+    receipts = []
+    for index in range(3):
+        receipts.append(
+            service.create_message(
+                project_id=project_id,
+                thread_id=thread.thread_id,
+                identity=identity,
+                idempotency_key=uuid4(),
+                request=AgentMessageCreateRequest(content=f"第 {index + 1} 轮问题"),
+            )
+        )
+        assert processor.process_once()
+
+    final_run = service.get_run(
+        project_id=project_id,
+        run_id=receipts[-1].run_id,
+        identity=identity,
+    )
+    view = service.get_thread(
+        project_id=project_id,
+        thread_id=thread.thread_id,
+        identity=identity,
+    )
+    assert final_run.status is AgentRunStatus.SUCCEEDED
+    assert view.messages[-1].sections[0].evidence_kind.value == "USER_PROVIDED"
+    with plan_check_session_factory() as session:
+        summary = session.scalar(
+            select(AgentContextSummary).order_by(AgentContextSummary.created_at.desc())
+        )
+        summary_call = session.scalar(
+            select(AgentModelCall).where(
+                AgentModelCall.purpose == AgentModelCallPurpose.CONTEXT_SUMMARY
+            )
+        )
+        assert summary is not None and summary_call is not None
+        assert summary.covered_sequence_from == 1
+        assert summary.covered_sequence_to == 3
+        events = list(
+            session.scalars(
+                select(AgentRunEvent)
+                .where(AgentRunEvent.run_id == receipts[-1].run_id)
+                .order_by(AgentRunEvent.sequence)
+            ).all()
+        )
+        event_types = [item.event_type for item in events]
+        stored_run = session.get(AgentRun, receipts[-1].run_id)
+        assert stored_run is not None
+        context_mode = stored_run.context_snapshot["context_mode"]
+        second_run = session.get(AgentRun, receipts[1].run_id)
+        assert second_run is not None
+        assert second_run.context_snapshot["context_mode"] == "DEGRADED_TRIM"
+    if fail_summary:
+        assert summary.status is AgentContextSummaryStatus.FAILED
+        assert view.context_summary is not None
+        assert view.context_summary.degraded
+        assert "summary.failed" in event_types
+        assert context_mode == "DEGRADED_TRIM"
+    else:
+        assert summary.status is AgentContextSummaryStatus.READY
+        assert view.context_summary is not None
+        assert not view.context_summary.authoritative
+        assert not view.context_summary.degraded
+        assert "summary.completed" in event_types
+        assert context_mode == "ROLLING_SUMMARY"
 
 
 def test_agent_retry_writes_user_audit_record(
@@ -371,3 +560,52 @@ def test_agent_retry_writes_user_audit_record(
         )
         assert audit is not None
         assert audit.actor_id == identity.user_id
+
+
+def test_pending_r15a_run_keeps_original_prompt_and_tool_catalog(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    service, identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    thread = service.create_thread(
+        project_id=project_id,
+        identity=identity,
+        request=AgentThreadCreateRequest(),
+    )
+    receipt = service.create_message(
+        project_id=project_id,
+        thread_id=thread.thread_id,
+        identity=identity,
+        idempotency_key=uuid4(),
+        request=AgentMessageCreateRequest(content="旧 Run 继续执行"),
+    )
+    with plan_check_session_factory() as session, session.begin():
+        run = session.get(AgentRun, receipt.run_id)
+        assert run is not None
+        run.prompt_version = "r15a-v1"
+        run.tool_catalog_version = "r15a-v1"
+    repository = SqlAlchemyAgentRepository()
+    runtime = GovernanceAgentRuntime(
+        plan_check_session_factory,
+        repository,
+        AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+        CatalogInspectingModel(),
+        settings,
+    )
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        runtime,
+        settings,
+        worker_id="catalog-agent-worker",
+    )
+    assert processor.process_once()
+    assert (
+        service.get_run(
+            project_id=project_id,
+            run_id=receipt.run_id,
+            identity=identity,
+        ).status
+        is AgentRunStatus.SUCCEEDED
+    )

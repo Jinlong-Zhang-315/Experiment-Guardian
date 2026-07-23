@@ -9,6 +9,7 @@ from experiment_guardian.application.experiments import (
     ExperimentReviewService,
 )
 from experiment_guardian.application.identity import IdentityProvider
+from experiment_guardian.application.policy_drafts import PolicyDraftService
 from experiment_guardian.application.ports import (
     AgentChatModel,
     ArtifactStorage,
@@ -166,7 +167,16 @@ def get_web_management_service() -> WebManagementService:
 
 @lru_cache(maxsize=1)
 def get_agent_tool_registry() -> AgentToolRegistry:
-    return AgentToolRegistry(get_session_factory(), get_project_repository())
+    return AgentToolRegistry(
+        get_session_factory(),
+        get_project_repository(),
+        get_policy_draft_service(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_policy_draft_service() -> PolicyDraftService:
+    return PolicyDraftService(get_session_factory(), get_project_repository())
 
 
 @lru_cache(maxsize=1)

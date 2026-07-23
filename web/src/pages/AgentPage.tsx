@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Bot, MessageSquarePlus, RotateCcw, Send } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, FilePenLine, MessageSquarePlus, RotateCcw, Send, TriangleAlert } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api, formatTime, idempotencyKey, streamServerEvents } from "../api";
 import { Badge, Empty, ErrorNotice } from "../components";
@@ -12,6 +12,7 @@ import type {
   AgentThreadView,
   Page,
 } from "../types";
+import { PolicyDraftWorkspace } from "./PolicyDraftWorkspace";
 
 const ACTIVE_RUNS = new Set(["PENDING", "RUNNING", "RETRYABLE_FAILURE"]);
 
@@ -27,16 +28,31 @@ function AnswerContent({ content }: { content: string }) {
   })}</div>;
 }
 
-function Message({ value }: { value: AgentMessage }) {
+function Message({
+  value,
+  onOpenDraft,
+}: {
+  value: AgentMessage;
+  onOpenDraft: (draftId: string) => void;
+}) {
   return <article className={`agent-message ${value.role.toLowerCase()}`}>
     <header><strong>{value.role === "USER" ? "你" : "治理 Agent"}</strong><time>{formatTime(value.created_at)}</time></header>
-    {value.role === "ASSISTANT" ? <AnswerContent content={value.content} /> : <p>{value.content}</p>}
-    {value.citations.length > 0 && <details className="agent-citations"><summary>引用 {value.citations.length} 条正式记录</summary>
-      <div>{value.citations.map((citation) => <section key={citation.evidence_id}>
-        <span><Badge value={citation.evidence_kind} /> <code>{citation.evidence_id}</code></span>
-        <strong>{citation.label}</strong><p>{citation.excerpt}</p>
-        <small>{citation.entity_type}{citation.entity_version ? ` · ${citation.entity_version}` : ""}</small>
+    {value.role === "ASSISTANT" && (value.sections?.length ?? 0) > 0
+      ? <div className="agent-sections">{(value.sections ?? []).map((section, index) => <section className={`agent-section ${section.evidence_kind.toLowerCase()}`} key={`${section.evidence_kind}-${index}`}>
+        <header><Badge value={section.evidence_kind} /><strong>{section.title}</strong></header>
+        <AnswerContent content={section.content} />
+        {section.citation_ids.length > 0 && <small>引用：{section.citation_ids.join("、")}</small>}
       </section>)}</div>
+      : value.role === "ASSISTANT" ? <AnswerContent content={value.content} /> : <p>{value.content}</p>}
+    {value.citations.length > 0 && <details className="agent-citations"><summary>查看 {value.citations.length} 条证据引用</summary>
+      <div>{value.citations.map((citation) => {
+        const content = <><span><Badge value={citation.evidence_kind} /> <code>{citation.evidence_id}</code></span>
+          <strong>{citation.label}</strong><p>{citation.excerpt}</p>
+          <small>{citation.entity_type}{citation.entity_version ? ` · ${citation.entity_version}` : ""}</small></>;
+        return citation.entity_type === "POLICY_DRAFT" && citation.entity_id
+          ? <button className="agent-citation-link" key={citation.evidence_id} onClick={() => onOpenDraft(citation.entity_id!)}>{content}</button>
+          : <section key={citation.evidence_id}>{content}</section>;
+      })}</div>
     </details>}
   </article>;
 }
@@ -52,6 +68,7 @@ export function AgentPage() {
   const [activity, setActivity] = useState("");
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [streamError, setStreamError] = useState<unknown>();
+  const [draftWorkspace, setDraftWorkspace] = useState<{ open: boolean; draftId?: string }>({ open: false });
   const lastEventId = useRef(0);
 
   const threads = useQuery({
@@ -161,6 +178,9 @@ export function AgentPage() {
                 setStreamedAnswer((current) => current + event.data.text);
               }
               if (event.event === "run.started") setActivity("正在分析问题");
+              if (event.event === "summary.started") setActivity("正在压缩较早对话");
+              if (event.event === "summary.completed") setActivity("对话摘要已更新");
+              if (event.event === "summary.failed") setActivity("摘要更新失败，使用安全降级上下文");
               if (event.event === "tool.started" && typeof event.data.tool === "string") {
                 setActivity(`正在读取 ${event.data.tool}`);
               }
@@ -199,6 +219,7 @@ export function AgentPage() {
   return <main className="page agent-page">
     <header className="page-header"><div><span className="eyebrow">治理 Agent</span><h1>项目实验助手</h1><p>回答仅基于当前身份可见的正式记录</p></div>
       <div className="agent-header-actions">
+        <button className="button" onClick={() => setDraftWorkspace({ open: true })}><FilePenLine />治理草稿</button>
         <button className="button" onClick={() => setShowArchived((value) => !value)}>{showArchived ? <ArchiveRestore /> : <Archive />}{showArchived ? "当前会话" : "已归档"}</button>
         <button className="button primary" onClick={() => createThread.mutate()} disabled={createThread.isPending}><MessageSquarePlus />新对话</button>
       </div>
@@ -215,7 +236,8 @@ export function AgentPage() {
             {thread.data && <button className="icon-button" title={showArchived ? "恢复会话" : "归档会话"} aria-label={showArchived ? "恢复会话" : "归档会话"} disabled={Boolean(activeRun && ACTIVE_RUNS.has(runStatus))} onClick={() => updateThread.mutate({ id: thread.data!.thread.thread_id, archived: !showArchived })}>{showArchived ? <ArchiveRestore /> : <Archive />}</button>}
           </div>
           <div className="agent-message-list">
-            {thread.isPending ? <div className="page-loading">正在加载消息</div> : thread.data?.messages.map((message) => <Message key={message.message_id} value={message} />)}
+            {thread.data?.context_summary?.degraded && <div className="agent-summary-warning"><TriangleAlert /> <span>{thread.data.context_summary.warning}</span></div>}
+            {thread.isPending ? <div className="page-loading">正在加载消息</div> : thread.data?.messages.map((message) => <Message key={message.message_id} value={message} onOpenDraft={(draftId) => setDraftWorkspace({ open: true, draftId })} />)}
             {(streamedAnswer || activity) && ACTIVE_RUNS.has(runStatus) && <article className="agent-message assistant streaming"><header><strong>治理 Agent</strong><Badge value={runStatus || "RUNNING"} /></header>{streamedAnswer ? <AnswerContent content={streamedAnswer} /> : <p>{activity}</p>}</article>}
           </div>
           {streamError ? <ErrorNotice error={streamError} /> : null}
@@ -224,5 +246,6 @@ export function AgentPage() {
           {send.error ? <ErrorNotice error={send.error} /> : null}
         </section>
       </div>}
+    {draftWorkspace.open && <PolicyDraftWorkspace projectId={projectId} initialDraftId={draftWorkspace.draftId} onClose={() => setDraftWorkspace({ open: false })} />}
   </main>;
 }

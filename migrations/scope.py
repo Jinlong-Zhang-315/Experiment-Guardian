@@ -33,6 +33,9 @@ AGENT_TABLES = frozenset(
         "agent_tool_calls",
         "agent_citations",
         "agent_run_events",
+        "agent_context_summaries",
+        "agent_policy_drafts",
+        "agent_policy_draft_revisions",
     }
 )
 MIGRATED_TABLES = (

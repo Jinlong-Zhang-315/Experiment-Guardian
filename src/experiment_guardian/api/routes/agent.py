@@ -12,7 +12,10 @@ from fastapi.responses import StreamingResponse
 
 from experiment_guardian.api.dependencies import ApiIdentity, CsrfIdentity
 from experiment_guardian.application.agent import TERMINAL_RUN_STATUSES
-from experiment_guardian.application.container import get_agent_conversation_service
+from experiment_guardian.application.container import (
+    get_agent_conversation_service,
+    get_policy_draft_service,
+)
 from experiment_guardian.core.config import get_settings
 from experiment_guardian.domain.agent import (
     AgentMessageCreateRequest,
@@ -24,8 +27,106 @@ from experiment_guardian.domain.agent import (
     AgentThreadUpdateRequest,
     AgentThreadView,
 )
+from experiment_guardian.domain.enums import PolicyDraftStatus
+from experiment_guardian.domain.policy_draft import (
+    PolicyDraftAbandonRequest,
+    PolicyDraftPage,
+    PolicyDraftRevisionInput,
+    PolicyDraftRevisionView,
+    PolicyDraftSummary,
+    PolicyDraftView,
+)
 
 router = APIRouter(prefix="/projects/{project_id}/agent", tags=["governance-agent"])
+
+
+@router.get("/policy-drafts", response_model=PolicyDraftPage)
+async def list_policy_drafts(
+    project_id: UUID,
+    identity: ApiIdentity,
+    draft_status: Annotated[PolicyDraftStatus, Query(alias="status")] = PolicyDraftStatus.ACTIVE,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> PolicyDraftPage:
+    return get_policy_draft_service().list_drafts(
+        project_id=project_id,
+        identity=identity,
+        status=draft_status,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+@router.get("/policy-drafts/{draft_id}", response_model=PolicyDraftView)
+async def get_policy_draft(
+    project_id: UUID,
+    draft_id: UUID,
+    identity: ApiIdentity,
+) -> PolicyDraftView:
+    return get_policy_draft_service().get_draft(
+        project_id=project_id,
+        draft_id=draft_id,
+        identity=identity,
+    )
+
+
+@router.get(
+    "/policy-drafts/{draft_id}/revisions/{revision}",
+    response_model=PolicyDraftRevisionView,
+)
+async def get_policy_draft_revision(
+    project_id: UUID,
+    draft_id: UUID,
+    revision: int,
+    identity: ApiIdentity,
+) -> PolicyDraftRevisionView:
+    return get_policy_draft_service().get_revision(
+        project_id=project_id,
+        draft_id=draft_id,
+        revision=revision,
+        identity=identity,
+    )
+
+
+@router.post(
+    "/policy-drafts/{draft_id}/revisions",
+    response_model=PolicyDraftRevisionView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def revise_policy_draft(
+    project_id: UUID,
+    draft_id: UUID,
+    request: PolicyDraftRevisionInput,
+    identity: CsrfIdentity,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> PolicyDraftRevisionView:
+    return get_policy_draft_service().revise_from_web(
+        project_id=project_id,
+        draft_id=draft_id,
+        identity=identity,
+        idempotency_key=idempotency_key,
+        request=request,
+    )
+
+
+@router.post(
+    "/policy-drafts/{draft_id}/abandon",
+    response_model=PolicyDraftSummary,
+)
+async def abandon_policy_draft(
+    project_id: UUID,
+    draft_id: UUID,
+    request: PolicyDraftAbandonRequest,
+    identity: CsrfIdentity,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> PolicyDraftSummary:
+    return get_policy_draft_service().abandon(
+        project_id=project_id,
+        draft_id=draft_id,
+        identity=identity,
+        idempotency_key=idempotency_key,
+        request=request,
+    )
 
 
 @router.get("/threads", response_model=AgentThreadPage)
@@ -106,9 +207,7 @@ async def create_agent_message(
 
 
 @router.get("/runs/{run_id}", response_model=AgentRunView)
-async def get_agent_run(
-    project_id: UUID, run_id: UUID, identity: ApiIdentity
-) -> AgentRunView:
+async def get_agent_run(project_id: UUID, run_id: UUID, identity: ApiIdentity) -> AgentRunView:
     return get_agent_conversation_service().get_run(
         project_id=project_id, run_id=run_id, identity=identity
     )
@@ -162,24 +261,17 @@ async def stream_agent_run_events(
                 after=cursor,
             )
             for item in events:
-                cursor = int(item["id"])
+                cursor = int(str(item["id"]))
                 data = json.dumps(
                     item["data"],
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
-                yield (
-                    f"id: {cursor}\n"
-                    f"event: {item['event']}\n"
-                    f"data: {data}\n\n"
-                )
+                yield (f"id: {cursor}\nevent: {item['event']}\ndata: {data}\n\n")
                 last_heartbeat = time.monotonic()
             if run_status in TERMINAL_RUN_STATUSES and not events:
                 return
-            if (
-                time.monotonic() - last_heartbeat
-                >= settings.agent_sse_heartbeat_seconds
-            ):
+            if time.monotonic() - last_heartbeat >= settings.agent_sse_heartbeat_seconds:
                 yield ": heartbeat\n\n"
                 last_heartbeat = time.monotonic()
             await asyncio.sleep(settings.agent_sse_poll_interval_seconds)

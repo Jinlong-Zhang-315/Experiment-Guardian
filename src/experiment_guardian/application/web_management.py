@@ -4,7 +4,7 @@ import base64
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Any, TypeVar
+from typing import TypeVar
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -36,7 +36,10 @@ from experiment_guardian.domain.enums import (
     WorkflowStatus,
     WorkflowStep,
 )
-from experiment_guardian.domain.plan_check import flatten_configuration
+from experiment_guardian.domain.policy_draft import (
+    PolicyDraftCandidate,
+    validate_policy_candidate,
+)
 from experiment_guardian.domain.web_management import (
     ArtifactDownloadResult,
     ArtifactWebView,
@@ -77,20 +80,6 @@ def _hash(value: object) -> str:
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _same_json_value(left: Any, right: Any) -> bool:
-    if type(left) is not type(right):
-        return False
-    if isinstance(left, dict):
-        return left.keys() == right.keys() and all(
-            _same_json_value(left[key], right[key]) for key in left
-        )
-    if isinstance(left, list):
-        return len(left) == len(right) and all(
-            _same_json_value(a, b) for a, b in zip(left, right, strict=True)
-        )
-    return bool(left == right)
 
 
 def _decode_cursor(cursor: str | None) -> int:
@@ -636,14 +625,16 @@ class WebManagementService:
 
     @staticmethod
     def _validate_configuration(request: PolicyPublishRequest) -> None:
-        flattened = flatten_configuration(request.context.active_config)
-        for item in request.constraints:
-            if item.parameter_path not in flattened:
-                raise InputValidationError(f"约束路径 {item.parameter_path} 不存在于 active_config")
-            if not _same_json_value(flattened[item.parameter_path], item.expected_value):
-                raise InputValidationError(
-                    f"约束 {item.parameter_path} 的 expected_value 与 active_config 不一致"
-                )
+        validation = validate_policy_candidate(
+            PolicyDraftCandidate(
+                context=request.context,
+                intent=request.intent,
+                constraints=request.constraints,
+            ),
+            [],
+        )
+        if validation.issues:
+            raise InputValidationError(validation.issues[0].message)
 
     @staticmethod
     def _project_summary(project: Project) -> ProjectSummary:

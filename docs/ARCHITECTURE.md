@@ -1,11 +1,11 @@
 # Experiment Guardian 当前框架图
 
-更新时间：2026-07-23
-当前实现：R15a 只读内部实验治理 Agent
+更新时间：2026-07-24
+当前实现：R15c 治理草稿与影响分析
 
-下一计划：R15b 确定性比较、统计、诊断和上下文压缩。R15 总体边界见
+下一计划：R15d 人类确认后的白名单正式操作。R15 总体边界见
 `INTERNAL_GOVERNANCE_AGENT_PLAN.md`。
-数据库 head：`20260723_15`
+数据库 head：`20260724_17`
 
 除明确标记“计划”的章节外，本文描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与
 自动化验证，`[EXTERNAL]` 表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
@@ -136,7 +136,8 @@ FastAPI TrustedHost -> local_owner login --------+--> CockroachDB
                             Agent Worker lease
                                   |
                                   +--> BailianAgentChatModel
-                                  +--> four authorized read-only tools
+                                  +--> eight authorized read/analysis tools
+                                  +--> four candidate-only policy draft tools
 
 minio-init: create bucket + enable/verify Versioning, then exit
 database-init -> migration -> local-init: ordered one-shot services
@@ -156,6 +157,7 @@ src/experiment_guardian/
 |   +-- plan_checks.py          Owner 计划决定
 |   +-- submissions.py          草稿最终决定
 |   +-- agent.py                Thread/Message/Run/SSE/retry API
+|                               + Policy Draft list/revision/abandon API
 |
 +-- mcp_server/server.py        七个 MCP 工具 + HTTP health
 |
@@ -169,10 +171,12 @@ src/experiment_guardian/
 |   +-- async_review.py         embedding/确定性回执
 |   +-- agent.py                对话、幂等入队、归档、恢复与身份解析
 |   +-- agent_runtime.py        有界 LangGraph loop、lease、审计与最终提交
-|   +-- agent_tools.py          四个实时鉴权的只读工具
+|   +-- agent_tools.py          八个只读/分析 + 四个候选草稿工具
+|   +-- policy_drafts.py        完整 Bundle revision、权限、diff 与影响模拟
 |
 +-- domain/                     Pydantic 契约、状态、纯确定性规则
 |   +-- policy_narrative.py     结构化策略来源哈希与确定性 Markdown
+|   +-- policy_draft.py         草稿 schema、严格 diff、校验与候选说明
 |
 +-- infrastructure/
 |   +-- cognito.py              人类 OIDC Provider adapter
@@ -198,7 +202,7 @@ scripts/verify_r14_deployment.py 公开部署认证/发现验收
 依赖方向保持：接口层 -> 应用层 -> 领域层；基础设施实现应用端口。前端不重新计算风险、
 审批资格或角色权限。
 
-## R15a Agent 当前框架图
+## R15c Agent 当前框架图
 
 ```text
 Web 治理 Agent 页
@@ -208,7 +212,9 @@ Web 治理 Agent 页
 Agent API
    |
    +--> AgentConversationService
-   |       +--> Thread / Message / Run / Citation [DONE]
+   |       +--> Thread / Message / Run / Citation / answer sections [DONE]
+   |       +--> rolling summary v2 / draft references / degraded warning [DONE]
+   |       +--> Policy Draft list / revision / abandon [DONE]
    |       +--> idempotent enqueue / archive / retry [DONE]
    |       +--> durable SSE replay / heartbeat [DONE]
    |
@@ -219,6 +225,8 @@ Agent API
            |
    +--> GovernanceAgentRuntime [DONE]
    |       +--> bounded single-agent LangGraph, max calls/tools/wall time
+   |       +--> r15a/r15b/r15c prompt + catalog compatibility
+   |       +--> recent messages + non-authoritative rolling summary
    |       +--> AgentChatModel
    |       |       +--> Bailian streaming Function Calling [DONE]
    |       |       +--> other provider adapters [PLANNED]
@@ -227,16 +235,25 @@ Agent API
    |               +--> experiments_list_v1 [DONE]
    |               +--> experiment_get_v1 [DONE]
    |               +--> pending_work_list_v1 [DONE]
-   |               +--> ANALYSIS/DRAFT/EXECUTE [NOT REGISTERED]
+   |               +--> experiments_compare_v1 [DONE]
+   |               +--> experiment_group_stats_v1 [DONE]
+   |               +--> plan_check_explain_v1 [DONE]
+   |               +--> submission_diagnose_v1 [DONE]
+   |               +--> policy_draft_create_v1 [DONE, candidate only]
+   |               +--> policy_draft_update_v1 [DONE, candidate only]
+   |               +--> policy_draft_validate_v1 [DONE]
+   |               +--> policy_draft_impact_get_v1 [DONE]
+   |               +--> FORMAL EXECUTE [NOT REGISTERED]
    +--> validated AgentAnswer + evidence/citations + AuditLog [DONE]
 
 Experiment Memory VECTOR(1024)       formal confirmed experiments only
 Agent Research Memory                not present; planned R15e separate store
 ```
 
-R15a 没有草稿或正式写工具。模型参数不能传入 `user_id`、`team_id` 或 `project_id`；服务端从
-Web Session 绑定身份和项目，每次工具执行重新校验 Membership。模型只看到受限结构化结果，
-最终回答必须引用本轮实际取得的 evidence ID。
+R15c 的写工具只能追加独立候选草稿，不能触达正式 Context/Intent/Constraint、Plan、
+Manifest 或 Submission。模型参数不能传入 `user_id`、`team_id` 或 `project_id`；服务端从
+Web Session 绑定身份和项目，每次工具执行重新校验 Membership。正式事实、候选草稿和影响分析
+分别使用 `CONFIRMED_FACT`、`CANDIDATE_DRAFT` 和 `ANALYSIS` evidence，摘要不参与正式判断。
 
 ## 数据关系
 
@@ -267,11 +284,16 @@ User(cognito_sub)
                                |
                                +--< AgentThread
                                       +--< AgentMessage
+                                      +--0..1 current READY AgentContextSummary
+                                      +--< AgentPolicyDraft(originating thread)
+                                      |      +--< AgentPolicyDraftRevision(append-only)
                                       +--< AgentRun(lease/generation/retry)
                                              +--< AgentModelCall
+                                             |      purpose=AGENT_TURN/CONTEXT_SUMMARY
                                              +--< AgentToolCall
                                              +--< AgentRunEvent
                                              +--< AgentCitation
+                                             +--0..1 AgentContextSummary attempt
 
 AccessToken                     local API/stdio MCP compatibility
 IdempotencyRecord               unique actor + operation + key
@@ -307,10 +329,12 @@ Owner/Researcher Web Agent message
 -> idempotently persist user message + queued AgentRun
 -> Agent Worker atomically claims lease/generation
 -> bounded Bailian Function Calling
--> authorized read-only tools return structured facts + evidence
+-> authorized tools return structured facts/analysis or append a candidate-only draft revision
 -> validate answer/citations
 -> atomically persist assistant message, citations, completion and AuditLog
 -> browser SSE replays durable events; disconnect does not cancel the run
+-> Web draft workbench edits full Bundle with optimistic revision and displays deterministic diff/impact
+-> no publish action exists in R15c; formal Policy/Plan/Submission state remains unchanged
 ```
 
 ## 不在框架内

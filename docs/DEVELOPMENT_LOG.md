@@ -28,6 +28,14 @@
 | 2026-07-21 | R9 | `5ace7c3` | S3 实验草稿上传准备 |
 | 2026-07-22 | R10 | `working tree` | 上传完成确认与 S3 对象复核 |
 | 2026-07-22 | R10.1 | `working tree` | 上传恢复、不可变版本和审计加固 |
+| 2026-07-22 | R11-R13 | `working tree` | 可恢复分析、审核回执、正式实验与查询 |
+| 2026-07-22 | R14 | `working tree` | 托管认证、Web、OAuth MCP 与 AWS 部署 |
+| 2026-07-23 | R14 Local | `working tree` | 单机可替换基础设施与安全修复 |
+| 2026-07-23 | R14f | `working tree` | 正式策略双表示 |
+| 2026-07-23 | R15 Plan | `working tree` | 内部实验治理 Agent 分期设计 |
+| 2026-07-23 | R15a | `working tree` | 只读 Agent 对话纵向切片 |
+| 2026-07-23 | R15b | `working tree` | 实验分析与对话压缩 |
+| 2026-07-24 | R15c | `working tree` | 治理草稿与影响分析 |
 
 ## R0：需求分析与 MVP 收敛
 
@@ -1196,6 +1204,160 @@
 
 * R15b 只增加确定性可比性、基础统计、Plan/Submission 诊断和带来源哈希的 rolling summary。
   R15c 前不创建治理草稿，R15d 前不开放任何正式写入。
+
+## 2026-07-23 / R15b：实验分析与对话压缩
+
+版本：working tree，revision `20260723_16`。
+
+### 更新内容
+
+* 新增纯领域模块 `agent_analysis.py`。两实验比较先执行分层门禁：dataset、protocol、完成状态、
+  指标语义、指标方向冲突和追溯完整性属于硬阻断；model、Context、Intent、模式、seed、Git、
+  checkpoint、命令和非 seed 配置差异作为 caveat。
+* 配置 diff 复用现有无碰撞路径编码并采用 JSON 类型严格比较，`True`、`1`、`1.0` 不再在分析
+  中被视为相同；最多返回 50 项并明确截断。
+* 新增 `experiments_compare_v1` 和 `experiment_group_stats_v1`。统计只接受显式 2 至 20 个
+  Experiment ID，严格重复组才计算 mean、sample stddev、median、min/max/range；不自动分组，
+  不计算显著性，不输出因果结论。
+* 新增 `plan_check_explain_v1`，从 Plan 当前审批列、ApprovalRecord 和 Manifest 动态合成资格，
+  不信任旧 report 中可能过期的审批派生字段。
+* 新增 `submission_diagnose_v1`，检查 Submission 追溯、Artifact 固定版本、未解决风险、
+  WorkflowJob、摘要/embedding/回执；不下载 Artifact 或日志。Owner 可看项目内记录，
+  Researcher 仍只能看自己的 Submission。
+* 确定性工具同时返回正式记录 `CONFIRMED_FACT` 和计算结果 `ANALYSIS`。最终回答现在校验每个
+  section 的 evidence kind、引用存在性及引用并集，摘要不能成为 Citation。
+* revision 16 新增 `agent_context_summaries`、`agent_threads.current_summary_id` 和
+  `agent_model_calls.purpose`。摘要保存消息范围、来源消息 ID/hash、prompt/provider/model、
+  model call 和 READY/FAILED 结果，原始消息继续永久追加保存。
+* Run 在至少 6 条较早消息或上下文达到预算 80% 时增量摘要；READY 后使用摘要加最近 12 条消息。
+  失败时继续使用上个 READY 摘要或最近窗口，不令本轮 Run 失败，并通过 SSE 和 Web 显示降级。
+* 新 Run 固化 `r15b-v1` Prompt/工具目录，运行时仍支持数据库中既有 `r15a-v1` Pending Run；
+  对旧 Run 的人工 retry 继续保留原版本，避免部署升级改变其可见工具。
+* Web 默认按事实、用户输入、分析和假设显示回答段落，引用保留高级展开视图；摘要失败展示
+  非权威降级提示。R15a API 字段保持兼容，新增字段均有默认值。
+* R15b 评测集扩展到 48 个 case，覆盖比较门禁、显式统计、动态审批、Submission 诊断、证据
+  分层、摘要非事实源、跨项目权限、因果拒绝和 prompt injection。
+
+### 修复的问题
+
+* 描述性比较不会再跨 dataset/protocol 或不同指标语义强行排名；主指标方向未知时不输出
+  better/worse，左侧值为零时相对变化返回 `null`。
+* Plan 解释不会重放 report 中旧的 `approval_status/can_create_manifest`。
+* 摘要模型返回错误范围、错误消息 ID、工具调用、畸形 JSON 或 provider 错误时，失败尝试可
+  审计且不会污染 READY 指针。
+* 摘要 JSON 可空字段使用 SQL NULL 语义，避免 SQLite/CockroachDB 的 `IS NULL` 状态约束被
+  JSON `null` 绕过。
+* 诊断分析和模型假设不能伪装成正式事实；服务端不再只检查“引用存在”，还检查证据类别。
+
+### 验证结果
+
+* Python 全量 259 项：`250 passed, 9 skipped`；Ruff 全仓通过。
+* 新增纯函数矩阵覆盖类型严格比较、路径转义、零基线、硬阻断、caveat、精确统计、重复 seed、
+  cohort 拒绝和未知指标方向。
+* Agent 集成测试覆盖 rolling summary 成功/失败、ModelCall purpose、SSE 事件、旧 R15a 目录、
+  动态 Plan 状态、Submission Job 死信诊断和 Researcher 所有权。
+* SQLite Alembic head 与跨版本降级通过；真实 CockroachDB 26.2 完成
+  `20260723_15 -> 16 -> 15 -> 16`，临时验收数据库已清理。
+* Web ESLint、Vitest 2 tests、production build，Terraform 1.9.8 `validate` 和
+  `docker compose --env-file .env.local config --quiet` 通过。
+
+### 已知遗留项
+
+* R15b 不创建治理草稿、不执行审批/确认、不自动形成实验组，也不读取原始日志内容。
+* 描述统计只反映用户显式选择的已确认实验，不包含置信区间、显著性检验或因果推断。
+* rolling summary 由模型生成且明确非权威；所有正式事实仍需本 Run 重新调用只读工具。
+* 当前仍只有百炼 `AgentChatModel`。本轮未提供真实百炼凭据，因此真实模型质量和 token 成本
+  未验收；默认 scripted tests 证明协议、持久化和安全降级边界。
+
+### 下一步
+
+* R15c 只实现完整 Policy Bundle 草稿、revision、歧义、确定性 diff 和影响分析及 Web 编辑；
+  R15d 前不增加正式发布、审批或 Submission 确认执行入口。
+
+## 2026-07-24 / R15c：治理草稿与影响分析
+
+版本：working tree，revision `20260724_17`。
+
+### 更新内容
+
+* 新增完整 `PolicyDraftCandidate` 聚合，始终同时保存 Context、Intent 和 Constraints，不允许
+  Agent 只提交局部正式策略。候选 JSON 最大 256 KiB，`True`、`1`、`1.0` 使用稳定 JSON
+  语义严格区分。
+* 新增 `agent_policy_drafts` 和 `agent_policy_draft_revisions`。草稿头冻结基准 Context/Intent
+  ID、版本、完整快照和 SHA-256；revision 追加写并保存 author、Agent Run/ToolCall 或 Web
+  来源、请求 hash、候选、校验、diff、说明和当时的影响快照。
+* `PolicyDraftService` 统一执行实时 Membership、Researcher 自有范围、Owner 项目代管、Web
+  Session、幂等和乐观 `expected_revision`。Owner 代管不会篡改作者，所有操作写 AuditLog。
+* 草稿基准与当前正式 Bundle 不一致时返回 `STALE` 并阻止修订，不静默 rebase；取消不可逆，
+  历史 revision 继续可读。
+* 确定性校验覆盖重复约束路径、Intent 允许变量与保护级别冲突、active config 与
+  `expected_value` 漂移。语义无效的候选仍保存为 `INVALID` 供用户修复，不会发布。
+* 确定性 diff 按字段和参数路径稳定排序，显示新增、修改、删除、原值、新值、影响级别和说明；
+  候选人类可读回执由模板生成，明确非权威且不调用 LLM。
+* 影响分析只对最多 20 个当前 `PENDING` Plan 使用冻结输入调用既有 `evaluate_plan()` 做内存
+  模拟，不写回原 Plan。进行中 Submission 只显示原 Manifest 的 Context/Intent 版本追溯。
+* Agent 新增 `policy_draft_create_v1`、`policy_draft_update_v1`、
+  `policy_draft_validate_v1` 和 `policy_draft_impact_get_v1`。`r15c-v1` Prompt 要求创建前同一
+  Run 先读取正式 Bundle，每个 Run 最多一次候选写入，禁止正式发布、审批或确认。
+* 新增 `CANDIDATE_DRAFT` evidence，服务端校验最终回答的分段类型和本 Run 引用。rolling
+  summary 升级 schema v2，可保留有界草稿 ID/revision/status/歧义引用；R15a/R15b 目录兼容。
+* Agent REST 增加草稿列表、详情、历史 revision、追加 revision 和取消。写 API 继续要求
+  CSRF、Web Session 和 `Idempotency-Key`。
+* Web Agent 页增加治理草稿工作台：当前/已取消列表、候选回执、结构化编辑、完整原始 JSON、
+  确定性 diff、影响、校验、历史和取消。`STALE` 与历史 revision 只读，界面没有发布按钮。
+* R15c 评测集增加 38 个 trajectory/security case，覆盖完整 Bundle、歧义、revision、影响、
+  过期、项目隔离、正式写拒绝和 prompt injection。
+
+### 修复的问题
+
+* 正式发布和草稿校验复用同一纯领域校验入口，避免两条链路对重复路径或
+  Intent/Constraint 冲突得出不同结论。
+* Agent Runtime 现在把真实 Run ID 和 ToolCall ID 传给草稿服务，候选 revision 可追溯到具体
+  模型调用轨迹，模型不能通过参数伪造 actor、项目或来源。
+* 模型不能把候选草稿标为正式事实；`CANDIDATE_DRAFT`、`CONFIRMED_FACT` 与 `ANALYSIS`
+  evidence 类型不匹配时最终回答会被拒绝。
+* 真实 CockroachDB 首次迁移验收发现
+  `fk_agent_policy_draft_revisions_source_tool_call_id_agent_tool_calls` 超过 63 字符限制；
+  已改为稳定短名称 `fk_agent_policy_draft_revisions_source_tool_call`。
+* Web revision 测试改用稳定角色控件等待，避免同一草稿标题在列表、详情和历史中出现时产生
+  测试选择器歧义。
+* Web 测试等待 revision invalidation 完成并显式清理 QueryClient/fetch stub，消除测试环境销毁
+  后 React 调度继续访问 `window` 的异步泄漏。
+
+### 验证结果
+
+* Python 共收集 268 项，全量结果为 `259 passed, 9 skipped`；Ruff 规则和 mypy 通过。本轮新增
+  Python 文件已执行 Ruff formatter，没有格式化无关历史文件。
+* 集成测试覆盖 Agent Runtime 的“读取正式 Bundle -> 创建候选 -> CANDIDATE_DRAFT 引用”完整
+  轨迹、Agent 幂等、Web 乐观并发、Researcher 隔离、Owner 代管作者、STALE、Plan 模拟及正式
+  Context/Intent/Constraint 表行数不变。
+* SQLite Alembic head、17→16→17 及后续历史降级回归通过。
+* 真实 CockroachDB 26.2 完成 `20260723_16 -> 20260724_17 -> 20260723_16 ->
+  20260724_17`；确认两张表和短外键存在，降级后两张表为零，临时数据库已清理。
+* 现有隔离 CockroachDB 全链测试完成最后 `DROP DATABASE` 后 pytest 仍未退出，手工中断并改用
+  专用迁移往返验收；这是测试基础设施退出挂起，不是 revision 17 DDL 失败。
+* Web ESLint、4 项 Vitest 和 production build 通过。真实百炼 Agent 质量测试仍由
+  `RUN_BAILIAN_AGENT_INTEGRATION=1` 显式开启，本轮未使用外部凭据。
+* 本地 Compose 使用现有 `.env.local` 重建 migration/API，生产数据库升级到 head 17，API
+  health 返回 200。该环境 `AGENT_ENABLED=false`，可选 Agent Worker 按设计拒绝启动后已停止，
+  未为验收擅自修改用户的本地模型配置。
+
+### 已知遗留项
+
+* R15c 没有草稿发布、Plan 决定、Submission 最终审核或任何正式 execute 工具；正式操作仍只能
+  使用已有管理页面和业务 API。
+* 草稿过期后不自动 rebase。用户必须基于最新正式 Bundle 新建草稿，避免模型静默合并治理含义。
+* Plan 影响只模拟当前最多 20 个待审批记录；Submission 影响只做不可变版本追溯，不声称验证
+  实际训练行为。
+* 候选说明采用确定性模板，没有增加第二次 LLM 润色；事实完整性优先于语言自由度。
+* 当前仍只有百炼 `AgentChatModel`，长期 Agent Research Memory 和 provider parity 留到 R15e。
+
+### 下一步
+
+* R15d 只增加不可变 Action Proposal、digest/base-version 协议和独立人类确认 API，复用既有
+  Policy 发布、Plan 决定和 Submission 审核服务。正式执行不得注册为模型工具。
+* 确认前必须展示完整操作与影响；执行时重新校验 CSRF、近期认证、实时 RBAC、当前版本、风险、
+  事务锁和幂等。R15d 不增加长期记忆、任意 SQL、训练或改代码能力。
 
 ## 新日志模板
 

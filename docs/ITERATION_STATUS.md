@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
-更新时间：2026-07-23
-当前完成轮次：R15a 只读内部实验治理 Agent
-下一步：R15b 确定性比较、统计、诊断和上下文压缩
+更新时间：2026-07-24
+当前完成轮次：R15c 治理草稿与影响分析
+下一步：R15d 人类确认后的白名单正式操作
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -28,8 +28,8 @@
 | R14 Local | 单机可替换基础设施 | 完成 | local_owner、MinIO、DB Queue、百炼、Compose |
 | R14f | 正式策略双表示 | 完成 | 结构化事实、确定性说明、来源哈希、失败重生成 |
 | R15a | 内部治理 Agent 只读对话 | 完成 | 持久化、百炼工具调用、只读工具、引用、独立 Worker |
-| R15b | 比较、统计与诊断 | 计划 | 可比性门禁、确定性统计、上下文压缩、Agent Job |
-| R15c | 治理草稿与影响分析 | 计划 | 完整 Policy Bundle 草稿、diff、歧义和影响 |
+| R15b | 比较、统计与诊断 | 完成 | 分层可比性、显式组统计、审核诊断、滚动摘要 |
+| R15c | 治理草稿与影响分析 | 完成 | 追加式完整 Bundle 草稿、diff、歧义、影响与 Web 工作台 |
 | R15d | 人类确认后的正式操作 | 计划 | 提案摘要、版本复核、近期认证、白名单执行 |
 | R15e | 研究总结与长期记忆 | 计划 | 可追溯结论、独立候选记忆、provider parity |
 
@@ -43,9 +43,9 @@
 * 新增 `AgentChatModel`，保留现有禁止工具的 `SummaryTextGenerator`。
 * R15a 只开放项目状态、正式实验、实验详情和当前用户待办四个只读工具。
 * Agent 使用当前 Web 身份，工具执行器重新验证实时 RBAC 和项目隔离。
-* R15a 由 CockroachDB 保存原始消息并确定性裁剪最近窗口；带来源 hash 的 rolling summary
-  留到 R15b。百炼 provider 对话或缓存不是真实记忆源。
-* R15c 前不创建治理草稿，R15d 前不执行任何正式写操作。
+* CockroachDB 保存所有原始消息；R15b 的 rolling summary 只压缩模型上下文，带消息范围和
+  来源 hash，失败时保留旧摘要或退回最近窗口。百炼 provider 对话或缓存不是真实记忆源。
+* R15c 只写独立候选草稿表；R15d 前不执行任何正式业务操作。
 * R15d 的正式操作不暴露为模型执行工具：Agent 生成提案，人类通过独立 CSRF + recent-auth
   请求确认，服务端重查版本和状态后调用既有业务服务。
 * Agent Research Memory 与正式 Experiment Memory 分离，且最早在 R15e 接入。
@@ -70,6 +70,46 @@
 * 建立 24 个版本化权限、工具选择、引用、澄清和 prompt injection eval case；默认测试使用
   scripted provider，真实百炼 Function Calling 通过显式 integration gate 验收。
 * revision `20260723_15` 增加 Agent 表，已在真实 CockroachDB 完成升级、降级和再次升级。
+
+## R15b：实验分析与对话压缩
+
+交付：
+
+* 新增 `experiments_compare_v1`：dataset/protocol/完成状态/指标语义和方向冲突属于硬阻断；
+  Context、Intent、model、seed、Git、checkpoint、命令和非 seed 配置差异作为显式注意项。
+* 新增 `experiment_group_stats_v1`：只接受用户明确提供的 2 至 20 个 Experiment ID；严格
+  重复组才计算 count、mean、sample stddev、median、min/max/range 和方向已知时的最佳记录。
+* 新增 `plan_check_explain_v1` 和 `submission_diagnose_v1`；前者以当前审批列和审批记录为准，
+  不重放旧 report 的派生状态，后者检查追溯、Artifact 固定版本、风险和后台任务但不下载日志。
+* 工具结果分别产生 `CONFIRMED_FACT` 与 `ANALYSIS` 证据，回答服务端校验分段证据类型和引用
+  并集；Web 默认按事实、用户输入、分析和假设分层展示。
+* revision `20260723_16` 增加 `agent_context_summaries`、Thread READY 摘要指针和 ModelCall
+  purpose。摘要记录消息范围、消息 ID、来源 hash、prompt/provider/model 和成功/失败状态。
+* R15b Run 使用 `r15b-v1` Prompt/工具目录；数据库中尚未执行的 `r15a-v1` Run 继续取得原四个
+  工具。摘要失败不令正式 Run 失败，也不能作为 Citation。
+* 评测集扩展为 48 个 R15b case，新增不可比拒绝、显式统计、诊断、证据分层、摘要边界和
+  prompt injection 场景。
+
+## R15c：治理草稿与影响分析
+
+交付：
+
+* revision `20260724_17` 增加 `agent_policy_drafts` 和追加式
+  `agent_policy_draft_revisions`；草稿冻结完整基准 Policy Bundle、版本和来源 hash。
+* Agent 新增 create/update/validate/impact 四个受控草稿工具。创建前必须在同一 Run 读取
+  当前正式 Bundle，每个 Run 最多一次草稿写入，候选证据使用 `CANDIDATE_DRAFT`。
+* 含糊请求保留正式值并进入 `unresolved_ambiguities`；重复路径、Intent/Constraint 冲突、
+  active config 与 expected value 漂移由确定性校验报告，不会生成正式规则。
+* diff 使用 JSON 类型严格比较并标记影响级别；待审批 Plan 只做内存模拟，Submission 只展示
+  不可变版本追溯，不改写既有 Plan、Manifest、Submission 或正式策略。
+* Researcher 只能管理自己的草稿，Owner 可审阅和修订项目内草稿；所有 revision 保留真实作者、
+  Agent Run/ToolCall 或 Web Session 来源和审计。
+* Web Agent 页增加治理草稿工作台，提供回执、结构化编辑、原始 JSON、diff、影响、历史和取消；
+  `STALE` 草稿只读，界面没有发布动作。
+* R15c rolling summary 使用 schema v2 保留有界草稿引用；R15a/R15b Prompt 和工具目录仍可
+  恢复旧 Pending Run。
+* 增加 38 个 R15c trajectory/security case，并覆盖真实 Runtime 草稿轨迹、权限、幂等、
+  乐观并发、失效和正式表不变性。
 
 ## R14f：结构化 JSON + 人类可读自然语言
 
@@ -176,20 +216,20 @@
 
 ## 下一步唯一实现目标
 
-只实现 R15b，不提前实现治理草稿、正式确认执行或长期记忆：
+只实现 R15d，不提前实现长期记忆、自动研究规划或开放式写工具：
 
-1. 增加只读的实验可比性检查和两实验配置/指标比较，先覆盖 dataset、protocol、metric、
-   model、Context 和 Intent 一致性。
-2. 增加确定性重复实验聚合与基础统计；所有数值由程序计算，模型只负责解释。
-3. 增加 Plan 原因解释和 Submission 材料/任务失败诊断，输出明确拆分为正式事实、可能原因和
-   待验证假设。
-4. 增加带 source sequence/hash/version 的 rolling summary，并保留最近消息窗口；摘要失败
-   时退回确定性裁剪，不丢失原始消息。
-5. 扩展 eval 数据集和观测指标，重点验证不可比实验拒绝、统计正确性、诊断分层、摘要过期和
-   prompt injection。
+1. 增加不可变 Action Proposal，冻结操作类型、目标、完整 payload、base version、风险、
+   proposal digest、模型建议和来源草稿 revision。
+2. 模型只能准备白名单提案，不能执行。首批只接入完整 Policy Bundle 发布、Plan 批准/拒绝、
+   Submission 确认/拒绝。
+3. Web 独立确认接口执行 CSRF、近期认证、实时 RBAC、digest/base-version 复核、事务锁、幂等
+   和既有领域服务；STALE 提案必须重新准备。
+4. 确认页展示完整操作和影响，CRITICAL、blocking、HIGH 风险角色限制及现有状态机保持不变。
+5. 持久化模型建议、人类确认/取消、Session、执行 actor、业务 AuditLog 和结果回执；模型不
+   能替代人类确认。
 
-R15a 已提前完成专用 Agent Worker、lease、generation、重试和死信，本阶段复用而不重做。
-仍不增加任意 SQL、训练/改代码、治理草稿、自动审批、正式写工具或 Agent 长期向量记忆。
+仍不增加任意 SQL、训练/改代码、自动审批、通用高影响操作工具、Agent 长期向量记忆或自动
+实验分组。
 
 ## 每轮更新规则
 
