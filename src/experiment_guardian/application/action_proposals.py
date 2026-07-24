@@ -25,6 +25,7 @@ from experiment_guardian.application.policy_drafts import (
     PolicyDraftProposalSource,
     PolicyDraftService,
 )
+from experiment_guardian.application.services import PlanApprovalService
 from experiment_guardian.application.transactions import run_with_serialization_retry
 from experiment_guardian.application.web_management import WebManagementService
 from experiment_guardian.domain.action_proposal import (
@@ -34,12 +35,18 @@ from experiment_guardian.domain.action_proposal import (
     ActionProposalPage,
     ActionProposalPrepareInput,
     ActionProposalView,
+    PlanDecisionProposalPrepareInput,
     build_action_proposal_digest,
+    build_plan_decision_proposal_digest,
 )
+from experiment_guardian.domain.administration import PlanCheckDecisionRequest
 from experiment_guardian.domain.enums import (
     ActionProposalConfirmability,
     ActionProposalOperation,
     ActionProposalStatus,
+    ApprovalStatus,
+    ApprovalTargetType,
+    CheckResult,
     IdempotencyOperationStatus,
     PolicyDraftFreshness,
     PolicyDraftReadiness,
@@ -51,9 +58,12 @@ from experiment_guardian.domain.web_management import PolicyPublishRequest
 from experiment_guardian.infrastructure.models import (
     AgentActionProposal,
     AgentPolicyDraftRevision,
+    ApprovalRecord,
     AuditLog,
     IdempotencyRecord,
+    PlanCheck,
     Project,
+    RunManifest,
 )
 from experiment_guardian.infrastructure.repositories import SqlAlchemyProjectRepository
 
@@ -95,11 +105,13 @@ class ActionProposalService:
         projects: SqlAlchemyProjectRepository,
         policy_drafts: PolicyDraftService,
         web_management: WebManagementService,
+        plan_approvals: PlanApprovalService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._projects = projects
         self._policy_drafts = policy_drafts
         self._web_management = web_management
+        self._plan_approvals = plan_approvals
 
     def prepare_from_agent(
         self,
@@ -114,6 +126,13 @@ class ActionProposalService:
 
         def operation() -> ActionProposalView:
             with self._session_factory() as session, session.begin():
+                run, thread = self._policy_drafts.require_agent_source(
+                    session,
+                    run_id=run_id,
+                    tool_call_id=tool_call_id,
+                    project_id=project_id,
+                    identity=identity,
+                )
                 existing_run = session.scalar(
                     select(AgentActionProposal).where(
                         AgentActionProposal.source_run_id == run_id
@@ -131,13 +150,6 @@ class ActionProposalService:
                 ):
                     raise ConflictError("同一 Agent Run 只能执行一次草稿或提案写操作")
 
-                run, thread = self._policy_drafts.require_agent_source(
-                    session,
-                    run_id=run_id,
-                    tool_call_id=tool_call_id,
-                    project_id=project_id,
-                    identity=identity,
-                )
                 source = self._policy_drafts.load_proposal_source(
                     session,
                     project_id=project_id,
@@ -235,6 +247,172 @@ class ActionProposalService:
 
         return run_with_serialization_retry(operation)
 
+    def prepare_plan_decision_from_agent(
+        self,
+        *,
+        project_id: UUID,
+        identity: RequestIdentity,
+        run_id: UUID,
+        tool_call_id: UUID,
+        request: PlanDecisionProposalPrepareInput,
+    ) -> ActionProposalView:
+        """冻结一个 Plan 最终决定；本方法不改变 Plan 或 ApprovalRecord。"""
+
+        self._require_web_identity(identity)
+        payload = PlanCheckDecisionRequest(
+            decision=request.decision,
+            decision_reason=request.decision_reason.strip(),
+        )
+
+        def operation() -> ActionProposalView:
+            with self._session_factory() as session, session.begin():
+                run, thread = self._policy_drafts.require_agent_source(
+                    session,
+                    run_id=run_id,
+                    tool_call_id=tool_call_id,
+                    project_id=project_id,
+                    identity=identity,
+                )
+                existing_run = session.scalar(
+                    select(AgentActionProposal).where(
+                        AgentActionProposal.source_run_id == run_id
+                    )
+                )
+                if existing_run is not None:
+                    if (
+                        existing_run.operation
+                        is not ActionProposalOperation.PLAN_CHECK_DECISION
+                        or existing_run.target_plan_check_id != request.plan_check_id
+                        or existing_run.payload_hash
+                        != canonical_hash(payload.model_dump(mode="json"))
+                    ):
+                        raise ConflictError("同一 Agent Run 已准备不同的高影响操作")
+                    return self._view(session, existing_run, identity=identity)
+
+                if session.scalar(
+                    select(AgentPolicyDraftRevision.id).where(
+                        AgentPolicyDraftRevision.source_run_id == run_id
+                    )
+                ):
+                    raise ConflictError("同一 Agent Run 只能执行一次草稿或提案写操作")
+
+                project, role = self._require_project(session, project_id, identity)
+                plan = session.scalar(
+                    select(PlanCheck)
+                    .where(
+                        PlanCheck.id == request.plan_check_id,
+                        PlanCheck.project_id == project_id,
+                    )
+                    .with_for_update()
+                )
+                if plan is None or (
+                    role is TeamRole.RESEARCHER
+                    and plan.requester_id != identity.user_id
+                ):
+                    raise ResourceNotFoundError("项目中不存在当前用户可访问的 Plan Check")
+                approval = self._plan_approval(session, plan.id)
+                manifest = self._plan_manifest(session, plan.id)
+                self._require_plan_preparable(plan, approval=approval, manifest=manifest)
+
+                now = datetime.now(UTC)
+                payload_hash = canonical_hash(payload.model_dump(mode="json"))
+                existing = session.scalar(
+                    select(AgentActionProposal).where(
+                        AgentActionProposal.target_plan_check_id == plan.id,
+                        AgentActionProposal.status == ActionProposalStatus.PROPOSED,
+                        AgentActionProposal.expires_at > now,
+                    )
+                )
+                if existing is not None:
+                    if (
+                        existing.created_by == identity.user_id
+                        and existing.payload_hash == payload_hash
+                    ):
+                        return self._view(session, existing, identity=identity, role=role)
+                    raise ConflictError("该 Plan Check 已有待处理的有效决策提案")
+
+                state_snapshot = self._plan_state_snapshot(
+                    plan,
+                    approval=approval,
+                    manifest=manifest,
+                )
+                state_hash = canonical_hash(state_snapshot)
+                proposal_id = uuid4()
+                expires_at = now + timedelta(hours=ACTION_PROPOSAL_TTL_HOURS)
+                digest = build_plan_decision_proposal_digest(
+                    proposal_id=proposal_id,
+                    project_id=project_id,
+                    plan_check_id=plan.id,
+                    payload=payload,
+                    target_state_hash=state_hash,
+                    base_context_id=plan.context_id,
+                    base_context_version=plan.context_version,
+                    base_intent_id=plan.intent_id,
+                    base_intent_version=plan.intent_version,
+                    expires_at=expires_at,
+                )
+                proposal = AgentActionProposal(
+                    id=proposal_id,
+                    team_id=project.team_id,
+                    project_id=project.id,
+                    created_by=identity.user_id,
+                    source_thread_id=thread.id,
+                    source_run_id=run.id,
+                    source_tool_call_id=tool_call_id,
+                    source_draft_id=None,
+                    source_draft_revision_id=None,
+                    source_draft_revision=None,
+                    operation=ActionProposalOperation.PLAN_CHECK_DECISION,
+                    status=ActionProposalStatus.PROPOSED,
+                    payload=payload.model_dump(mode="json"),
+                    payload_hash=payload_hash,
+                    source_candidate_hash=None,
+                    target_plan_check_id=plan.id,
+                    target_state_hash=state_hash,
+                    base_context_id=plan.context_id,
+                    base_context_version=plan.context_version,
+                    base_intent_id=plan.intent_id,
+                    base_intent_version=plan.intent_version,
+                    base_policy_hash=None,
+                    diff_snapshot=plan.planned_changes,
+                    impact_snapshot=self._plan_impact_snapshot(
+                        plan,
+                        payload=payload,
+                        state_snapshot=state_snapshot,
+                    ),
+                    pending_state_hash=None,
+                    proposal_digest=digest,
+                    expires_at=expires_at,
+                )
+                session.add(proposal)
+                session.flush()
+                session.add(
+                    AuditLog(
+                        team_id=project.team_id,
+                        project_id=project.id,
+                        actor_type="USER",
+                        actor_id=identity.user_id,
+                        action="agent.action_proposal.prepared",
+                        target_type="AGENT_ACTION_PROPOSAL",
+                        target_id=proposal.id,
+                        before_value=None,
+                        after_value={
+                            "operation": proposal.operation.value,
+                            "plan_check_id": str(plan.id),
+                            "decision": payload.decision.value,
+                            "target_state_hash": state_hash,
+                            "proposal_digest": proposal.proposal_digest,
+                            "expires_at": proposal.expires_at.isoformat(),
+                            "run_id": str(run.id),
+                            "tool_call_id": str(tool_call_id),
+                            "session_id": str(identity.token_id),
+                        },
+                    )
+                )
+                return self._view(session, proposal, identity=identity, role=role)
+
+        return run_with_serialization_retry(operation)
+
     def list_proposals(
         self,
         *,
@@ -301,7 +479,7 @@ class ActionProposalService:
         self._require_web_identity(identity, write=True)
         if not identity.recent_authentication:
             raise RecentAuthenticationRequiredError(
-                "确认正式策略发布提案前需要完成近期身份认证"
+                "确认高影响操作提案前需要完成近期身份认证"
             )
         request_hash = canonical_hash(
             {
@@ -334,7 +512,7 @@ class ActionProposalService:
                     raise ConflictError("提案摘要不匹配，请刷新完整内容后重新确认")
 
                 confirmability, reasons = self._confirmability(
-                    session, proposal, identity=identity
+                    session, proposal, identity=identity, for_update=True
                 )
                 if confirmability is ActionProposalConfirmability.TERMINAL:
                     raise ConflictError("该操作提案已终止，不能再次确认")
@@ -369,34 +547,81 @@ class ActionProposalService:
                     )
                     return result
 
-                publish_request = PolicyPublishRequest.model_validate(proposal.payload)
-                policy_key = uuid5(
-                    NAMESPACE_URL,
-                    f"agent-policy-publish:{proposal.id}:{idempotency_key}",
-                )
-                publish_result = self._web_management.publish_policy_in_session(
-                    session,
-                    project_id=project_id,
-                    identity=identity,
-                    idempotency_key=policy_key,
-                    request=publish_request,
-                    audit_context={
-                        "proposal_id": str(proposal.id),
-                        "proposal_digest": proposal.proposal_digest,
-                        "source_draft_id": str(proposal.source_draft_id),
-                        "source_draft_revision": proposal.source_draft_revision,
-                    },
-                )
+                execution_result: dict[str, object]
+                audit_result: dict[str, object]
+                if proposal.operation is ActionProposalOperation.POLICY_PUBLISH:
+                    publish_request = PolicyPublishRequest.model_validate(proposal.payload)
+                    policy_key = uuid5(
+                        NAMESPACE_URL,
+                        f"agent-policy-publish:{proposal.id}:{idempotency_key}",
+                    )
+                    publish_result = self._web_management.publish_policy_in_session(
+                        session,
+                        project_id=project_id,
+                        identity=identity,
+                        idempotency_key=policy_key,
+                        request=publish_request,
+                        audit_context={
+                            "proposal_id": str(proposal.id),
+                            "proposal_digest": proposal.proposal_digest,
+                            "source_draft_id": str(proposal.source_draft_id),
+                            "source_draft_revision": proposal.source_draft_revision,
+                        },
+                    )
+                    proposal.executed_context_id = (
+                        publish_result.context_bundle.context.context_id
+                    )
+                    proposal.executed_context_version = (
+                        publish_result.context_bundle.context.version
+                    )
+                    execution_result = publish_result.model_dump(mode="json")
+                    audit_result = {
+                        "context_id": str(proposal.executed_context_id),
+                        "context_version": proposal.executed_context_version,
+                        "policy_idempotency_key": str(policy_key),
+                    }
+                else:
+                    if proposal.target_plan_check_id is None:
+                        raise ConflictError("Plan 决策提案缺少目标 Plan Check")
+                    if self._plan_approvals is None:
+                        raise ConflictError("Plan 决策提案服务未装配")
+                    decision_request = PlanCheckDecisionRequest.model_validate(
+                        proposal.payload
+                    )
+                    decision_key = uuid5(
+                        NAMESPACE_URL,
+                        f"agent-plan-decision:{proposal.id}:{idempotency_key}",
+                    )
+                    decision_result = self._plan_approvals.decide_in_session(
+                        session,
+                        identity=identity,
+                        project_id=project_id,
+                        plan_check_id=proposal.target_plan_check_id,
+                        idempotency_key=decision_key,
+                        request=decision_request,
+                        audit_context={
+                            "proposal_id": str(proposal.id),
+                            "proposal_digest": proposal.proposal_digest,
+                        },
+                    )
+                    proposal.executed_approval_record_id = (
+                        decision_result.approval_record_id
+                    )
+                    execution_result = decision_result.model_dump(mode="json")
+                    audit_result = {
+                        "plan_check_id": str(proposal.target_plan_check_id),
+                        "approval_record_id": str(
+                            decision_result.approval_record_id
+                        ),
+                        "decision": decision_result.decision.value,
+                        "plan_decision_idempotency_key": str(decision_key),
+                    }
                 now = datetime.now(UTC)
                 proposal.status = ActionProposalStatus.EXECUTED
                 proposal.confirmed_by = identity.user_id
                 proposal.confirmed_session_id = identity.token_id
                 proposal.confirmed_at = now
-                proposal.executed_context_id = publish_result.context_bundle.context.context_id
-                proposal.executed_context_version = (
-                    publish_result.context_bundle.context.version
-                )
-                proposal.execution_result = publish_result.model_dump(mode="json")
+                proposal.execution_result = execution_result
                 proposal.execution_error = None
                 result = self._view(session, proposal, identity=identity, role=role)
                 self._save_idempotency(
@@ -412,11 +637,7 @@ class ActionProposalService:
                     proposal=proposal,
                     identity=identity,
                     action="agent.action_proposal.executed",
-                    after_value={
-                        "context_id": str(proposal.executed_context_id),
-                        "context_version": proposal.executed_context_version,
-                        "policy_idempotency_key": str(policy_key),
-                    },
+                    after_value=audit_result,
                 )
                 return result
 
@@ -503,12 +724,119 @@ class ActionProposalService:
         if not source.revision.diff_snapshot:
             raise ConflictError("没有正式含义变化的治理草稿不能准备发布提案")
 
+    @staticmethod
+    def _require_plan_preparable(
+        plan: PlanCheck,
+        *,
+        approval: ApprovalRecord | None,
+        manifest: RunManifest | None,
+    ) -> None:
+        if (
+            plan.check_result is not CheckResult.NEEDS_APPROVAL
+            or plan.approval_status is not ApprovalStatus.PENDING
+        ):
+            raise ConflictError("只有 NEEDS_APPROVAL/PENDING 的 Plan Check 可以准备决策提案")
+        if approval is not None:
+            raise ConflictError("该 Plan Check 已存在最终审批记录")
+        if manifest is not None:
+            raise ConflictError("已创建 Run Manifest 的 Plan Check 不能准备决策提案")
+
+    @staticmethod
+    def _plan_approval(session: Session, plan_check_id: UUID) -> ApprovalRecord | None:
+        return session.scalar(
+            select(ApprovalRecord).where(
+                ApprovalRecord.target_type == ApprovalTargetType.PLAN_CHECK,
+                ApprovalRecord.target_id == plan_check_id,
+            )
+        )
+
+    @staticmethod
+    def _plan_manifest(session: Session, plan_check_id: UUID) -> RunManifest | None:
+        return session.scalar(
+            select(RunManifest).where(RunManifest.plan_check_id == plan_check_id)
+        )
+
+    @staticmethod
+    def _plan_state_snapshot(
+        plan: PlanCheck,
+        *,
+        approval: ApprovalRecord | None,
+        manifest: RunManifest | None,
+    ) -> dict[str, object]:
+        report = (
+            {
+                key: value
+                for key, value in plan.report.items()
+                if key not in {"approval_status", "can_create_manifest"}
+            }
+            if isinstance(plan.report, dict)
+            else {}
+        )
+        return {
+            "plan_check_id": str(plan.id),
+            "project_id": str(plan.project_id),
+            "requester_id": str(plan.requester_id),
+            "context_id": str(plan.context_id),
+            "context_version": plan.context_version,
+            "intent_id": str(plan.intent_id),
+            "intent_version": plan.intent_version,
+            "experiment_mode": plan.experiment_mode.value,
+            "request_hash": plan.request_hash,
+            "input_config_hash": plan.input_config_hash,
+            "input_document_hash": plan.input_document_hash,
+            "configuration_document": plan.configuration_document,
+            "parsed_config": plan.parsed_config,
+            "context_snapshot": plan.context_snapshot,
+            "intent_snapshot": plan.intent_snapshot,
+            "constraint_snapshot": plan.constraint_snapshot,
+            "planned_changes": plan.planned_changes,
+            "git_commit": plan.git_commit,
+            "command": plan.command,
+            "local_attestation": plan.local_attestation,
+            "check_result": plan.check_result.value,
+            "approval_status": plan.approval_status.value,
+            "risk_level": plan.risk_level.value,
+            "report": report,
+            "approval_record_id": str(approval.id) if approval else None,
+            "manifest_id": str(manifest.id) if manifest else None,
+        }
+
+    @staticmethod
+    def _plan_impact_snapshot(
+        plan: PlanCheck,
+        *,
+        payload: PlanCheckDecisionRequest,
+        state_snapshot: dict[str, object],
+    ) -> dict[str, object]:
+        report = state_snapshot.get("report")
+        risks = report.get("risks", []) if isinstance(report, dict) else []
+        return {
+            "plan_check_id": str(plan.id),
+            "requester_id": str(plan.requester_id),
+            "check_result": plan.check_result.value,
+            "approval_status": plan.approval_status.value,
+            "risk_level": plan.risk_level.value,
+            "context_version": plan.context_version,
+            "intent_version": plan.intent_version,
+            "decision": payload.decision.value,
+            "decision_reason": payload.decision_reason,
+            "decision_effect": (
+                "确认后 Plan 可用于创建一次不可变 Run Manifest"
+                if payload.decision.value == "APPROVED"
+                else "确认后 Plan 将被最终拒绝，不能创建 Run Manifest"
+            ),
+            "risks": risks,
+            "planned_change_count": len(plan.planned_changes),
+            "source_report": report,
+        }
+
     def _confirmability(
         self,
         session: Session,
         proposal: AgentActionProposal,
         *,
         identity: RequestIdentity,
+        for_update: bool = False,
     ) -> tuple[ActionProposalConfirmability, list[str]]:
         if proposal.status in TERMINAL_PROPOSAL_STATUSES:
             stored_reasons = (
@@ -525,15 +853,39 @@ class ActionProposalService:
             ]
         if _utc(proposal.expires_at) <= datetime.now(UTC):
             return ActionProposalConfirmability.EXPIRED, ["提案已超过 24 小时有效期"]
+        if proposal.operation is ActionProposalOperation.PLAN_CHECK_DECISION:
+            return self._plan_confirmability(
+                session,
+                proposal,
+                for_update=for_update,
+            )
 
         reasons: list[str] = []
+        if any(
+            value is None
+            for value in (
+                proposal.source_draft_id,
+                proposal.source_draft_revision_id,
+                proposal.source_draft_revision,
+                proposal.source_candidate_hash,
+                proposal.base_policy_hash,
+                proposal.pending_state_hash,
+            )
+        ):
+            return ActionProposalConfirmability.STALE, ["Policy 提案来源字段不完整"]
+        assert proposal.source_draft_id is not None
+        assert proposal.source_draft_revision_id is not None
+        assert proposal.source_draft_revision is not None
+        assert proposal.source_candidate_hash is not None
+        assert proposal.base_policy_hash is not None
+        assert proposal.pending_state_hash is not None
         try:
             source = self._policy_drafts.load_proposal_source(
                 session,
                 project_id=proposal.project_id,
                 draft_id=proposal.source_draft_id,
                 identity=identity,
-                for_update=False,
+                for_update=for_update,
             )
         except (ConflictError, InputValidationError, ResourceNotFoundError) as exc:
             return ActionProposalConfirmability.STALE, [str(exc)]
@@ -584,6 +936,78 @@ class ActionProposalService:
             else (ActionProposalConfirmability.READY, [])
         )
 
+    def _plan_confirmability(
+        self,
+        session: Session,
+        proposal: AgentActionProposal,
+        *,
+        for_update: bool,
+    ) -> tuple[ActionProposalConfirmability, list[str]]:
+        plan_id = proposal.target_plan_check_id
+        state_hash = proposal.target_state_hash
+        if plan_id is None or state_hash is None:
+            return ActionProposalConfirmability.STALE, ["Plan 提案目标字段不完整"]
+        statement = select(PlanCheck).where(
+            PlanCheck.id == plan_id,
+            PlanCheck.project_id == proposal.project_id,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        plan = session.scalar(statement)
+        if plan is None:
+            return ActionProposalConfirmability.STALE, ["目标 Plan Check 已不存在"]
+
+        approval = self._plan_approval(session, plan.id)
+        manifest = self._plan_manifest(session, plan.id)
+        reasons: list[str] = []
+        if plan.check_result is not CheckResult.NEEDS_APPROVAL:
+            reasons.append("Plan Check 已不再需要审批")
+        if plan.approval_status is not ApprovalStatus.PENDING:
+            reasons.append(f"Plan Check 审批状态已变为 {plan.approval_status.value}")
+        if approval is not None:
+            reasons.append("Plan Check 已存在最终审批记录")
+        if manifest is not None:
+            reasons.append("Plan Check 已创建 Run Manifest")
+        if (
+            plan.context_id != proposal.base_context_id
+            or plan.context_version != proposal.base_context_version
+            or plan.intent_id != proposal.base_intent_id
+            or plan.intent_version != proposal.base_intent_version
+        ):
+            reasons.append("Plan Check 的 Context 或 Intent 追溯版本不匹配")
+        current_snapshot = self._plan_state_snapshot(
+            plan,
+            approval=approval,
+            manifest=manifest,
+        )
+        if canonical_hash(current_snapshot) != state_hash:
+            reasons.append("Plan Check 正式依据已变化")
+        try:
+            payload = PlanCheckDecisionRequest.model_validate(proposal.payload)
+        except ValueError:
+            return ActionProposalConfirmability.STALE, ["Plan 决策 payload 已损坏"]
+        if canonical_hash(payload.model_dump(mode="json")) != proposal.payload_hash:
+            reasons.append("冻结 Plan 决策与 payload 哈希不一致")
+        digest = build_plan_decision_proposal_digest(
+            proposal_id=proposal.id,
+            project_id=proposal.project_id,
+            plan_check_id=plan_id,
+            payload=payload,
+            target_state_hash=state_hash,
+            base_context_id=proposal.base_context_id,
+            base_context_version=proposal.base_context_version,
+            base_intent_id=proposal.base_intent_id,
+            base_intent_version=proposal.base_intent_version,
+            expires_at=_utc(proposal.expires_at),
+        )
+        if digest != proposal.proposal_digest:
+            reasons.append("提案摘要校验失败")
+        return (
+            (ActionProposalConfirmability.STALE, reasons)
+            if reasons
+            else (ActionProposalConfirmability.READY, [])
+        )
+
     def _view(
         self,
         session: Session,
@@ -603,6 +1027,11 @@ class ActionProposalService:
                 actions.append("CONFIRM")
             if role is TeamRole.OWNER or proposal.created_by == identity.user_id:
                 actions.append("CANCEL")
+        payload: PolicyPublishRequest | PlanCheckDecisionRequest
+        if proposal.operation is ActionProposalOperation.POLICY_PUBLISH:
+            payload = PolicyPublishRequest.model_validate(proposal.payload)
+        else:
+            payload = PlanCheckDecisionRequest.model_validate(proposal.payload)
         return ActionProposalView(
             proposal_id=proposal.id,
             project_id=proposal.project_id,
@@ -619,7 +1048,9 @@ class ActionProposalService:
             source_draft_revision_id=proposal.source_draft_revision_id,
             source_draft_revision=proposal.source_draft_revision,
             source_candidate_hash=proposal.source_candidate_hash,
-            payload=PolicyPublishRequest.model_validate(proposal.payload),
+            target_plan_check_id=proposal.target_plan_check_id,
+            target_state_hash=proposal.target_state_hash,
+            payload=payload,
             payload_hash=proposal.payload_hash,
             base_context_id=proposal.base_context_id,
             base_context_version=proposal.base_context_version,
@@ -640,6 +1071,7 @@ class ActionProposalService:
             cancel_reason=proposal.cancel_reason,
             executed_context_id=proposal.executed_context_id,
             executed_context_version=proposal.executed_context_version,
+            executed_approval_record_id=proposal.executed_approval_record_id,
             execution_result=proposal.execution_result,
             execution_error=proposal.execution_error,
         )
@@ -656,7 +1088,7 @@ class ActionProposalService:
     ) -> tuple[AgentActionProposal, TeamRole]:
         _, role = self._require_project(session, project_id, identity)
         if owner and role is not TeamRole.OWNER:
-            raise AuthorizationError("只有 Owner 可以确认正式策略发布提案")
+            raise AuthorizationError("只有 Owner 可以确认高影响操作提案")
         statement = select(AgentActionProposal).where(
             AgentActionProposal.id == proposal_id,
             AgentActionProposal.project_id == project_id,

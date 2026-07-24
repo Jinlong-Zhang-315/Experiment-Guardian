@@ -1,11 +1,11 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-24
-当前实现：R15d-a Policy 发布提案与 Owner 独立确认
+当前实现：R15d-b1 Plan Check 批准/拒绝提案
 
-下一计划：R15d-b Plan/Submission 决策提案。R15 总体边界见
+下一计划：R15d-b2 Submission 审核提案。R15 总体边界见
 `INTERNAL_GOVERNANCE_AGENT_PLAN.md`。
-数据库 head：`20260724_18`
+数据库 head：`20260724_19`
 
 除明确标记“计划”的章节外，本文描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与
 自动化验证，`[EXTERNAL]` 表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
@@ -205,7 +205,7 @@ scripts/verify_r14_deployment.py 公开部署认证/发现验收
 依赖方向保持：接口层 -> 应用层 -> 领域层；基础设施实现应用端口。前端不重新计算风险、
 审批资格或角色权限。
 
-## R15d-a Agent 当前框架图
+## R15d-b1 Agent 当前框架图
 
 ```text
 Web 治理 Agent 页
@@ -216,7 +216,7 @@ Agent API
    |
    +--> AgentConversationService
    |       +--> Thread / Message / Run / Citation / answer sections [DONE]
-   |       +--> rolling summary v3 / draft + proposal references [DONE]
+   |       +--> rolling summary v4 / draft + typed proposal references [DONE]
    |       +--> Policy Draft list / revision / abandon [DONE]
    |       +--> Action Proposal list / confirm / cancel [DONE]
    |       +--> idempotent enqueue / archive / retry [DONE]
@@ -229,7 +229,7 @@ Agent API
            |
    +--> GovernanceAgentRuntime [DONE]
    |       +--> bounded single-agent LangGraph, max calls/tools/wall time
-   |       +--> r15a/r15b/r15c/r15d prompt + catalog compatibility
+   |       +--> r15a/r15b/r15c/r15d/r15d-b1 prompt + catalog compatibility
    |       +--> recent messages + non-authoritative rolling summary
    |       +--> AgentChatModel
    |       |       +--> Bailian streaming Function Calling [DONE]
@@ -248,6 +248,7 @@ Agent API
    |               +--> policy_draft_validate_v1 [DONE]
    |               +--> policy_draft_impact_get_v1 [DONE]
    |               +--> action_proposal_prepare_v1 [DONE, no execute]
+   |               +--> action_proposal_prepare_plan_decision_v1 [DONE, no execute]
    |               +--> FORMAL EXECUTE [NOT REGISTERED]
    +--> validated AgentAnswer + evidence/citations + AuditLog [DONE]
 
@@ -255,10 +256,10 @@ Experiment Memory VECTOR(1024)       formal confirmed experiments only
 Agent Research Memory                not present; planned R15e separate store
 ```
 
-R15d-a 的模型写工具仍只能追加候选草稿或准备不可变提案。正式执行没有注册为模型工具；
-Owner 的独立确认请求复用既有 Policy 发布服务并在同一数据库事务中落库。正式事实、候选
-草稿、操作提案和影响分析分别使用 `CONFIRMED_FACT`、`CANDIDATE_DRAFT`、
-`ACTION_PROPOSAL` 和 `ANALYSIS` evidence，摘要不参与正式判断。
+R15d-b1 的模型写工具仍只能追加候选草稿或准备不可变 Policy/Plan 提案。正式执行没有注册
+为模型工具；Owner 的独立确认请求分别复用既有 Policy 发布和 Plan 审批事务核心。Plan
+Proposal、ApprovalRecord、Plan 最终状态、幂等结果和审计在同一事务中落库。正式事实、
+候选草稿、操作提案和影响分析继续使用独立 evidence，摘要不参与正式判断。
 
 ## 数据关系
 

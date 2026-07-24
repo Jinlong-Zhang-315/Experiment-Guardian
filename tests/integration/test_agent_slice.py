@@ -147,7 +147,9 @@ class SummaryAwareAgentModel(AgentChatModel):
                 raise ServiceUnavailableError("summary provider unavailable")
             source = json.loads(messages[1].content.split("\n", 1)[1])
             schema_version = (
-                3
+                4
+                if "schema_version=4" in messages[1].content
+                else 3
                 if "schema_version=3" in messages[1].content
                 else 2
                 if "schema_version=2" in messages[1].content
@@ -165,7 +167,7 @@ class SummaryAwareAgentModel(AgentChatModel):
             }
             if schema_version >= 2:
                 payload["draft_references"] = []
-            if schema_version == 3:
+            if schema_version in {3, 4}:
                 payload["proposal_references"] = []
             yield AgentModelEvent(event_type="text_delta", text=json.dumps(payload))
             yield AgentModelEvent(event_type="completed", finish_reason="stop")

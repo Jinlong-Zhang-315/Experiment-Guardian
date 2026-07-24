@@ -89,6 +89,56 @@ const proposal: ActionProposal = {
   updated_at: "2026-07-24T08:00:00Z",
 };
 
+const planProposal: ActionProposal = {
+  proposal_id: "ap-plan",
+  project_id: "p1",
+  created_by: "u1",
+  operation: "PLAN_CHECK_DECISION",
+  status: "PROPOSED",
+  confirmability: "READY",
+  confirmability_reasons: [],
+  allowed_actions: ["CONFIRM", "CANCEL"],
+  source_thread_id: "th-plan",
+  source_run_id: "run-plan",
+  source_tool_call_id: "call-plan",
+  target_plan_check_id: "plan-1",
+  target_state_hash: "f".repeat(64),
+  payload: {
+    decision: "REJECTED",
+    decision_reason: "主干变化风险不可接受",
+  },
+  payload_hash: "a".repeat(64),
+  base_context_id: "c1",
+  base_context_version: 1,
+  base_intent_id: "i1",
+  base_intent_version: 1,
+  diff_snapshot: [{
+    parameter_path: "model.backbone",
+    previous_value: "shift-gcn",
+    current_value: "transformer",
+    protection_level: "APPROVAL_REQUIRED",
+  }],
+  impact_snapshot: {
+    plan_check_id: "plan-1",
+    requester_id: "r1",
+    check_result: "NEEDS_APPROVAL",
+    approval_status: "PENDING",
+    risk_level: "HIGH",
+    context_version: 1,
+    intent_version: 1,
+    decision: "REJECTED",
+    decision_reason: "主干变化风险不可接受",
+    decision_effect: "确认后 Plan 将被最终拒绝，不能创建 Run Manifest",
+    risks: [{ code: "APPROVAL_REQUIRED_CHANGE", severity: "HIGH" }],
+    planned_change_count: 1,
+    source_report: {},
+  },
+  proposal_digest: "9".repeat(64),
+  expires_at: "2026-07-25T08:00:00Z",
+  created_at: "2026-07-24T08:00:00Z",
+  updated_at: "2026-07-24T08:00:00Z",
+};
+
 const clients: QueryClient[] = [];
 
 function renderWorkspace() {
@@ -163,5 +213,36 @@ describe("ActionProposalWorkspace", () => {
     renderWorkspace();
     expect(await screen.findByText("等待 Owner 审阅并确认")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认并发布正式版本" })).not.toBeInTheDocument();
+  });
+
+  it("renders the frozen Plan rejection and requires exact owner confirmation", async () => {
+    let confirmed: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST" && url.endsWith("/confirm")) {
+        confirmed = JSON.parse(String(init.body));
+        return Response.json({
+          ...planProposal,
+          status: "EXECUTED",
+          confirmability: "TERMINAL",
+          allowed_actions: [],
+          executed_approval_record_id: "approval-1",
+        });
+      }
+      if (url.includes("action-proposals?")) {
+        return Response.json({ items: [planProposal] });
+      }
+      return Response.json(planProposal);
+    }));
+    renderWorkspace();
+    expect(await screen.findByText("主干变化风险不可接受")).toBeInTheDocument();
+    expect(screen.getByText("确认后 Plan 将被最终拒绝，不能创建 Run Manifest")).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "确认并拒绝 Plan" });
+    expect(button).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button);
+    await waitFor(() => expect(confirmed).toEqual({
+      proposal_digest: planProposal.proposal_digest,
+    }));
   });
 });

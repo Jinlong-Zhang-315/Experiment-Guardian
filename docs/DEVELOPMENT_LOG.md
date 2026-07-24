@@ -1434,6 +1434,69 @@
   权限：`BLOCKED/CRITICAL` 不可绕过、HIGH 仅 Owner、人类最终决定。
 * 在新增操作前先解决真实 Cockroach 全链测试清理挂起，避免扩大测试不确定性。
 
+## 2026-07-24 / R15d-b1：Plan Check 批准/拒绝提案
+
+版本：working tree，基于 `cde6b75`。
+
+### 更新内容
+
+* revision `20260724_19` 扩展 `agent_action_proposals`：增加
+  `PLAN_CHECK_DECISION`、目标 Plan、正式状态哈希和执行 ApprovalRecord；Policy 专属字段
+  改为按 operation 约束，历史 Policy digest 算法保持不变。
+* 新增 Plan 决策提案契约和 digest。批准、拒绝都必须提供非空理由，digest 绑定完整决定、
+  Plan 状态哈希、Context/Intent 版本和 24 小时有效期。
+* `ActionProposalService` 新增 Plan 准备、实时 confirmability、状态漂移检测和 operation
+  分派；只接受 `NEEDS_APPROVAL/PENDING` 且没有 ApprovalRecord/Manifest 的 Plan。
+* 抽取 `PlanApprovalService.decide_in_session()`。直接审批和 Proposal 确认复用相同权限、
+  状态机、幂等和审计逻辑；Proposal、Plan、ApprovalRecord 与结果在同一事务提交。
+* Agent 新增 `action_proposal_prepare_plan_decision_v1`，Prompt/目录升级为 `r15d-b1-v1`；
+  普通建议请求只读，只有明确准备请求可写。没有 confirm、execute 或 Manifest 工具。
+* rolling summary schema v4 支持 Policy Draft 引用与 Plan target/decision 引用；旧
+  r15a/r15b/r15c/r15d Run 继续使用冻结 Prompt 和工具目录。
+* Web Action Proposal Workspace 改为 operation 判别联合视图。Plan 决策显示正式版本、
+  参数变化、风险、决定理由和不可逆影响；拒绝使用危险操作样式。
+* CockroachDB 集成测试的 Alembic 子进程增加 180 秒上限，清理时只取消随机验收库自身的
+  Schema Job，避免遗留 paused Job 阻塞后续验收。
+* 新增 20 个 R15d-b1 trajectory/security case，并补充 Plan 提案准备、原子确认、幂等、
+  直接审批抢先失效和 Agent 工具只准备不执行的集成测试。
+
+### 修复的问题
+
+* Agent 可以给出 Plan 审核建议，但无法把建议直接写成正式 ApprovalRecord。
+* Plan 在提案准备后发生审批、内容或追溯变化时，旧提案不能继续执行。
+* Plan Proposal 与正式审批不再存在跨事务部分成功窗口。
+* 批准和拒绝理由、目标 Plan 和版本不能在 Owner 确认请求中被替换。
+* Policy 和 Plan 提案在同一工作台展示时不会混用标题、按钮或执行回执。
+* 提案幂等重放现在先验证 Agent Run/ToolCall 与当前身份的归属，不能用其他用户的 Run ID
+  命中既有提案后绕过来源校验。
+
+### 验证结果
+
+* Python 收集 281 项，全量执行退出码 0：272 passed、9 skipped。
+* Ruff 全仓和 mypy 76 个源文件通过。
+* SQLite Alembic head、历史降级和再升级测试通过。
+* 真实 CockroachDB 26.2 完成 revision 18→19→18→19；隔离数据库全链完成
+  `head -> 05 -> head -> 03 -> head -> base -> head` 和完整 Plan/审批/Manifest/
+  Submission 工作流回归。
+* Web ESLint、Vitest 7 项和 production build 通过。
+* 聚焦测试覆盖 Policy 历史提案兼容、Plan APPROVED/REJECTED、双幂等记录、直接审批抢先、
+  状态未提前改变、Agent evidence 和 rolling summary v4。
+
+### 已知遗留项
+
+* R15d-b1 不包含 Submission 确认/拒绝提案；它单独留到 R15d-b2。
+* 本机 Docker 数据盘执行全链时仅剩 4.7%，低于 CockroachDB bulk DDL 默认 5% 保护阈值；
+  验收时临时降至 4%，完成后已恢复 5%。后续应清理 Docker 数据盘，不能把降低生产保护阈值
+  当作长期方案。
+* Cockroach 全链仍由 `RUN_COCKROACH_INTEGRATION=1` 显式触发，不进入默认测试。
+* 真实百炼模型行为仍由 `RUN_BAILIAN_AGENT_INTEGRATION=1` 可选验收；默认测试不访问外网。
+* 提案失效后不自动 rebase，用户需要重新读取正式 Plan 并创建新提案。
+
+### 下一步
+
+* R15d-b2 只实现 Submission 审核提案，必须复用现有 Review Eligibility 和正式 Experiment
+  确认事务：LOW/MEDIUM 保持现有权限、HIGH 仅 Owner、CRITICAL/blocking 禁止批准。
+
 ## 新日志模板
 
 ```text

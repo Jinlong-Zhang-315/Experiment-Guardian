@@ -372,11 +372,10 @@ export interface PolicyDraftView {
   revisions: PolicyDraftRevisionSummary[];
 }
 
-export interface ActionProposal {
+interface ActionProposalBase {
   proposal_id: string;
   project_id: string;
   created_by: string;
-  operation: "POLICY_PUBLISH";
   status: "PROPOSED" | "EXECUTED" | "CANCELED" | "STALE" | "EXPIRED" | "FAILED";
   confirmability: "READY" | "STALE" | "EXPIRED" | "TERMINAL";
   confirmability_reasons: string[];
@@ -384,6 +383,26 @@ export interface ActionProposal {
   source_thread_id: string;
   source_run_id: string;
   source_tool_call_id: string;
+  payload_hash: string;
+  base_context_id: string;
+  base_context_version: number;
+  base_intent_id: string;
+  base_intent_version: number;
+  proposal_digest: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+  confirmed_by?: string;
+  confirmed_at?: string;
+  canceled_by?: string;
+  canceled_at?: string;
+  cancel_reason?: string;
+  execution_result?: Record<string, unknown>;
+  execution_error?: Record<string, unknown>;
+}
+
+export interface PolicyPublishActionProposal extends ActionProposalBase {
+  operation: "POLICY_PUBLISH";
   source_draft_id: string;
   source_draft_revision_id: string;
   source_draft_revision: number;
@@ -394,26 +413,41 @@ export interface ActionProposal {
     intent: PolicyIntentCandidate;
     constraints: PolicyConstraintCandidate[];
   };
-  payload_hash: string;
-  base_context_id: string;
-  base_context_version: number;
-  base_intent_id: string;
-  base_intent_version: number;
   base_policy_hash: string;
   diff_snapshot: PolicyDraftDiff[];
   impact_snapshot: PolicyDraftImpact;
   pending_state_hash: string;
-  proposal_digest: string;
-  expires_at: string;
-  created_at: string;
-  updated_at: string;
-  confirmed_by?: string;
-  confirmed_at?: string;
-  canceled_by?: string;
-  canceled_at?: string;
-  cancel_reason?: string;
   executed_context_id?: string;
   executed_context_version?: number;
-  execution_result?: Record<string, unknown>;
-  execution_error?: Record<string, unknown>;
 }
+
+export interface PlanDecisionActionProposal extends ActionProposalBase {
+  operation: "PLAN_CHECK_DECISION";
+  target_plan_check_id: string;
+  target_state_hash: string;
+  payload: {
+    decision: "APPROVED" | "REJECTED";
+    decision_reason?: string;
+  };
+  diff_snapshot: Array<Record<string, unknown>>;
+  impact_snapshot: {
+    plan_check_id: string;
+    requester_id: string;
+    check_result: string;
+    approval_status: string;
+    risk_level: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+    context_version: number;
+    intent_version: number;
+    decision: "APPROVED" | "REJECTED";
+    decision_reason?: string;
+    decision_effect: string;
+    risks: Array<Record<string, unknown>>;
+    planned_change_count: number;
+    source_report: Record<string, unknown>;
+  };
+  executed_approval_record_id?: string;
+}
+
+export type ActionProposal =
+  | PolicyPublishActionProposal
+  | PlanDecisionActionProposal;

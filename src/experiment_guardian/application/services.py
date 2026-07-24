@@ -1716,10 +1716,6 @@ class PlanApprovalService:
         idempotency_key: UUID,
         request: PlanCheckDecisionRequest,
     ) -> PlanCheckDecisionResult:
-        if "plan:approve" not in identity.scopes:
-            raise AuthorizationError("Token 缺少 plan:approve scope")
-        if identity.authentication_method == "WEB_SESSION" and not identity.recent_authentication:
-            raise RecentAuthenticationRequiredError("批准 Plan Check 前需要完成近期身份认证")
         request_hash = _canonical_hash(
             {
                 "project_id": str(project_id),
@@ -1729,109 +1725,15 @@ class PlanApprovalService:
         )
         try:
             with self._session_factory() as session, session.begin():
-                project = self._projects.require_project_member(
+                return self.decide_in_session(
                     session,
+                    identity=identity,
                     project_id=project_id,
-                    user_id=identity.user_id,
-                    team_id=identity.team_id,
-                )
-                self._projects.require_member(
-                    session,
-                    user_id=identity.user_id,
-                    team_id=project.team_id,
-                    allowed_roles={TeamRole.OWNER},
-                )
-                existing_idempotency = self._governance.find_idempotency(
-                    session,
-                    actor_id=identity.user_id,
-                    operation=PLAN_DECISION_OPERATION,
+                    plan_check_id=plan_check_id,
                     idempotency_key=idempotency_key,
+                    request=request,
+                    request_hash=request_hash,
                 )
-                if existing_idempotency is not None:
-                    return self._replay_decision(existing_idempotency, request_hash)
-
-                plan = self._governance.get_plan_for_update(session, plan_check_id)
-                if plan is None or plan.project_id != project_id:
-                    raise ResourceNotFoundError("项目中不存在该 Plan Check")
-                if (
-                    plan.check_result is not CheckResult.NEEDS_APPROVAL
-                    or plan.approval_status is not ApprovalStatus.PENDING
-                ):
-                    raise ConflictError("只有 NEEDS_APPROVAL/PENDING 的 Plan Check 可以审批")
-                if self._governance.find_plan_approval(session, plan.id) is not None:
-                    raise ConflictError("该 Plan Check 已存在最终审批记录，不能再次决定")
-
-                now = datetime.now(UTC)
-                request_reason = self._request_reason(plan)
-                approval = ApprovalRecord(
-                    project_id=project_id,
-                    target_type=ApprovalTargetType.PLAN_CHECK,
-                    target_id=plan.id,
-                    approval_type="PLAN_PARAMETER_CHANGE",
-                    status=request.decision,
-                    requested_by=plan.requester_id,
-                    decided_by=identity.user_id,
-                    request_reason=request_reason,
-                    decision_reason=request.decision_reason,
-                    decided_at=now,
-                )
-                before_value = {
-                    "check_result": plan.check_result.value,
-                    "approval_status": plan.approval_status.value,
-                    "approved_by": str(plan.approved_by) if plan.approved_by else None,
-                    "approved_at": plan.approved_at.isoformat() if plan.approved_at else None,
-                }
-                if request.decision is ApprovalDecision.APPROVED:
-                    plan.approval_status = ApprovalStatus.APPROVED
-                    plan.approved_by = identity.user_id
-                    plan.approved_at = now
-                else:
-                    plan.approval_status = ApprovalStatus.REJECTED
-                    plan.approved_by = None
-                    plan.approved_at = None
-                session.add(approval)
-                session.flush()
-
-                result = PlanCheckDecisionResult(
-                    approval_record_id=approval.id,
-                    project_id=project_id,
-                    plan_check_id=plan.id,
-                    decision=approval.status,
-                    requested_by=approval.requested_by,
-                    decided_by=approval.decided_by,
-                    decided_at=approval.decided_at,
-                    decision_reason=approval.decision_reason,
-                    can_create_manifest=approval.status is ApprovalDecision.APPROVED,
-                )
-                session.add_all(
-                    [
-                        AuditLog(
-                            team_id=project.team_id,
-                            project_id=project_id,
-                            actor_type="USER",
-                            actor_id=identity.user_id,
-                            action=PLAN_DECISION_OPERATION,
-                            target_type=ApprovalTargetType.PLAN_CHECK.value,
-                            target_id=plan.id,
-                            before_value=before_value,
-                            after_value={
-                                "approval_record_id": str(approval.id),
-                                "approval_status": plan.approval_status.value,
-                                "decision_reason": approval.decision_reason,
-                            },
-                        ),
-                        IdempotencyRecord(
-                            actor_id=identity.user_id,
-                            operation=PLAN_DECISION_OPERATION,
-                            idempotency_key=idempotency_key,
-                            request_hash=request_hash,
-                            response_snapshot=result.model_dump(mode="json"),
-                            operation_status=IdempotencyOperationStatus.COMPLETED,
-                            expires_at=now + timedelta(days=7),
-                        ),
-                    ]
-                )
-                return result
         except IntegrityError as exc:
             replay = self._replay_decision_after_integrity(
                 actor_id=identity.user_id,
@@ -1841,6 +1743,135 @@ class PlanApprovalService:
             if replay is not None:
                 return replay
             raise ConflictError("Plan Check 审批与现有数据冲突") from exc
+
+    def decide_in_session(
+        self,
+        session: Session,
+        *,
+        identity: RequestIdentity,
+        project_id: UUID,
+        plan_check_id: UUID,
+        idempotency_key: UUID,
+        request: PlanCheckDecisionRequest,
+        request_hash: str | None = None,
+        audit_context: dict[str, object] | None = None,
+    ) -> PlanCheckDecisionResult:
+        """在调用方事务中执行正式决定，供直接 API 与人类确认提案共同复用。"""
+
+        if "plan:approve" not in identity.scopes:
+            raise AuthorizationError("Token 缺少 plan:approve scope")
+        if identity.authentication_method == "WEB_SESSION" and not identity.recent_authentication:
+            raise RecentAuthenticationRequiredError("批准 Plan Check 前需要完成近期身份认证")
+        effective_hash = request_hash or _canonical_hash(
+            {
+                "project_id": str(project_id),
+                "plan_check_id": str(plan_check_id),
+                "request": request.model_dump(mode="json"),
+            }
+        )
+        project = self._projects.require_project_member(
+            session,
+            project_id=project_id,
+            user_id=identity.user_id,
+            team_id=identity.team_id,
+        )
+        self._projects.require_member(
+            session,
+            user_id=identity.user_id,
+            team_id=project.team_id,
+            allowed_roles={TeamRole.OWNER},
+        )
+        existing_idempotency = self._governance.find_idempotency(
+            session,
+            actor_id=identity.user_id,
+            operation=PLAN_DECISION_OPERATION,
+            idempotency_key=idempotency_key,
+        )
+        if existing_idempotency is not None:
+            return self._replay_decision(existing_idempotency, effective_hash)
+
+        plan = self._governance.get_plan_for_update(session, plan_check_id)
+        if plan is None or plan.project_id != project_id:
+            raise ResourceNotFoundError("项目中不存在该 Plan Check")
+        if (
+            plan.check_result is not CheckResult.NEEDS_APPROVAL
+            or plan.approval_status is not ApprovalStatus.PENDING
+        ):
+            raise ConflictError("只有 NEEDS_APPROVAL/PENDING 的 Plan Check 可以审批")
+        if self._governance.find_plan_approval(session, plan.id) is not None:
+            raise ConflictError("该 Plan Check 已存在最终审批记录，不能再次决定")
+
+        now = datetime.now(UTC)
+        approval = ApprovalRecord(
+            project_id=project_id,
+            target_type=ApprovalTargetType.PLAN_CHECK,
+            target_id=plan.id,
+            approval_type="PLAN_PARAMETER_CHANGE",
+            status=request.decision,
+            requested_by=plan.requester_id,
+            decided_by=identity.user_id,
+            request_reason=self._request_reason(plan),
+            decision_reason=request.decision_reason,
+            decided_at=now,
+        )
+        before_value = {
+            "check_result": plan.check_result.value,
+            "approval_status": plan.approval_status.value,
+            "approved_by": str(plan.approved_by) if plan.approved_by else None,
+            "approved_at": plan.approved_at.isoformat() if plan.approved_at else None,
+        }
+        if request.decision is ApprovalDecision.APPROVED:
+            plan.approval_status = ApprovalStatus.APPROVED
+            plan.approved_by = identity.user_id
+            plan.approved_at = now
+        else:
+            plan.approval_status = ApprovalStatus.REJECTED
+            plan.approved_by = None
+            plan.approved_at = None
+        session.add(approval)
+        session.flush()
+
+        result = PlanCheckDecisionResult(
+            approval_record_id=approval.id,
+            project_id=project_id,
+            plan_check_id=plan.id,
+            decision=approval.status,
+            requested_by=approval.requested_by,
+            decided_by=approval.decided_by,
+            decided_at=approval.decided_at,
+            decision_reason=approval.decision_reason,
+            can_create_manifest=approval.status is ApprovalDecision.APPROVED,
+        )
+        session.add_all(
+            [
+                AuditLog(
+                    team_id=project.team_id,
+                    project_id=project_id,
+                    actor_type="USER",
+                    actor_id=identity.user_id,
+                    action=PLAN_DECISION_OPERATION,
+                    target_type=ApprovalTargetType.PLAN_CHECK.value,
+                    target_id=plan.id,
+                    before_value=before_value,
+                    after_value={
+                        "approval_record_id": str(approval.id),
+                        "approval_status": plan.approval_status.value,
+                        "decision_reason": approval.decision_reason,
+                        **(audit_context or {}),
+                    },
+                ),
+                IdempotencyRecord(
+                    actor_id=identity.user_id,
+                    operation=PLAN_DECISION_OPERATION,
+                    idempotency_key=idempotency_key,
+                    request_hash=effective_hash,
+                    response_snapshot=result.model_dump(mode="json"),
+                    operation_status=IdempotencyOperationStatus.COMPLETED,
+                    expires_at=now + timedelta(days=7),
+                ),
+            ]
+        )
+        return result
 
     @staticmethod
     def _request_reason(plan: PlanCheck) -> str:

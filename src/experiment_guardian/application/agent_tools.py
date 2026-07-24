@@ -23,6 +23,7 @@ from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.policy_drafts import PolicyDraftService
 from experiment_guardian.domain.action_proposal import (
     ActionProposalPrepareInput,
+    PlanDecisionProposalPrepareInput,
 )
 from experiment_guardian.domain.agent import (
     AgentEvidence,
@@ -71,7 +72,8 @@ from experiment_guardian.infrastructure.repositories import SqlAlchemyProjectRep
 R15A_TOOL_CATALOG_VERSION = "r15a-v1"
 R15B_TOOL_CATALOG_VERSION = "r15b-v1"
 R15C_TOOL_CATALOG_VERSION = "r15c-v1"
-TOOL_CATALOG_VERSION = "r15d-v1"
+R15D_TOOL_CATALOG_VERSION = "r15d-v1"
+TOOL_CATALOG_VERSION = "r15d-b1-v1"
 AgentToolDefinition = tuple[
     type[ContractModel],
     str,
@@ -219,6 +221,17 @@ class AgentToolRegistry:
                 self._action_proposal_prepare,
             ),
         }
+        self._r15d_b1_definitions: AgentToolDefinitions = {
+            **self._r15d_definitions,
+            "action_proposal_prepare_plan_decision_v1": (
+                PlanDecisionProposalPrepareInput,
+                (
+                    "冻结一个 NEEDS_APPROVAL/PENDING Plan Check 的批准或拒绝提案；"
+                    "该工具不会审批 Plan，只有 Owner 能在 Web 工作台确认。"
+                ),
+                self._plan_decision_proposal_prepare,
+            ),
+        }
 
     @property
     def specs(self) -> list[AgentToolSpec]:
@@ -277,8 +290,10 @@ class AgentToolRegistry:
             return self._r15b_definitions
         if catalog_version == R15C_TOOL_CATALOG_VERSION:
             return self._r15c_definitions
-        if catalog_version == TOOL_CATALOG_VERSION:
+        if catalog_version == R15D_TOOL_CATALOG_VERSION:
             return self._r15d_definitions
+        if catalog_version == TOOL_CATALOG_VERSION:
+            return self._r15d_b1_definitions
         raise InputValidationError(f"不支持的 Agent 工具目录版本: {catalog_version}")
 
     def _project_status(
@@ -1098,6 +1113,59 @@ class AgentToolRegistry:
                         f"{proposal.status.value} / {proposal.confirmability.value} / "
                         f"Context v{proposal.base_context_version} -> "
                         f"v{proposal.base_context_version + 1}"
+                    ),
+                    payload=payload,
+                )
+            ],
+        )
+
+    def _plan_decision_proposal_prepare(
+        self,
+        *,
+        validated: PlanDecisionProposalPrepareInput,
+        project_id: UUID,
+        identity: RequestIdentity,
+        evidence_prefix: str,
+        run_id: UUID | None,
+        tool_call_id: UUID | None,
+    ) -> AgentToolResult:
+        if self._action_proposals is None:
+            raise InputValidationError("当前 Agent 工具目录未装配操作提案服务")
+        if run_id is None or tool_call_id is None:
+            raise InputValidationError("Plan 决策提案缺少当前 Agent Run/ToolCall 来源")
+        proposal = self._action_proposals.prepare_plan_decision_from_agent(
+            project_id=project_id,
+            identity=identity,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            request=validated,
+        )
+        evidence_id = f"{evidence_prefix}_1"
+        payload = proposal.model_dump(mode="json")
+        decision = validated.decision
+        return AgentToolResult(
+            content={
+                "proposal": payload,
+                "evidence_id": evidence_id,
+                "governance_notice": (
+                    "Plan 状态尚未改变。只有 Owner 在工作台核对正式依据、决定和理由，"
+                    "完成近期认证并明确确认后才会执行。"
+                ),
+            },
+            evidence=[
+                AgentEvidence(
+                    evidence_id=evidence_id,
+                    evidence_kind=AgentEvidenceKind.ACTION_PROPOSAL,
+                    entity_type="ACTION_PROPOSAL",
+                    entity_id=proposal.proposal_id,
+                    entity_version=(
+                        f"plan:{proposal.target_plan_check_id}/"
+                        f"digest:{proposal.proposal_digest[:12]}"
+                    ),
+                    label=f"Plan Check 决策提案 {proposal.proposal_id}",
+                    excerpt=(
+                        f"{proposal.status.value} / {proposal.confirmability.value} / "
+                        f"{decision.value}"
                     ),
                     payload=payload,
                 )

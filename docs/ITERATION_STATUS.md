@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
 更新时间：2026-07-24
-当前完成轮次：R15d-a Policy 发布提案与 Owner 独立确认
-下一步：R15d-b Plan/Submission 决策提案
+当前完成轮次：R15d-b1 Plan Check 批准/拒绝提案
+下一步：R15d-b2 Submission 审核提案
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -31,7 +31,8 @@
 | R15b | 比较、统计与诊断 | 完成 | 分层可比性、显式组统计、审核诊断、滚动摘要 |
 | R15c | 治理草稿与影响分析 | 完成 | 追加式完整 Bundle 草稿、diff、歧义、影响与 Web 工作台 |
 | R15d-a | Policy 发布提案 | 完成 | 不可变提案、版本复核、Owner 近期认证、原子发布 |
-| R15d-b | Plan/Submission 决策提案 | 计划 | 延续风险权限和人工最终决定，不扩大操作白名单 |
+| R15d-b1 | Plan Check 决策提案 | 完成 | 批准/拒绝冻结提案、状态哈希、原子审批 |
+| R15d-b2 | Submission 审核提案 | 计划 | 延续 LOW/HIGH/CRITICAL 权限和人工最终决定 |
 | R15e | 研究总结与长期记忆 | 计划 | 可追溯结论、独立候选记忆、provider parity |
 
 ## R15：内部实验治理 Agent 路线
@@ -46,7 +47,7 @@
 * Agent 使用当前 Web 身份，工具执行器重新验证实时 RBAC 和项目隔离。
 * CockroachDB 保存所有原始消息；R15b 的 rolling summary 只压缩模型上下文，带消息范围和
   来源 hash，失败时保留旧摘要或退回最近窗口。百炼 provider 对话或缓存不是真实记忆源。
-* R15c 只写独立候选草稿表；R15d-a 仅允许 Owner 确认 Policy 发布提案。
+* R15c 只写独立候选草稿表；R15d-a/b1 只增加 Policy 和 Plan 白名单提案。
 * R15d 的正式操作不暴露为模型执行工具：Agent 生成提案，人类通过独立 CSRF + recent-auth
   请求确认，服务端重查版本和状态后调用既有业务服务。
 * Agent Research Memory 与正式 Experiment Memory 分离，且最早在 R15e 接入。
@@ -70,6 +71,25 @@
 * R15d Prompt/工具目录保持 R15a–R15c 兼容；evidence 增加 `ACTION_PROPOSAL`，rolling
   summary schema v3 只保存有界提案引用，不把提案描述为已执行。
 * R15d 评测集增加 24 个提案准备、失效、权限、确认、幂等和 prompt injection case。
+
+## R15d-b1：Plan Check 批准/拒绝提案
+
+交付：
+
+* revision `20260724_19` 将 `agent_action_proposals` 扩展为按 operation 校验的联合记录，
+  增加 Plan 目标、完整正式依据哈希和执行 ApprovalRecord 追溯；历史 Policy digest 不变。
+* 新增 `action_proposal_prepare_plan_decision_v1`。它只接受明确的批准/拒绝和非空理由，
+  只处理 `NEEDS_APPROVAL/PENDING` 且没有 ApprovalRecord/Manifest 的 Plan。
+* Researcher 只能准备自己的 Plan 提案；只有实时 Owner Web Session 可以在 CSRF 和近期
+  认证后确认。Agent 没有 confirm/execute/Manifest 工具。
+* `PlanApprovalService.decide_in_session()` 成为直接审批和 Proposal 确认共享的唯一事务核心；
+  Proposal、Plan、ApprovalRecord、双幂等结果和审计原子提交。
+* 提案 digest 绑定决定、理由、Plan 正式状态哈希、Context/Intent 版本和 TTL。直接审批抢先、
+  Plan 状态/内容变化或过期都会阻止执行。
+* Web 工作台按 operation 展示 Policy 或 Plan；Plan 拒绝明确显示不可逆影响并使用危险操作
+  样式，Owner 必须核对正式依据、决定和理由。
+* Agent 目录升级 `r15d-b1-v1`，旧 Run 保留冻结目录；rolling summary schema v4 保存有界
+  Plan target/decision 引用。新增 20 个 Plan 决策 trajectory/security case。
 
 ## R15a：只读内部实验治理 Agent
 
@@ -237,17 +257,13 @@
 
 ## 下一步唯一实现目标
 
-只实现 R15d，不提前实现长期记忆、自动研究规划或开放式写工具：
+只实现 R15d-b2 Submission 审核提案，不提前实现长期记忆、自动研究规划或开放式写工具：
 
-1. 增加不可变 Action Proposal，冻结操作类型、目标、完整 payload、base version、风险、
-   proposal digest、模型建议和来源草稿 revision。
-2. 模型只能准备白名单提案，不能执行。首批只接入完整 Policy Bundle 发布、Plan 批准/拒绝、
-   Submission 确认/拒绝。
-3. Web 独立确认接口执行 CSRF、近期认证、实时 RBAC、digest/base-version 复核、事务锁、幂等
-   和既有领域服务；STALE 提案必须重新准备。
-4. 确认页展示完整操作和影响，CRITICAL、blocking、HIGH 风险角色限制及现有状态机保持不变。
-5. 持久化模型建议、人类确认/取消、Session、执行 actor、业务 AuditLog 和结果回执；模型不
-   能替代人类确认。
+1. 复用现有 Submission Review Eligibility 和正式确认事务，不复制审核状态机。
+2. LOW/MEDIUM 可按现有角色确认，HIGH 仍只允许 Owner，CRITICAL/blocking 不得生成批准提案。
+3. Proposal 冻结审核回执、风险、Artifact 完整性、Manifest 追溯、决定、理由和来源哈希。
+4. 模型只能准备提案，不能确认 Submission 或创建正式 Experiment。
+5. Web 明确展示建议与正式事实，执行前重新校验 Submission、风险、embedding 和 Artifact。
 
 仍不增加任意 SQL、训练/改代码、自动审批、通用高影响操作工具、Agent 长期向量记忆或自动
 实验分组。

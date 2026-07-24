@@ -178,13 +178,34 @@ class AgentProposalSummaryReference(ContractModel):
     operation: str = Field(min_length=1, max_length=32)
     status: str = Field(min_length=1, max_length=32)
     proposal_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    source_draft_id: UUID
-    source_draft_revision: int = Field(ge=1)
+    source_draft_id: UUID | None = None
+    source_draft_revision: int | None = Field(default=None, ge=1)
+    target_plan_check_id: UUID | None = None
+    decision: str | None = Field(default=None, max_length=16)
     expires_at: datetime
+
+    @model_validator(mode="after")
+    def validate_operation_reference(self) -> "AgentProposalSummaryReference":
+        if self.operation == "POLICY_PUBLISH":
+            if self.source_draft_id is None or self.source_draft_revision is None:
+                raise ValueError("Policy 提案摘要缺少草稿引用")
+        elif (
+            self.operation == "PLAN_CHECK_DECISION"
+            and (
+                self.target_plan_check_id is None
+                or self.decision
+                not in {
+                    "APPROVED",
+                    "REJECTED",
+                }
+            )
+        ):
+            raise ValueError("Plan 提案摘要缺少目标或决定")
+        return self
 
 
 class AgentContextSummaryPayload(ContractModel):
-    schema_version: Literal[1, 2, 3] = 1
+    schema_version: Literal[1, 2, 3, 4] = 1
     covered_sequence_from: int = Field(ge=1)
     covered_sequence_to: int = Field(ge=1)
     user_requests_and_context: list[str] = Field(default_factory=list, max_length=30)

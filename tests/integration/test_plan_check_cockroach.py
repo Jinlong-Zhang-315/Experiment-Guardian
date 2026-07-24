@@ -154,13 +154,35 @@ class _FakeStorage:
 
 
 def _run_alembic(database_url: str, *arguments: str) -> None:
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, "-m", "alembic", *arguments],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         env={**os.environ, "DATABASE_URL": database_url},
+        timeout=180,
     )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"Alembic {' '.join(arguments)} failed:\n{result.stdout}\n{result.stderr}"
+        )
+
+
+def _cleanup_test_database_jobs(connection: object, database_name: str) -> None:
+    """只取消随机验收库自己的 Schema Job，避免一次失败让后续测试永久挂起。"""
+
+    rows = connection.execute(  # type: ignore[attr-defined]
+        text(
+            "SELECT job_id, status, description FROM [SHOW JOBS] "
+            "WHERE description LIKE :database_pattern "
+            "AND status IN ('running', 'paused', 'pause-requested', 'reverting')"
+        ),
+        {"database_pattern": f"%{database_name}%"},
+    ).mappings()
+    for row in rows:
+        connection.exec_driver_sql(  # type: ignore[attr-defined]
+            f"CANCEL JOB {int(row['job_id'])}"
+        )
 
 
 def _evidence(value: object, source: str) -> FieldEvidence:
@@ -719,5 +741,6 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         if test_engine is not None:
             test_engine.dispose()
         with admin_engine.connect() as connection:
+            _cleanup_test_database_jobs(connection, database_name)
             connection.exec_driver_sql(f'DROP DATABASE IF EXISTS "{database_name}" CASCADE')
         admin_engine.dispose()

@@ -12,7 +12,12 @@ import {
 } from "lucide-react";
 import { api, formatTime, idempotencyKey } from "../api";
 import { Badge, Empty, ErrorNotice, JsonBlock } from "../components";
-import type { ActionProposal, Page } from "../types";
+import type {
+  ActionProposal,
+  Page,
+  PlanDecisionActionProposal,
+  PolicyPublishActionProposal,
+} from "../types";
 
 export function ActionProposalWorkspace({
   projectId,
@@ -111,7 +116,14 @@ export function ActionProposalWorkspace({
             key={item.proposal_id}
             onClick={() => setSelectedId(item.proposal_id)}
           >
-            <span><strong>发布 Policy Bundle</strong><small>Context v{item.base_context_version} → v{item.base_context_version + 1}</small></span>
+            <span>
+              <strong>{item.operation === "POLICY_PUBLISH"
+                ? "发布 Policy Bundle"
+                : `Plan ${item.payload.decision === "APPROVED" ? "批准" : "拒绝"}`}</strong>
+              <small>{item.operation === "POLICY_PUBLISH"
+                ? `Context v${item.base_context_version} → v${item.base_context_version + 1}`
+                : `Plan ${item.target_plan_check_id}`}</small>
+            </span>
             <span><Badge value={item.status} /><Badge value={item.confirmability} /></span>
           </button>)}
         </aside>
@@ -121,59 +133,42 @@ export function ActionProposalWorkspace({
           {selectedId && detail.isPending && <div className="page-loading">正在加载提案</div>}
           {value && <>
             <header className="draft-detail-header">
-              <div><strong>Policy Bundle 正式发布</strong><span>草稿 revision {value.source_draft_revision} · 创建于 {formatTime(value.created_at)}</span></div>
+              <div>
+                <strong>{value.operation === "POLICY_PUBLISH"
+                  ? "Policy Bundle 正式发布"
+                  : `Plan Check ${value.payload.decision === "APPROVED" ? "批准" : "拒绝"}`}</strong>
+                <span>{value.operation === "POLICY_PUBLISH"
+                  ? `草稿 revision ${value.source_draft_revision}`
+                  : `目标 ${value.target_plan_check_id}`} · 创建于 {formatTime(value.created_at)}</span>
+              </div>
               <div><Badge value={value.status} /><Badge value={value.confirmability} /></div>
             </header>
 
             <div className="proposal-facts">
               <div><Clock3 /><span>有效期</span><strong>{formatTime(value.expires_at)}</strong></div>
               <div><FileDiff /><span>结构化差异</span><strong>{value.diff_snapshot.length} 项</strong></div>
-              <div><AlertTriangle /><span>最高关注</span><strong>{value.impact_snapshot.attention_level}</strong></div>
+              <div><AlertTriangle /><span>{value.operation === "POLICY_PUBLISH" ? "最高关注" : "风险等级"}</span>
+                <strong>{value.operation === "POLICY_PUBLISH"
+                  ? value.impact_snapshot.attention_level
+                  : value.impact_snapshot.risk_level}</strong>
+              </div>
             </div>
 
             {value.confirmability_reasons.length > 0 && <div className="draft-warning">
               <AlertTriangle /><span>{value.confirmability_reasons.join("；")}</span>
             </div>}
             {value.status === "EXECUTED" && <div className="proposal-success">
-              <CheckCircle2 /><span>已发布为正式 Context v{value.executed_context_version}</span>
+              <CheckCircle2 /><span>{value.operation === "POLICY_PUBLISH"
+                ? `已发布为正式 Context v${value.executed_context_version}`
+                : `Plan 已${value.payload.decision === "APPROVED" ? "批准" : "拒绝"}`}</span>
             </div>}
 
-            <section className="proposal-section">
-              <h3>冻结差异</h3>
-              <div className="draft-diff-list">{value.diff_snapshot.map((item) => <details
-                open={item.attention_level === "HIGH"}
-                key={item.field_path}
-              >
-                <summary><Badge value={item.attention_level} /><code>{item.field_path}</code><Badge value={item.change_type} /></summary>
-                <p>{item.impact}</p>
-                <div className="draft-value-pair">
-                  <div><small>当前正式值</small><JsonBlock value={item.previous_value} /></div>
-                  <div><small>拟发布值</small><JsonBlock value={item.candidate_value} /></div>
-                </div>
-              </details>)}</div>
-            </section>
-
-            <section className="proposal-section">
-              <h3>冻结影响</h3>
-              {value.impact_snapshot.future_policy_effects.map((item) => <p key={item}>{item}</p>)}
-              {value.impact_snapshot.warnings.map((item) => <p className="impact-warning" key={item}>{item}</p>)}
-              <h4>待审批 Plan</h4>
-              {value.impact_snapshot.plan_simulations.length
-                ? value.impact_snapshot.plan_simulations.map((item) => <div className="impact-row" key={item.plan_check_id}>
-                  <code>{item.plan_check_id}</code>
-                  <span><Badge value={item.original_check_result} /> → <Badge value={item.simulated_check_result ?? item.status} /></span>
-                </div>)
-                : <p className="muted">没有待审批 Plan。</p>}
-              <h4>进行中 Submission</h4>
-              {value.impact_snapshot.submission_impacts.length
-                ? value.impact_snapshot.submission_impacts.map((item) => <div className="impact-row" key={item.submission_id}>
-                  <code>{item.submission_id}</code><Badge value={item.status} /><small>{item.message}</small>
-                </div>)
-                : <p className="muted">没有进行中的 Submission。</p>}
-            </section>
+            {value.operation === "POLICY_PUBLISH"
+              ? <PolicyProposalContent value={value} />
+              : <PlanProposalContent value={value} />}
 
             <details className="proposal-raw">
-              <summary><Braces />查看冻结结构化发布请求</summary>
+              <summary><Braces />查看冻结结构化{value.operation === "POLICY_PUBLISH" ? "发布请求" : "决定"}</summary>
               <p>正式执行只使用下列结构化数据；Agent 说明不参与约束判断。</p>
               <JsonBlock value={value.payload} />
               <small>摘要：<code>{value.proposal_digest}</code></small>
@@ -188,13 +183,17 @@ export function ActionProposalWorkspace({
                 {value.allowed_actions.includes("CANCEL") && <button className="button danger" onClick={() => setCanceling(true)}><Ban />取消提案</button>}
                 {value.allowed_actions.includes("CONFIRM") ? <label className="proposal-confirm">
                   <input type="checkbox" checked={confirmedReview} onChange={(event) => setConfirmedReview(event.target.checked)} />
-                  <span>我已核对冻结差异、影响和结构化发布请求</span>
+                  <span>{value.operation === "POLICY_PUBLISH"
+                    ? "我已核对冻结差异、影响和结构化发布请求"
+                    : "我已核对 Plan 正式依据、最终决定和理由"}</span>
                 </label> : <span className="proposal-owner-note">等待 Owner 审阅并确认</span>}
                 {value.allowed_actions.includes("CONFIRM") && <button
-                  className="button primary"
+                  className={`button ${value.operation === "PLAN_CHECK_DECISION" && value.payload.decision === "REJECTED" ? "danger" : "primary"}`}
                   disabled={!confirmedReview || confirm.isPending}
                   onClick={() => confirm.mutate(value)}
-                ><ShieldCheck />确认并发布正式版本</button>}
+                ><ShieldCheck />{value.operation === "POLICY_PUBLISH"
+                    ? "确认并发布正式版本"
+                    : `确认并${value.payload.decision === "APPROVED" ? "批准" : "拒绝"} Plan`}</button>}
               </>}
             </footer>}
             {(confirm.error || cancel.error) && <ErrorNotice error={confirm.error || cancel.error} />}
@@ -203,4 +202,89 @@ export function ActionProposalWorkspace({
       </div>
     </section>
   </div>;
+}
+
+function PolicyProposalContent({ value }: { value: PolicyPublishActionProposal }) {
+  return <>
+    <section className="proposal-section">
+      <h3>冻结差异</h3>
+      <div className="draft-diff-list">{value.diff_snapshot.map((item) => <details
+        open={item.attention_level === "HIGH"}
+        key={item.field_path}
+      >
+        <summary><Badge value={item.attention_level} /><code>{item.field_path}</code><Badge value={item.change_type} /></summary>
+        <p>{item.impact}</p>
+        <div className="draft-value-pair">
+          <div><small>当前正式值</small><JsonBlock value={item.previous_value} /></div>
+          <div><small>拟发布值</small><JsonBlock value={item.candidate_value} /></div>
+        </div>
+      </details>)}</div>
+    </section>
+    <section className="proposal-section">
+      <h3>冻结影响</h3>
+      {value.impact_snapshot.future_policy_effects.map((item) => <p key={item}>{item}</p>)}
+      {value.impact_snapshot.warnings.map((item) => <p className="impact-warning" key={item}>{item}</p>)}
+      <h4>待审批 Plan</h4>
+      {value.impact_snapshot.plan_simulations.length
+        ? value.impact_snapshot.plan_simulations.map((item) => <div className="impact-row" key={item.plan_check_id}>
+          <code>{item.plan_check_id}</code>
+          <span><Badge value={item.original_check_result} /> → <Badge value={item.simulated_check_result ?? item.status} /></span>
+        </div>)
+        : <p className="muted">没有待审批 Plan。</p>}
+      <h4>进行中 Submission</h4>
+      {value.impact_snapshot.submission_impacts.length
+        ? value.impact_snapshot.submission_impacts.map((item) => <div className="impact-row" key={item.submission_id}>
+          <code>{item.submission_id}</code><Badge value={item.status} /><small>{item.message}</small>
+        </div>)
+        : <p className="muted">没有进行中的 Submission。</p>}
+    </section>
+  </>;
+}
+
+function PlanProposalContent({ value }: { value: PlanDecisionActionProposal }) {
+  return <>
+    <section className="proposal-section">
+      <h3>最终决定</h3>
+      <div className="impact-row">
+        <code>{value.target_plan_check_id}</code>
+        <Badge value={value.payload.decision} />
+        <small>{value.payload.decision_reason}</small>
+      </div>
+      <p className={value.payload.decision === "REJECTED" ? "impact-warning" : ""}>
+        {value.impact_snapshot.decision_effect}
+      </p>
+      <div className="proposal-facts">
+        <div><span>Context</span><strong>v{value.base_context_version}</strong></div>
+        <div><span>Intent</span><strong>v{value.base_intent_version}</strong></div>
+        <div><span>当前状态</span><strong>{value.impact_snapshot.check_result} / {value.impact_snapshot.approval_status}</strong></div>
+      </div>
+    </section>
+    <section className="proposal-section">
+      <h3>计划变化</h3>
+      {value.diff_snapshot.length
+        ? value.diff_snapshot.map((item, index) => <details
+          open={value.impact_snapshot.risk_level === "HIGH" || value.impact_snapshot.risk_level === "CRITICAL"}
+          key={`${String(item.parameter_path ?? item.field_path ?? "change")}-${index}`}
+        >
+          <summary>
+            <Badge value={String(item.protection_level ?? item.risk_level ?? "CHANGE")} />
+            <code>{String(item.parameter_path ?? item.field_path ?? `change-${index + 1}`)}</code>
+          </summary>
+          <JsonBlock value={item} />
+        </details>)
+        : <p className="muted">没有可展示的结构化变化。</p>}
+    </section>
+    <section className="proposal-section">
+      <h3>风险依据</h3>
+      {value.impact_snapshot.risks.length
+        ? value.impact_snapshot.risks.map((risk, index) => <details
+          open={String(risk.severity ?? risk.risk_level) === "HIGH" || String(risk.severity ?? risk.risk_level) === "CRITICAL"}
+          key={`${String(risk.code ?? "risk")}-${index}`}
+        >
+          <summary><Badge value={String(risk.severity ?? risk.risk_level ?? value.impact_snapshot.risk_level)} />{String(risk.code ?? `风险 ${index + 1}`)}</summary>
+          <JsonBlock value={risk} />
+        </details>)
+        : <p className="muted">正式检查报告没有额外风险条目。</p>}
+    </section>
+  </>;
 }

@@ -2,7 +2,7 @@
 
 更新时间：2026-07-24
 计划轮次：R15a-R15e
-当前状态：R15d-a Policy 发布提案已完成；下一步只实施 R15d-b
+当前状态：R15d-b1 Plan Check 批准/拒绝提案已完成；下一步只实施 R15d-b2
 
 ## 1. 目标与定位
 
@@ -465,7 +465,7 @@ R15a 继续使用现有 `httpx` 调用百炼，不为了 OpenAI-compatible 协�
 ### R15d：用户确认后的白名单正式操作
 
 1. R15d-a 增加 Action Proposal 和 digest/base-version 协议并接入 Policy Bundle 发布。
-2. R15d-b 再评估 Plan 批准/拒绝、Submission 确认/拒绝。
+2. R15d-b1 接入 Plan 批准/拒绝；R15d-b2 再评估 Submission 确认/拒绝。
 3. 独立确认 API 执行 CSRF、近期认证、实时 RBAC、事务锁和幂等。
 4. 目标状态或版本变化时返回 STALE，不自动重做提案。
 5. CRITICAL、blocking、HIGH 风险角色限制和不可变记录规则保持不变。
@@ -480,7 +480,7 @@ R15a 继续使用现有 `httpx` 调用百炼，不为了 OpenAI-compatible 协�
 5. 实现 Bedrock AgentChatModel，并用同一 provider contract/eval suite 验证。
 6. 增加成本、token、延迟、工具错误和模型回归观测。
 
-一次只实现一个阶段。当前下一步只开始 R15d-b；任何正式操作仍必须由独立人类确认请求执行，
+一次只实现一个阶段。当前下一步只开始 R15d-b2；任何正式操作仍必须由独立人类确认请求执行，
 模型本身不获得 execute 工具。
 
 ## 13. 测试与评测
@@ -570,6 +570,11 @@ R15d-a 已按最小白名单实现 `POLICY_PUBLISH`：
 * Agent 回答使用 `ACTION_PROPOSAL` evidence；rolling summary schema v3 只保留引用，不提供
   执行能力。R15a、R15b、R15c 的 Pending Run 继续使用冻结目录。
 
-R15d-b 才评估 Plan Check 批准/拒绝和 Submission 确认/拒绝提案。届时必须复用现有风险权限：
-`BLOCKED`/`CRITICAL` 不可绕过、HIGH 仅 Owner，且仍不得把 execute 工具暴露给模型。本轮没有
-实现这两类操作，也没有加入任意 SQL、训练、代码修改或长期 Agent Memory。
+R15d-b1 已按相同不可变 Proposal 协议接入 Plan Check `APPROVED/REJECTED`。只有
+`NEEDS_APPROVAL/PENDING` Plan 可准备；决定、理由、完整正式依据哈希、Context/Intent 版本和
+TTL 均受 digest 保护。Owner 独立确认后复用 `PlanApprovalService` 事务核心，Proposal、
+ApprovalRecord、Plan 状态、幂等和审计原子提交。Agent 仍没有 execute 工具。
+
+R15d-b2 才评估 Submission 确认/拒绝提案，必须复用现有风险权限：`CRITICAL`/blocking
+不可绕过、HIGH 仅 Owner。R15d-b1 没有实现 Submission 操作，也没有加入任意 SQL、训练、
+代码修改或长期 Agent Memory。
