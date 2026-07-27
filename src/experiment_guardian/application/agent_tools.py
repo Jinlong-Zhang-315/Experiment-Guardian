@@ -14,6 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from experiment_guardian.application.action_proposals import ActionProposalService
+from experiment_guardian.application.async_review import (
+    review_eligibility_for_risks,
+    review_receipt_source_hash,
+)
 from experiment_guardian.application.errors import (
     AuthorizationError,
     InputValidationError,
@@ -24,6 +28,7 @@ from experiment_guardian.application.policy_drafts import PolicyDraftService
 from experiment_guardian.domain.action_proposal import (
     ActionProposalPrepareInput,
     PlanDecisionProposalPrepareInput,
+    SubmissionDecisionProposalPrepareInput,
 )
 from experiment_guardian.domain.agent import (
     AgentEvidence,
@@ -37,7 +42,7 @@ from experiment_guardian.domain.agent_analysis import (
     repeated_experiment_statistics,
     require_finite_metrics,
 )
-from experiment_guardian.domain.contracts import ContractModel
+from experiment_guardian.domain.contracts import ContractModel, SubmissionReceipt
 from experiment_guardian.domain.enums import (
     AgentEvidenceKind,
     ApprovalStatus,
@@ -73,7 +78,8 @@ R15A_TOOL_CATALOG_VERSION = "r15a-v1"
 R15B_TOOL_CATALOG_VERSION = "r15b-v1"
 R15C_TOOL_CATALOG_VERSION = "r15c-v1"
 R15D_TOOL_CATALOG_VERSION = "r15d-v1"
-TOOL_CATALOG_VERSION = "r15d-b1-v1"
+R15D_B1_TOOL_CATALOG_VERSION = "r15d-b1-v1"
+TOOL_CATALOG_VERSION = "r15d-b2-v1"
 AgentToolDefinition = tuple[
     type[ContractModel],
     str,
@@ -232,6 +238,17 @@ class AgentToolRegistry:
                 self._plan_decision_proposal_prepare,
             ),
         }
+        self._r15d_b2_definitions: AgentToolDefinitions = {
+            **self._r15d_b1_definitions,
+            "action_proposal_prepare_submission_decision_v1": (
+                SubmissionDecisionProposalPrepareInput,
+                (
+                    "冻结一个已完成分析的 NEEDS_REVIEW Submission 批准或拒绝提案；"
+                    "该工具不改变 Submission 状态，不创建审批或正式 Experiment。"
+                ),
+                self._submission_decision_proposal_prepare,
+            ),
+        }
 
     @property
     def specs(self) -> list[AgentToolSpec]:
@@ -292,8 +309,10 @@ class AgentToolRegistry:
             return self._r15c_definitions
         if catalog_version == R15D_TOOL_CATALOG_VERSION:
             return self._r15d_definitions
-        if catalog_version == TOOL_CATALOG_VERSION:
+        if catalog_version == R15D_B1_TOOL_CATALOG_VERSION:
             return self._r15d_b1_definitions
+        if catalog_version == TOOL_CATALOG_VERSION:
+            return self._r15d_b2_definitions
         raise InputValidationError(f"不支持的 Agent 工具目录版本: {catalog_version}")
 
     def _project_status(
@@ -803,6 +822,26 @@ class AgentToolRegistry:
                 jobs=jobs,
                 embedding=embedding,
             )
+            current_eligibility = review_eligibility_for_risks(risks)
+            receipt: SubmissionReceipt | None
+            receipt_consistent = False
+            try:
+                receipt = SubmissionReceipt.model_validate(submission.review_receipt)
+                receipt_consistent = (
+                    receipt.submission_id == submission.id
+                    and receipt.review_eligibility is current_eligibility
+                    and receipt.source_hash == review_receipt_source_hash(receipt, risks)
+                )
+            except ValidationError:
+                receipt = None
+            if receipt is not None and not receipt_consistent:
+                findings.append(
+                    {
+                        "code": "REVIEW_RECEIPT_STALE",
+                        "severity": "HIGH",
+                        "message": "审核回执与当前 Submission 风险来源不一致",
+                    }
+                )
             processing_step = (
                 submission.processing_step.value if submission.processing_step else None
             )
@@ -863,6 +902,31 @@ class AgentToolRegistry:
                     "summary_available": submission.generated_summary is not None,
                     "embedding_available": embedding is not None,
                     "review_receipt_available": submission.review_receipt is not None,
+                },
+                "review": {
+                    "eligibility": current_eligibility.value,
+                    "receipt_consistent": receipt_consistent,
+                    "receipt_source_hash": receipt.source_hash if receipt else None,
+                    "objective": receipt.objective if receipt else None,
+                    "highest_risk": (
+                        receipt.highest_risk.value
+                        if receipt is not None and receipt.highest_risk is not None
+                        else None
+                    ),
+                    "approval_material_complete": not any(
+                        item["code"]
+                        in {
+                            "TRACE_INCOMPLETE",
+                            "ARTIFACTS_MISSING",
+                            "REQUIRED_ARTIFACT_MISSING",
+                            "ARTIFACT_EVIDENCE_INCOMPLETE",
+                            "SUMMARY_MISSING",
+                            "EMBEDDING_MISSING",
+                            "REVIEW_RECEIPT_MISSING",
+                            "REVIEW_RECEIPT_STALE",
+                        }
+                        for item in findings
+                    ),
                 },
                 "findings": findings,
                 "diagnosed_at": datetime.now(UTC).isoformat(),
@@ -1166,6 +1230,59 @@ class AgentToolRegistry:
                     excerpt=(
                         f"{proposal.status.value} / {proposal.confirmability.value} / "
                         f"{decision.value}"
+                    ),
+                    payload=payload,
+                )
+            ],
+        )
+
+    def _submission_decision_proposal_prepare(
+        self,
+        *,
+        validated: SubmissionDecisionProposalPrepareInput,
+        project_id: UUID,
+        identity: RequestIdentity,
+        evidence_prefix: str,
+        run_id: UUID | None,
+        tool_call_id: UUID | None,
+    ) -> AgentToolResult:
+        if self._action_proposals is None:
+            raise InputValidationError("当前 Agent 工具目录未装配操作提案服务")
+        if run_id is None or tool_call_id is None:
+            raise InputValidationError("Submission 审核提案缺少当前 Agent Run/ToolCall 来源")
+        proposal = self._action_proposals.prepare_submission_decision_from_agent(
+            project_id=project_id,
+            identity=identity,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            request=validated,
+        )
+        evidence_id = f"{evidence_prefix}_1"
+        payload = proposal.model_dump(mode="json")
+        return AgentToolResult(
+            content={
+                "proposal": payload,
+                "evidence_id": evidence_id,
+                "governance_notice": (
+                    "Submission 状态尚未改变，也未创建 ApprovalRecord 或 Experiment。"
+                    "有权审核者必须在 Web 工作台核对冻结回执、风险和材料，"
+                    "完成近期认证后明确确认。"
+                ),
+            },
+            evidence=[
+                AgentEvidence(
+                    evidence_id=evidence_id,
+                    evidence_kind=AgentEvidenceKind.ACTION_PROPOSAL,
+                    entity_type="ACTION_PROPOSAL",
+                    entity_id=proposal.proposal_id,
+                    entity_version=(
+                        f"submission:{proposal.target_submission_id}/"
+                        f"digest:{proposal.proposal_digest[:12]}"
+                    ),
+                    label=f"Submission 审核提案 {proposal.proposal_id}",
+                    excerpt=(
+                        f"{proposal.status.value} / {proposal.confirmability.value} / "
+                        f"{validated.decision.value}"
                     ),
                     payload=payload,
                 )

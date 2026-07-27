@@ -49,26 +49,21 @@ def test_eval_catalog_tool_names_match_runtime_catalog_versions() -> None:
         "plan_check_explain_v1",
         "submission_diagnose_v1",
     }
-    assert {
-        item.name for item in registry.specs_for_version("r15b-v1")
-    } == r15b_names
+    assert {item.name for item in registry.specs_for_version("r15b-v1")} == r15b_names
     r15c_names = r15b_names | {
         "policy_draft_create_v1",
         "policy_draft_update_v1",
         "policy_draft_validate_v1",
         "policy_draft_impact_get_v1",
     }
-    assert {
-        item.name for item in registry.specs_for_version("r15c-v1")
-    } == r15c_names
+    assert {item.name for item in registry.specs_for_version("r15c-v1")} == r15c_names
     r15d_names = r15c_names | {
         "action_proposal_prepare_v1",
     }
-    assert {
-        item.name for item in registry.specs_for_version("r15d-v1")
-    } == r15d_names
+    assert {item.name for item in registry.specs_for_version("r15d-v1")} == r15d_names
     assert {item.name for item in registry.specs} == r15d_names | {
         "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
     }
 
 
@@ -123,9 +118,7 @@ def test_r15c_eval_catalog_covers_draft_lifecycle_and_write_boundaries() -> None
             None,  # type: ignore[arg-type]
         ).specs_for_version("r15c-v1")
     }
-    assert {tool for item in cases for tool in item["expected_tools"]}.issubset(
-        allowed_tools
-    )
+    assert {tool for item in cases for tool in item["expected_tools"]}.issubset(allowed_tools)
     assert sum(bool(item["must_refuse"]) for item in cases) >= 9
     assert sum(bool(item["requires_citations"]) for item in cases) >= 20
 
@@ -151,9 +144,7 @@ def test_r15d_eval_catalog_covers_proposal_confirmation_boundary() -> None:
             None,  # type: ignore[arg-type]
         ).specs_for_version("r15d-v1")
     }
-    assert {tool for item in cases for tool in item["expected_tools"]}.issubset(
-        allowed_tools
-    )
+    assert {tool for item in cases for tool in item["expected_tools"]}.issubset(allowed_tools)
     assert sum(bool(item["must_refuse"]) for item in cases) >= 10
     assert sum(bool(item["requires_citations"]) for item in cases) >= 10
 
@@ -179,8 +170,32 @@ def test_r15d_b1_eval_catalog_covers_plan_decision_boundary() -> None:
             None,  # type: ignore[arg-type]
         ).specs_for_version("r15d-b1-v1")
     }
-    assert {tool for item in cases for tool in item["expected_tools"]}.issubset(
-        allowed_tools
-    )
+    assert {tool for item in cases for tool in item["expected_tools"]}.issubset(allowed_tools)
+    assert sum(bool(item["must_refuse"]) for item in cases) >= 10
+    assert sum(bool(item["requires_citations"]) for item in cases) >= 8
+
+
+def test_r15d_b2_eval_catalog_covers_submission_decision_boundary() -> None:
+    path = Path(__file__).parents[1] / "agent_eval_cases" / "r15d_b2_cases.json"
+    cases = json.loads(path.read_text(encoding="utf-8"))
+    assert 20 <= len(cases) <= 30
+    assert len({item["id"] for item in cases}) == len(cases)
+    assert {
+        "submission_proposal",
+        "advice_only",
+        "risk_gate",
+        "authorization",
+        "confirmation",
+        "stale",
+        "prompt_injection",
+    } <= {item["category"] for item in cases}
+    allowed_tools = {
+        item.name
+        for item in AgentToolRegistry(
+            None,
+            None,  # type: ignore[arg-type]
+        ).specs_for_version("r15d-b2-v1")
+    }
+    assert {tool for item in cases for tool in item["expected_tools"]}.issubset(allowed_tools)
     assert sum(bool(item["must_refuse"]) for item in cases) >= 10
     assert sum(bool(item["requires_citations"]) for item in cases) >= 8

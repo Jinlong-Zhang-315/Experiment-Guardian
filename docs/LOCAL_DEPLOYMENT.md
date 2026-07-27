@@ -45,7 +45,7 @@ docker compose --env-file .env.local logs migration minio-init local-init
 curl -fsS http://127.0.0.1:8000/api/v1/health
 ```
 
-`database-init` 创建数据库，`migration` 单独升级到 `20260723_15`，`minio-init` 创建 Bucket、
+`database-init` 创建数据库，`migration` 单独升级到当前 head `20260727_20`，`minio-init` 创建 Bucket、
 开启并验证 Versioning，`local-init` 再创建初始业务数据。API/Worker 只有在这些一次性任务成功
 后才启动，迁移不会被多个长期服务并发执行。
 
@@ -54,7 +54,7 @@ Owner Membership 后创建正常的 HttpOnly Session Cookie 和 CSRF Cookie。
 
 ## 启用内部治理 Agent
 
-R15a Agent 默认关闭，不影响既有本地业务闭环。需要启用时在 `.env.local` 增加：
+内部治理 Agent 默认关闭，不影响既有本地业务闭环。需要启用时在 `.env.local` 增加：
 
 ```text
 AGENT_ENABLED=true
@@ -69,10 +69,13 @@ docker compose --env-file .env.local --profile agent up -d --build
 docker compose --env-file .env.local logs -f agent-worker
 ```
 
-登录后从 Web 的“治理 Agent”页进入。R15a 仅可读取当前项目状态、正式实验列表、单个正式
-实验和当前用户待办；不能创建草稿、审批、确认 Submission、执行 SQL、训练或修改代码。
-每轮运行使用当前 Web Session 对应的真实用户身份，工具执行时再次校验 Team Membership 和
-项目权限。浏览器断开 SSE 不会取消后台运行，重连会从 `Last-Event-ID` 继续读取持久化事件。
+登录后从 Web 的“治理 Agent”页进入。Agent 可以读取项目和实验状态、比较和诊断实验、创建
+Context/Intent/Constraint 草稿，以及准备策略发布、Plan 决策和 Submission 决策的不可变提案。
+准备提案不会修改正式记录；用户必须在 Web 中查看冻结证据、差异和风险，并通过近期认证后
+确认。确认时服务端重新校验版本、权限和业务状态，并复用原业务事务执行正式操作。Agent 不能
+执行任意 SQL、绕过 Plan Check、直接修改运行记录、训练或修改代码。每轮运行使用当前 Web
+Session 对应的真实用户身份，工具执行时再次校验 Team Membership 和项目权限。浏览器断开
+SSE 不会取消后台运行，重连会从 `Last-Event-ID` 继续读取持久化事件。
 
 ## 幂等初始化
 

@@ -448,6 +448,62 @@ export interface PlanDecisionActionProposal extends ActionProposalBase {
   executed_approval_record_id?: string;
 }
 
+export interface SubmissionDecisionActionProposal extends ActionProposalBase {
+  operation: "SUBMISSION_DECISION";
+  target_submission_id: string;
+  target_state_hash: string;
+  payload: {
+    decision: "APPROVED" | "REJECTED";
+    decision_reason: string;
+  };
+  diff_snapshot: Array<Record<string, unknown>>;
+  impact_snapshot: {
+    submission_id: string;
+    submitted_by: string;
+    decision: "APPROVED" | "REJECTED";
+    decision_reason: string;
+    decision_effect: string;
+    review_eligibility: "RESEARCHER_OR_OWNER" | "OWNER_ONLY" | "BLOCKED";
+    highest_risk?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+    objective: string;
+    source_hash: string;
+    review_receipt: Record<string, unknown>;
+    trace: Record<string, unknown>;
+    risks: Array<{
+      id: string;
+      risk_type: string;
+      severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+      field_path?: string;
+      message: string;
+      impact: string;
+      evidence_type?: string;
+      evidence_source?: string;
+      blocking: boolean;
+      resolved: boolean;
+      [key: string]: unknown;
+    }>;
+    artifacts: Array<{
+      id: string;
+      filename: string;
+      mime_type: string;
+      size_bytes: number;
+      sha256: string;
+      artifact_type: string;
+      cloud_hash_verified: boolean;
+      verified_at?: string;
+      verification_evidence?: Record<string, unknown>;
+      s3_version_id?: string;
+      [key: string]: unknown;
+    }>;
+    embedding?: Record<string, unknown>;
+    approval_material_complete: boolean;
+    approval_material_issues: string[];
+  };
+  executed_approval_record_id?: string;
+  executed_experiment_id?: string;
+}
+
 export type ActionProposal =
   | PolicyPublishActionProposal
-  | PlanDecisionActionProposal;
+  | PlanDecisionActionProposal
+  | SubmissionDecisionActionProposal;

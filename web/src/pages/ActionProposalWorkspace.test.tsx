@@ -139,6 +139,73 @@ const planProposal: ActionProposal = {
   updated_at: "2026-07-24T08:00:00Z",
 };
 
+const submissionProposal: ActionProposal = {
+  proposal_id: "ap-submission",
+  project_id: "p1",
+  created_by: "u1",
+  operation: "SUBMISSION_DECISION",
+  status: "PROPOSED",
+  confirmability: "READY",
+  confirmability_reasons: [],
+  allowed_actions: ["CONFIRM", "CANCEL"],
+  source_thread_id: "th-submission",
+  source_run_id: "run-submission",
+  source_tool_call_id: "call-submission",
+  target_submission_id: "submission-1",
+  target_state_hash: "1".repeat(64),
+  payload: {
+    decision: "APPROVED",
+    decision_reason: "已核对审核回执和固定版本材料",
+  },
+  payload_hash: "2".repeat(64),
+  base_context_id: "c1",
+  base_context_version: 2,
+  base_intent_id: "i1",
+  base_intent_version: 3,
+  diff_snapshot: [{ parameter_path: "fusion", previous_value: 0.2, current_value: 0.3 }],
+  impact_snapshot: {
+    submission_id: "submission-1",
+    submitted_by: "u1",
+    decision: "APPROVED",
+    decision_reason: "已核对审核回执和固定版本材料",
+    decision_effect: "确认后将创建正式 Experiment 并关联 Artifact",
+    review_eligibility: "OWNER_ONLY",
+    highest_risk: "HIGH",
+    objective: "验证融合系数对 top1 的影响",
+    source_hash: "3".repeat(64),
+    review_receipt: { review_eligibility: "OWNER_ONLY" },
+    trace: { manifest_id: "manifest-1", plan_check_id: "plan-1" },
+    risks: [{
+      id: "risk-1",
+      risk_type: "BACKBONE_CHANGE",
+      severity: "HIGH",
+      field_path: "model.backbone",
+      message: "主干网络发生变化",
+      impact: "只能由 Owner 批准",
+      evidence_type: "CLOUD_VERIFIED",
+      blocking: false,
+      resolved: false,
+    }],
+    artifacts: [{
+      id: "artifact-1",
+      filename: "config.yaml",
+      mime_type: "application/yaml",
+      size_bytes: 128,
+      sha256: "4".repeat(64),
+      artifact_type: "CONFIG",
+      cloud_hash_verified: true,
+      s3_version_id: "version-1",
+    }],
+    embedding: { provider: "bailian", model_id: "text-embedding-v3" },
+    approval_material_complete: true,
+    approval_material_issues: [],
+  },
+  proposal_digest: "5".repeat(64),
+  expires_at: "2026-07-28T08:00:00Z",
+  created_at: "2026-07-27T08:00:00Z",
+  updated_at: "2026-07-27T08:00:00Z",
+};
+
 const clients: QueryClient[] = [];
 
 function renderWorkspace() {
@@ -211,7 +278,7 @@ describe("ActionProposalWorkspace", () => {
       return Response.json({ ...proposal, allowed_actions: ["CANCEL"] });
     }));
     renderWorkspace();
-    expect(await screen.findByText("等待 Owner 审阅并确认")).toBeInTheDocument();
+    expect(await screen.findByText("等待有权审核者审阅并确认")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认并发布正式版本" })).not.toBeInTheDocument();
   });
 
@@ -243,6 +310,39 @@ describe("ActionProposalWorkspace", () => {
     fireEvent.click(button);
     await waitFor(() => expect(confirmed).toEqual({
       proposal_digest: planProposal.proposal_digest,
+    }));
+  });
+
+  it("renders frozen Submission evidence and confirms only after explicit review", async () => {
+    let confirmed: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST" && url.endsWith("/confirm")) {
+        confirmed = JSON.parse(String(init.body));
+        return Response.json({
+          ...submissionProposal,
+          status: "EXECUTED",
+          confirmability: "TERMINAL",
+          allowed_actions: [],
+          executed_approval_record_id: "approval-1",
+          executed_experiment_id: "experiment-1",
+        });
+      }
+      if (url.includes("action-proposals?")) {
+        return Response.json({ items: [submissionProposal] });
+      }
+      return Response.json(submissionProposal);
+    }));
+    renderWorkspace();
+    expect(await screen.findByText("验证融合系数对 top1 的影响")).toBeInTheDocument();
+    expect(screen.getByText("主干网络发生变化")).toBeInTheDocument();
+    expect(screen.getByText("version-1")).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "确认并批准 Submission" });
+    expect(button).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button);
+    await waitFor(() => expect(confirmed).toEqual({
+      proposal_digest: submissionProposal.proposal_digest,
     }));
   });
 });

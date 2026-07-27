@@ -17,7 +17,31 @@ import type {
   Page,
   PlanDecisionActionProposal,
   PolicyPublishActionProposal,
+  SubmissionDecisionActionProposal,
 } from "../types";
+
+function proposalTitle(value: ActionProposal) {
+  if (value.operation === "POLICY_PUBLISH") return "发布 Policy Bundle";
+  const decision = value.payload.decision === "APPROVED" ? "批准" : "拒绝";
+  return value.operation === "PLAN_CHECK_DECISION"
+    ? `Plan ${decision}`
+    : `Submission ${decision}`;
+}
+
+function proposalTarget(value: ActionProposal) {
+  if (value.operation === "POLICY_PUBLISH") {
+    return `Context v${value.base_context_version} → v${value.base_context_version + 1}`;
+  }
+  return value.operation === "PLAN_CHECK_DECISION"
+    ? `Plan ${value.target_plan_check_id}`
+    : `Submission ${value.target_submission_id}`;
+}
+
+function proposalRisk(value: ActionProposal) {
+  if (value.operation === "POLICY_PUBLISH") return value.impact_snapshot.attention_level;
+  if (value.operation === "PLAN_CHECK_DECISION") return value.impact_snapshot.risk_level;
+  return value.impact_snapshot.highest_risk ?? value.impact_snapshot.review_eligibility;
+}
 
 export function ActionProposalWorkspace({
   projectId,
@@ -104,7 +128,7 @@ export function ActionProposalWorkspace({
       onMouseDown={(event) => event.stopPropagation()}
     >
       <header className="draft-workspace-header">
-        <div><ShieldCheck /><span><strong>正式操作提案</strong><small>Agent 只能准备，Owner 明确确认后才会执行</small></span></div>
+        <div><ShieldCheck /><span><strong>正式操作提案</strong><small>Agent 只能准备，有权审核者明确确认后才会执行</small></span></div>
         <button className="icon-button" onClick={onClose} title="关闭" aria-label="关闭操作提案"><X /></button>
       </header>
       <div className="draft-workspace-body">
@@ -117,12 +141,8 @@ export function ActionProposalWorkspace({
             onClick={() => setSelectedId(item.proposal_id)}
           >
             <span>
-              <strong>{item.operation === "POLICY_PUBLISH"
-                ? "发布 Policy Bundle"
-                : `Plan ${item.payload.decision === "APPROVED" ? "批准" : "拒绝"}`}</strong>
-              <small>{item.operation === "POLICY_PUBLISH"
-                ? `Context v${item.base_context_version} → v${item.base_context_version + 1}`
-                : `Plan ${item.target_plan_check_id}`}</small>
+              <strong>{proposalTitle(item)}</strong>
+              <small>{proposalTarget(item)}</small>
             </span>
             <span><Badge value={item.status} /><Badge value={item.confirmability} /></span>
           </button>)}
@@ -136,10 +156,10 @@ export function ActionProposalWorkspace({
               <div>
                 <strong>{value.operation === "POLICY_PUBLISH"
                   ? "Policy Bundle 正式发布"
-                  : `Plan Check ${value.payload.decision === "APPROVED" ? "批准" : "拒绝"}`}</strong>
+                  : proposalTitle(value)}</strong>
                 <span>{value.operation === "POLICY_PUBLISH"
                   ? `草稿 revision ${value.source_draft_revision}`
-                  : `目标 ${value.target_plan_check_id}`} · 创建于 {formatTime(value.created_at)}</span>
+                  : proposalTarget(value)} · 创建于 {formatTime(value.created_at)}</span>
               </div>
               <div><Badge value={value.status} /><Badge value={value.confirmability} /></div>
             </header>
@@ -148,9 +168,7 @@ export function ActionProposalWorkspace({
               <div><Clock3 /><span>有效期</span><strong>{formatTime(value.expires_at)}</strong></div>
               <div><FileDiff /><span>结构化差异</span><strong>{value.diff_snapshot.length} 项</strong></div>
               <div><AlertTriangle /><span>{value.operation === "POLICY_PUBLISH" ? "最高关注" : "风险等级"}</span>
-                <strong>{value.operation === "POLICY_PUBLISH"
-                  ? value.impact_snapshot.attention_level
-                  : value.impact_snapshot.risk_level}</strong>
+                <strong>{proposalRisk(value)}</strong>
               </div>
             </div>
 
@@ -160,12 +178,18 @@ export function ActionProposalWorkspace({
             {value.status === "EXECUTED" && <div className="proposal-success">
               <CheckCircle2 /><span>{value.operation === "POLICY_PUBLISH"
                 ? `已发布为正式 Context v${value.executed_context_version}`
-                : `Plan 已${value.payload.decision === "APPROVED" ? "批准" : "拒绝"}`}</span>
+                : value.operation === "PLAN_CHECK_DECISION"
+                  ? `Plan 已${value.payload.decision === "APPROVED" ? "批准" : "拒绝"}`
+                  : value.payload.decision === "APPROVED"
+                    ? `已确认为正式 Experiment ${value.executed_experiment_id ?? ""}`
+                    : "Submission 已拒绝"}</span>
             </div>}
 
             {value.operation === "POLICY_PUBLISH"
               ? <PolicyProposalContent value={value} />
-              : <PlanProposalContent value={value} />}
+              : value.operation === "PLAN_CHECK_DECISION"
+                ? <PlanProposalContent value={value} />
+                : <SubmissionProposalContent value={value} />}
 
             <details className="proposal-raw">
               <summary><Braces />查看冻结结构化{value.operation === "POLICY_PUBLISH" ? "发布请求" : "决定"}</summary>
@@ -185,15 +209,17 @@ export function ActionProposalWorkspace({
                   <input type="checkbox" checked={confirmedReview} onChange={(event) => setConfirmedReview(event.target.checked)} />
                   <span>{value.operation === "POLICY_PUBLISH"
                     ? "我已核对冻结差异、影响和结构化发布请求"
-                    : "我已核对 Plan 正式依据、最终决定和理由"}</span>
-                </label> : <span className="proposal-owner-note">等待 Owner 审阅并确认</span>}
+                    : value.operation === "PLAN_CHECK_DECISION"
+                      ? "我已核对 Plan 正式依据、最终决定和理由"
+                      : "我已核对 Submission 回执、风险、追溯、材料和最终决定"}</span>
+                </label> : <span className="proposal-owner-note">等待有权审核者审阅并确认</span>}
                 {value.allowed_actions.includes("CONFIRM") && <button
-                  className={`button ${value.operation === "PLAN_CHECK_DECISION" && value.payload.decision === "REJECTED" ? "danger" : "primary"}`}
+                  className={`button ${value.operation !== "POLICY_PUBLISH" && value.payload.decision === "REJECTED" ? "danger" : "primary"}`}
                   disabled={!confirmedReview || confirm.isPending}
                   onClick={() => confirm.mutate(value)}
                 ><ShieldCheck />{value.operation === "POLICY_PUBLISH"
                     ? "确认并发布正式版本"
-                    : `确认并${value.payload.decision === "APPROVED" ? "批准" : "拒绝"} Plan`}</button>}
+                    : `确认并${value.payload.decision === "APPROVED" ? "批准" : "拒绝"} ${value.operation === "PLAN_CHECK_DECISION" ? "Plan" : "Submission"}`}</button>}
               </>}
             </footer>}
             {(confirm.error || cancel.error) && <ErrorNotice error={confirm.error || cancel.error} />}
@@ -285,6 +311,67 @@ function PlanProposalContent({ value }: { value: PlanDecisionActionProposal }) {
           <JsonBlock value={risk} />
         </details>)
         : <p className="muted">正式检查报告没有额外风险条目。</p>}
+    </section>
+  </>;
+}
+
+function SubmissionProposalContent({ value }: { value: SubmissionDecisionActionProposal }) {
+  const highRisks = value.impact_snapshot.risks.filter((risk) =>
+    risk.severity === "HIGH" || risk.severity === "CRITICAL" || risk.blocking,
+  );
+  const otherRisks = value.impact_snapshot.risks.filter((risk) => !highRisks.includes(risk));
+  return <>
+    <section className="proposal-section">
+      <h3>最终决定</h3>
+      <div className="impact-row">
+        <code>{value.target_submission_id}</code>
+        <Badge value={value.payload.decision} />
+        <small>{value.payload.decision_reason}</small>
+      </div>
+      <p className={value.payload.decision === "REJECTED" ? "impact-warning" : ""}>
+        {value.impact_snapshot.decision_effect}
+      </p>
+      <div className="proposal-facts">
+        <div><span>审核资格</span><strong>{value.impact_snapshot.review_eligibility}</strong></div>
+        <div><span>Context</span><strong>v{value.base_context_version}</strong></div>
+        <div><span>Intent</span><strong>v{value.base_intent_version}</strong></div>
+      </div>
+      <h4>实验目标</h4>
+      <p>{value.impact_snapshot.objective}</p>
+      {!value.impact_snapshot.approval_material_complete && <div className="draft-warning">
+        <AlertTriangle /><span>{value.impact_snapshot.approval_material_issues.join("；")}</span>
+      </div>}
+    </section>
+    <section className="proposal-section">
+      <h3>强制展开风险</h3>
+      {highRisks.length
+        ? highRisks.map((risk) => <details open key={risk.id}>
+          <summary><Badge value={risk.severity} /><code>{risk.field_path ?? risk.risk_type}</code></summary>
+          <p>{risk.message}</p><p className="impact-warning">{risk.impact}</p>
+          <JsonBlock value={risk} />
+        </details>)
+        : <p className="muted">无 HIGH、CRITICAL 或 blocking 风险。</p>}
+      {otherRisks.length > 0 && <details>
+        <summary>查看其余 {otherRisks.length} 项风险</summary>
+        {otherRisks.map((risk) => <div className="impact-row" key={risk.id}>
+          <Badge value={risk.severity} /><code>{risk.field_path ?? risk.risk_type}</code><small>{risk.message}</small>
+        </div>)}
+      </details>}
+    </section>
+    <section className="proposal-section">
+      <h3>固定版本材料</h3>
+      {value.impact_snapshot.artifacts.map((artifact) => <details key={artifact.id}>
+        <summary><Badge value={artifact.artifact_type} /><span>{artifact.filename}</span></summary>
+        <div className="impact-row"><span>VersionId</span><code>{artifact.s3_version_id ?? "缺失"}</code></div>
+        <div className="impact-row"><span>SHA-256</span><code>{artifact.sha256}</code></div>
+        <div className="impact-row"><span>云端哈希验证</span><Badge value={artifact.cloud_hash_verified ? "VERIFIED" : "MISSING"} /></div>
+      </details>)}
+    </section>
+    <section className="proposal-section">
+      <h3>追溯与审核回执</h3>
+      <details><summary>查看 Manifest / Plan / Context / Intent 追溯</summary><JsonBlock value={value.impact_snapshot.trace} /></details>
+      <details><summary>查看冻结审核回执</summary><JsonBlock value={value.impact_snapshot.review_receipt} /></details>
+      <small>来源哈希：<code>{value.impact_snapshot.source_hash}</code></small>
     </section>
   </>;
 }

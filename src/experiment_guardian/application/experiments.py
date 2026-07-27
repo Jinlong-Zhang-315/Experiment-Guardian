@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -66,6 +67,7 @@ from experiment_guardian.infrastructure.models import (
     PlanCheck,
     ProjectContext,
     RunManifest,
+    SubmissionEmbedding,
     SubmissionRisk,
 )
 from experiment_guardian.infrastructure.models.base import VectorType
@@ -79,6 +81,25 @@ SUBMISSION_DECISION_OPERATION = "submission.decision"
 MEMORY_TYPE = "EXPERIMENT_REVIEW_V1"
 MEMORY_SOURCE_TYPE = "SUBMISSION_EMBEDDING"
 MAX_VECTOR_CANDIDATES = 200
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionReviewBasis:
+    """从正式表读取的 Submission 审核依据，不是新的事实源。"""
+
+    team_id: UUID
+    role: TeamRole
+    submission: ExperimentSubmission
+    receipt: SubmissionReceipt
+    risks: tuple[SubmissionRisk, ...]
+    eligibility: ReviewEligibility
+    manifest: RunManifest | None
+    plan: PlanCheck | None
+    intent: ExperimentIntent | None
+    context: ProjectContext | None
+    artifacts: tuple[Artifact, ...]
+    embedding: SubmissionEmbedding | None
+    approval_material_issues: tuple[str, ...]
 
 
 class ExperimentReviewService:
@@ -133,144 +154,17 @@ class ExperimentReviewService:
         request: SubmissionDecisionRequest,
         request_hash: str,
     ) -> SubmissionDecisionResult:
-        if "submission:review" not in identity.scopes:
-            raise AuthorizationError("Token 缺少 submission:review scope")
-        if identity.project_id is not None and identity.project_id != project_id:
-            raise AuthorizationError("API Token 未绑定当前项目")
         try:
             with self._session_factory() as session, session.begin():
-                project = self._projects.require_project_member(
+                return self.decide_in_session(
                     session,
+                    identity=identity,
                     project_id=project_id,
-                    user_id=identity.user_id,
-                    team_id=identity.team_id,
-                )
-                role = self._projects.require_member(
-                    session, user_id=identity.user_id, team_id=project.team_id
-                )
-                existing = self._governance.find_idempotency(
-                    session,
-                    actor_id=identity.user_id,
-                    operation=SUBMISSION_DECISION_OPERATION,
+                    submission_id=submission_id,
                     idempotency_key=idempotency_key,
+                    request=request,
+                    request_hash=request_hash,
                 )
-                if existing is not None:
-                    return self._replay(existing, request_hash)
-
-                submission = self._submissions.get_submission_for_update(session, submission_id)
-                if submission is None or submission.project_id != project_id:
-                    raise ResourceNotFoundError("项目中不存在该 Submission")
-                if role is TeamRole.RESEARCHER and submission.submitted_by != identity.user_id:
-                    raise AuthorizationError("Researcher 只能审核自己提交的 Submission")
-                if (
-                    submission.status is not SubmissionStatus.NEEDS_REVIEW
-                    or submission.workflow_status is not WorkflowStatus.COMPLETED
-                    or submission.processing_step is not WorkflowStep.NEEDS_REVIEW
-                ):
-                    raise ConflictError("只有已完成分析的 NEEDS_REVIEW Submission 可以审核")
-                if session.scalar(
-                    select(ApprovalRecord).where(
-                        ApprovalRecord.target_type
-                        == ApprovalTargetType.EXPERIMENT_SUBMISSION,
-                        ApprovalRecord.target_id == submission.id,
-                    )
-                ) is not None:
-                    raise ConflictError("该 Submission 已存在最终审核决定")
-
-                risks = self._submissions.list_risks(session, submission.id)
-                eligibility = review_eligibility_for_risks(risks)
-                if (
-                    request.decision is ApprovalDecision.APPROVED
-                    and role is TeamRole.OWNER
-                    and eligibility is ReviewEligibility.OWNER_ONLY
-                    and identity.authentication_method == "WEB_SESSION"
-                    and not identity.recent_authentication
-                ):
-                    raise RecentAuthenticationRequiredError(
-                        "Owner 批准 Submission 前需要完成近期身份认证"
-                    )
-                receipt = self._load_receipt(submission)
-                now = datetime.now(UTC)
-                approval = ApprovalRecord(
-                    project_id=project_id,
-                    target_type=ApprovalTargetType.EXPERIMENT_SUBMISSION,
-                    target_id=submission.id,
-                    approval_type="EXPERIMENT_SUBMISSION_REVIEW",
-                    status=request.decision,
-                    requested_by=submission.submitted_by,
-                    decided_by=identity.user_id,
-                    request_reason=json.dumps(
-                        {
-                            "objective": receipt.objective,
-                            "review_eligibility": eligibility.value,
-                            "source_hash": receipt.source_hash,
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                    decision_reason=request.decision_reason,
-                    decided_at=now,
-                )
-                session.add(approval)
-                session.flush()
-
-                if request.decision is ApprovalDecision.APPROVED:
-                    self._authorize_approval(role, eligibility)
-                    experiment = self._approve(
-                        session,
-                        identity=identity,
-                        submission=submission,
-                        receipt=receipt,
-                        risks=risks,
-                        approval_record_id=approval.id,
-                    )
-                    submission.status = SubmissionStatus.APPROVED
-                else:
-                    experiment = None
-                    submission.status = SubmissionStatus.REJECTED
-
-                result = SubmissionDecisionResult(
-                    approval_record_id=approval.id,
-                    project_id=project_id,
-                    submission_id=submission.id,
-                    experiment_id=experiment.id if experiment else None,
-                    decision=request.decision,
-                    submission_status=submission.status,
-                    review_eligibility=eligibility,
-                    requested_by=submission.submitted_by,
-                    decided_by=identity.user_id,
-                    decided_at=now,
-                    decision_reason=request.decision_reason,
-                )
-                session.add_all(
-                    [
-                        AuditLog(
-                            team_id=project.team_id,
-                            project_id=project_id,
-                            actor_type="USER",
-                            actor_id=identity.user_id,
-                            action=SUBMISSION_DECISION_OPERATION,
-                            target_type=ApprovalTargetType.EXPERIMENT_SUBMISSION.value,
-                            target_id=submission.id,
-                            before_value={"status": SubmissionStatus.NEEDS_REVIEW.value},
-                            after_value={
-                                **result.model_dump(mode="json"),
-                                "token_id": str(identity.token_id),
-                            },
-                        ),
-                        IdempotencyRecord(
-                            actor_id=identity.user_id,
-                            operation=SUBMISSION_DECISION_OPERATION,
-                            idempotency_key=idempotency_key,
-                            request_hash=request_hash,
-                            response_snapshot=result.model_dump(mode="json"),
-                            operation_status=IdempotencyOperationStatus.COMPLETED,
-                            expires_at=now + timedelta(days=7),
-                        ),
-                    ]
-                )
-                return result
         except IntegrityError as exc:
             replay = self._replay_after_integrity(
                 actor_id=identity.user_id,
@@ -280,6 +174,341 @@ class ExperimentReviewService:
             if replay is not None:
                 return replay
             raise ConflictError("Submission 审核与现有正式记录冲突") from exc
+
+    def decide_in_session(
+        self,
+        session: Session,
+        *,
+        identity: RequestIdentity,
+        project_id: UUID,
+        submission_id: UUID,
+        idempotency_key: UUID,
+        request: SubmissionDecisionRequest,
+        request_hash: str | None = None,
+        audit_context: dict[str, object] | None = None,
+    ) -> SubmissionDecisionResult:
+        """在调用方事务中执行正式审核，供直接 API 与 Proposal 确认共用。"""
+
+        if "submission:review" not in identity.scopes:
+            raise AuthorizationError("Token 缺少 submission:review scope")
+        if identity.project_id is not None and identity.project_id != project_id:
+            raise AuthorizationError("API Token 未绑定当前项目")
+        effective_hash = request_hash or _canonical_hash(
+            {
+                "project_id": str(project_id),
+                "submission_id": str(submission_id),
+                "request": request.model_dump(mode="json"),
+            }
+        )
+        project = self._projects.require_project_member(
+            session,
+            project_id=project_id,
+            user_id=identity.user_id,
+            team_id=identity.team_id,
+        )
+        role = self._projects.require_member(
+            session, user_id=identity.user_id, team_id=project.team_id
+        )
+        existing = self._governance.find_idempotency(
+            session,
+            actor_id=identity.user_id,
+            operation=SUBMISSION_DECISION_OPERATION,
+            idempotency_key=idempotency_key,
+        )
+        if existing is not None:
+            return self._replay(existing, effective_hash)
+
+        submission = self._submissions.get_submission_for_update(session, submission_id)
+        if submission is None or submission.project_id != project_id:
+            raise ResourceNotFoundError("项目中不存在该 Submission")
+        if role is TeamRole.RESEARCHER and submission.submitted_by != identity.user_id:
+            raise AuthorizationError("Researcher 只能审核自己提交的 Submission")
+        if (
+            submission.status is not SubmissionStatus.NEEDS_REVIEW
+            or submission.workflow_status is not WorkflowStatus.COMPLETED
+            or submission.processing_step is not WorkflowStep.NEEDS_REVIEW
+        ):
+            raise ConflictError("只有已完成分析的 NEEDS_REVIEW Submission 可以审核")
+        if (
+            session.scalar(
+                select(ApprovalRecord).where(
+                    ApprovalRecord.target_type == ApprovalTargetType.EXPERIMENT_SUBMISSION,
+                    ApprovalRecord.target_id == submission.id,
+                )
+            )
+            is not None
+        ):
+            raise ConflictError("该 Submission 已存在最终审核决定")
+
+        risks = self._submissions.list_risks(session, submission.id)
+        eligibility = review_eligibility_for_risks(risks)
+        if (
+            request.decision is ApprovalDecision.APPROVED
+            and role is TeamRole.OWNER
+            and eligibility is ReviewEligibility.OWNER_ONLY
+            and identity.authentication_method == "WEB_SESSION"
+            and not identity.recent_authentication
+        ):
+            raise RecentAuthenticationRequiredError("Owner 批准 Submission 前需要完成近期身份认证")
+        receipt = self._load_receipt(submission)
+        if request.decision is ApprovalDecision.APPROVED:
+            self._authorize_approval(role, eligibility)
+
+        now = datetime.now(UTC)
+        approval = ApprovalRecord(
+            project_id=project_id,
+            target_type=ApprovalTargetType.EXPERIMENT_SUBMISSION,
+            target_id=submission.id,
+            approval_type="EXPERIMENT_SUBMISSION_REVIEW",
+            status=request.decision,
+            requested_by=submission.submitted_by,
+            decided_by=identity.user_id,
+            request_reason=json.dumps(
+                {
+                    "objective": receipt.objective,
+                    "review_eligibility": eligibility.value,
+                    "source_hash": receipt.source_hash,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            decision_reason=request.decision_reason,
+            decided_at=now,
+        )
+        session.add(approval)
+        session.flush()
+
+        if request.decision is ApprovalDecision.APPROVED:
+            experiment = self._approve(
+                session,
+                identity=identity,
+                submission=submission,
+                receipt=receipt,
+                risks=risks,
+                approval_record_id=approval.id,
+            )
+            submission.status = SubmissionStatus.APPROVED
+        else:
+            experiment = None
+            submission.status = SubmissionStatus.REJECTED
+
+        result = SubmissionDecisionResult(
+            approval_record_id=approval.id,
+            project_id=project_id,
+            submission_id=submission.id,
+            experiment_id=experiment.id if experiment else None,
+            decision=request.decision,
+            submission_status=submission.status,
+            review_eligibility=eligibility,
+            requested_by=submission.submitted_by,
+            decided_by=identity.user_id,
+            decided_at=now,
+            decision_reason=request.decision_reason,
+        )
+        session.add_all(
+            [
+                AuditLog(
+                    team_id=project.team_id,
+                    project_id=project_id,
+                    actor_type="USER",
+                    actor_id=identity.user_id,
+                    action=SUBMISSION_DECISION_OPERATION,
+                    target_type=ApprovalTargetType.EXPERIMENT_SUBMISSION.value,
+                    target_id=submission.id,
+                    before_value={"status": SubmissionStatus.NEEDS_REVIEW.value},
+                    after_value={
+                        **result.model_dump(mode="json"),
+                        "token_id": str(identity.token_id),
+                        **(audit_context or {}),
+                    },
+                ),
+                IdempotencyRecord(
+                    actor_id=identity.user_id,
+                    operation=SUBMISSION_DECISION_OPERATION,
+                    idempotency_key=idempotency_key,
+                    request_hash=effective_hash,
+                    response_snapshot=result.model_dump(mode="json"),
+                    operation_status=IdempotencyOperationStatus.COMPLETED,
+                    expires_at=now + timedelta(days=7),
+                ),
+            ]
+        )
+        return result
+
+    def load_proposal_basis_in_session(
+        self,
+        session: Session,
+        *,
+        identity: RequestIdentity,
+        project_id: UUID,
+        submission_id: UUID,
+        for_update: bool = False,
+    ) -> SubmissionReviewBasis:
+        """读取可冻结的审核依据；不创建审批或正式实验。"""
+
+        if "submission:read" not in identity.scopes:
+            raise AuthorizationError("当前身份缺少 submission:read scope")
+        project = self._projects.require_project_member(
+            session,
+            project_id=project_id,
+            user_id=identity.user_id,
+            team_id=identity.team_id,
+        )
+        role = self._projects.require_member(
+            session, user_id=identity.user_id, team_id=project.team_id
+        )
+        statement = select(ExperimentSubmission).where(
+            ExperimentSubmission.id == submission_id,
+            ExperimentSubmission.project_id == project_id,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        submission = session.scalar(statement)
+        if submission is None or (
+            role is TeamRole.RESEARCHER and submission.submitted_by != identity.user_id
+        ):
+            raise ResourceNotFoundError("项目中不存在当前用户可访问的 Submission")
+        if (
+            submission.status is not SubmissionStatus.NEEDS_REVIEW
+            or submission.workflow_status is not WorkflowStatus.COMPLETED
+            or submission.processing_step is not WorkflowStep.NEEDS_REVIEW
+        ):
+            raise ConflictError("只有已完成分析的 NEEDS_REVIEW Submission 可以准备提案")
+        approval = session.scalar(
+            select(ApprovalRecord).where(
+                ApprovalRecord.target_type == ApprovalTargetType.EXPERIMENT_SUBMISSION,
+                ApprovalRecord.target_id == submission.id,
+            )
+        )
+        experiment = session.scalar(
+            select(Experiment).where(Experiment.submission_id == submission.id)
+        )
+        if approval is not None or experiment is not None:
+            raise ConflictError("该 Submission 已存在最终审核或正式 Experiment")
+
+        receipt = self._load_receipt(submission)
+        risks = tuple(self._submissions.list_risks(session, submission.id))
+        eligibility = review_eligibility_for_risks(list(risks))
+        if (
+            receipt.review_eligibility is not eligibility
+            or receipt.source_hash != review_receipt_source_hash(receipt, list(risks))
+        ):
+            raise ConflictError("Submission 审核回执与当前风险来源不一致")
+
+        manifest = session.get(RunManifest, submission.run_manifest_id)
+        plan = session.get(PlanCheck, manifest.plan_check_id) if manifest else None
+        intent = session.get(ExperimentIntent, manifest.intent_id) if manifest else None
+        context = session.get(ProjectContext, manifest.context_id) if manifest else None
+        artifacts = tuple(
+            self._submissions.list_artifacts_for_update(session, submission.id)
+            if for_update
+            else self._submissions.list_artifacts(session, submission.id)
+        )
+        embedding = self._submissions.get_embedding(session, submission.id, for_update=for_update)
+        issues = self._approval_material_issues(
+            submission=submission,
+            receipt=receipt,
+            risks=list(risks),
+            manifest=manifest,
+            plan=plan,
+            intent=intent,
+            context=context,
+            artifacts=list(artifacts),
+            embedding=embedding,
+        )
+        return SubmissionReviewBasis(
+            team_id=project.team_id,
+            role=role,
+            submission=submission,
+            receipt=receipt,
+            risks=risks,
+            eligibility=eligibility,
+            manifest=manifest,
+            plan=plan,
+            intent=intent,
+            context=context,
+            artifacts=artifacts,
+            embedding=embedding,
+            approval_material_issues=tuple(issues),
+        )
+
+    @classmethod
+    def _approval_material_issues(
+        cls,
+        *,
+        submission: ExperimentSubmission,
+        receipt: SubmissionReceipt,
+        risks: list[SubmissionRisk],
+        manifest: RunManifest | None,
+        plan: PlanCheck | None,
+        intent: ExperimentIntent | None,
+        context: ProjectContext | None,
+        artifacts: list[Artifact],
+        embedding: SubmissionEmbedding | None,
+    ) -> list[str]:
+        issues: list[str] = []
+        if (
+            manifest is None
+            or plan is None
+            or intent is None
+            or context is None
+            or manifest.project_id != submission.project_id
+            or plan.project_id != submission.project_id
+            or intent.project_id != submission.project_id
+            or context.project_id != submission.project_id
+            or manifest.context_id != plan.context_id
+            or manifest.context_version != plan.context_version
+            or manifest.intent_id != plan.intent_id
+            or manifest.intent_version != plan.intent_version
+            or intent.id != manifest.intent_id
+            or intent.version != manifest.intent_version
+            or context.id != manifest.context_id
+            or context.version != manifest.context_version
+        ):
+            issues.append("Context/Intent/Plan Check/Manifest 追溯链不完整")
+        elif (
+            submission.manifest_hash != manifest.manifest_hash
+            or receipt.submission_id != submission.id
+            or receipt.trace.project_id != submission.project_id
+            or receipt.trace.context_id != manifest.context_id
+            or receipt.trace.context_version != manifest.context_version
+            or receipt.trace.intent_id != manifest.intent_id
+            or receipt.trace.intent_version != manifest.intent_version
+            or receipt.trace.plan_check_id != manifest.plan_check_id
+            or receipt.trace.run_manifest_id != manifest.id
+            or receipt.trace.manifest_hash != manifest.manifest_hash
+        ):
+            issues.append("审核回执与 Manifest 追溯不一致")
+
+        if embedding is None:
+            issues.append("Submission embedding 缺失")
+        else:
+            document = build_embedding_document(receipt, risks)
+            document_hash = hashlib.sha256(document.encode("utf-8")).hexdigest()
+            if (
+                embedding.input_text != document
+                or embedding.input_sha256 != document_hash
+                or embedding.dimension != EMBEDDING_DIMENSION
+                or not embedding.normalized
+            ):
+                issues.append("Submission embedding 与审核来源不一致")
+        if not artifacts:
+            issues.append("Submission Artifact 缺失")
+        elif any(
+            not item.cloud_hash_verified
+            or item.verified_at is None
+            or not item.s3_version_id
+            or item.experiment_id is not None
+            for item in artifacts
+        ):
+            issues.append("Submission Artifact 缺少固定版本证据或已被关联")
+        try:
+            GeneratedSummary.model_validate(submission.generated_summary)
+            cls._result_document(submission)
+        except ValidationError:
+            issues.append("Submission 摘要或结果快照无效")
+        return issues
 
     @staticmethod
     def _load_receipt(submission: ExperimentSubmission) -> SubmissionReceipt:
@@ -355,9 +584,7 @@ class ExperimentReviewService:
         ):
             raise ConflictError("Submission embedding 与审核来源不一致")
         if not artifacts or any(
-            not item.cloud_hash_verified
-            or item.verified_at is None
-            or not item.s3_version_id
+            not item.cloud_hash_verified or item.verified_at is None or not item.s3_version_id
             for item in artifacts
         ):
             raise ConflictError("Submission Artifact 缺少云端哈希或不可变版本证据")
@@ -454,9 +681,7 @@ class ExperimentReviewService:
         return SubmittedResultDocument.model_validate(parsed)
 
     @staticmethod
-    def _replay(
-        record: IdempotencyRecord, request_hash: str
-    ) -> SubmissionDecisionResult:
+    def _replay(record: IdempotencyRecord, request_hash: str) -> SubmissionDecisionResult:
         if record.request_hash != request_hash:
             raise ConflictError("相同 Idempotency-Key 已用于不同的 Submission 审核请求")
         if (
@@ -544,9 +769,7 @@ class ExperimentQueryService:
                 team_id=identity.team_id,
             )
 
-    def _candidate_ids(
-        self, session: Session, command: ExperimentQueryCommand
-    ) -> list[UUID]:
+    def _candidate_ids(self, session: Session, command: ExperimentQueryCommand) -> list[UUID]:
         statement = select(Memory.id).where(
             Memory.project_id == command.project_id,
             Memory.verification_status == VerificationStatus.CONFIRMED,
@@ -577,18 +800,13 @@ class ExperimentQueryService:
         if session.bind is not None and session.bind.dialect.name == "sqlite":
             memories = session.scalars(select(Memory).where(Memory.id.in_(candidate_ids))).all()
             ranked = sorted(
-                (
-                    (item.id, _cosine_similarity(item.embedding, vector))
-                    for item in memories
-                ),
+                ((item.id, _cosine_similarity(item.embedding, vector)) for item in memories),
                 key=lambda item: (-item[1], str(item[0])),
             )
             return ranked[:top_k]
         query_vector = bindparam("query_vector", type_=VectorType(EMBEDDING_DIMENSION))
         distance = cast(
-            Memory.embedding.op("<=>")(
-                cast(query_vector, VectorType(EMBEDDING_DIMENSION))
-            ),
+            Memory.embedding.op("<=>")(cast(query_vector, VectorType(EMBEDDING_DIMENSION))),
             Float,
         )
         rows = session.execute(

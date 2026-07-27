@@ -189,6 +189,7 @@ def get_action_proposal_service() -> ActionProposalService:
         get_policy_draft_service(),
         get_web_management_service(),
         get_plan_approval_service(),
+        get_experiment_review_service(),
     )
 
 

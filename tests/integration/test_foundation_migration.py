@@ -159,8 +159,10 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         "confirmed_session_id",
         "executed_context_id",
         "target_plan_check_id",
+        "target_submission_id",
         "target_state_hash",
         "executed_approval_record_id",
+        "executed_experiment_id",
         "execution_error",
     } <= {
         item["name"]

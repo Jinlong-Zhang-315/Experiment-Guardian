@@ -59,8 +59,8 @@ from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyProjectRepository,
 )
 
-PROMPT_VERSION = "r15d-b1-v1"
-TOOL_CATALOG_VERSION = "r15d-b1-v1"
+PROMPT_VERSION = "r15d-b2-v1"
+TOOL_CATALOG_VERSION = "r15d-b2-v1"
 TERMINAL_RUN_STATUSES = {
     AgentRunStatus.SUCCEEDED,
     AgentRunStatus.FAILED,

@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
-更新时间：2026-07-24
-当前完成轮次：R15d-b1 Plan Check 批准/拒绝提案
-下一步：R15d-b2 Submission 审核提案
+更新时间：2026-07-27
+当前完成轮次：R15d-b2 Submission 批准/拒绝提案
+下一步：先收敛 R15e 研究总结与长期记忆的详细计划
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -32,7 +32,7 @@
 | R15c | 治理草稿与影响分析 | 完成 | 追加式完整 Bundle 草稿、diff、歧义、影响与 Web 工作台 |
 | R15d-a | Policy 发布提案 | 完成 | 不可变提案、版本复核、Owner 近期认证、原子发布 |
 | R15d-b1 | Plan Check 决策提案 | 完成 | 批准/拒绝冻结提案、状态哈希、原子审批 |
-| R15d-b2 | Submission 审核提案 | 计划 | 延续 LOW/HIGH/CRITICAL 权限和人工最终决定 |
+| R15d-b2 | Submission 审核提案 | 完成 | 冻结审核依据、风险权限、人工确认和原子正式入库 |
 | R15e | 研究总结与长期记忆 | 计划 | 可追溯结论、独立候选记忆、provider parity |
 
 ## R15：内部实验治理 Agent 路线
@@ -47,7 +47,7 @@
 * Agent 使用当前 Web 身份，工具执行器重新验证实时 RBAC 和项目隔离。
 * CockroachDB 保存所有原始消息；R15b 的 rolling summary 只压缩模型上下文，带消息范围和
   来源 hash，失败时保留旧摘要或退回最近窗口。百炼 provider 对话或缓存不是真实记忆源。
-* R15c 只写独立候选草稿表；R15d-a/b1 只增加 Policy 和 Plan 白名单提案。
+* R15c 只写独立候选草稿表；R15d-a/b1/b2 只增加 Policy、Plan 和 Submission 白名单提案。
 * R15d 的正式操作不暴露为模型执行工具：Agent 生成提案，人类通过独立 CSRF + recent-auth
   请求确认，服务端重查版本和状态后调用既有业务服务。
 * Agent Research Memory 与正式 Experiment Memory 分离，且最早在 R15e 接入。
@@ -90,6 +90,25 @@
   样式，Owner 必须核对正式依据、决定和理由。
 * Agent 目录升级 `r15d-b1-v1`，旧 Run 保留冻结目录；rolling summary schema v4 保存有界
   Plan target/decision 引用。新增 20 个 Plan 决策 trajectory/security case。
+
+## R15d-b2：Submission 批准/拒绝提案
+
+交付：
+
+* revision `20260727_20` 在联合提案中增加 `SUBMISSION_DECISION`、目标 Submission 和
+  执行 Experiment 追溯，不改变历史 Policy/Plan digest。
+* Proposal 冻结审核回执、当前风险、Artifact 哈希与固定 VersionId、Manifest/Plan/
+  Context/Intent 追溯、embedding 元数据、决定和理由，并用状态哈希和 digest 防篡改。
+* `ExperimentReviewService.decide_in_session()` 为直接审核和 Proposal 确认共享的事务核心；
+  Proposal、ApprovalRecord、Experiment、Metric、Memory、Artifact 关联、幂等和审计原子提交。
+* Researcher 可准备自己 Submission 的 HIGH 批准提案供 Owner 复核；只能确认自己
+  LOW/MEDIUM 批准或拒绝提案。HIGH 批准仅 Owner，CRITICAL/blocking 不得准备批准。
+* 所有 Agent Proposal 确认都要求 Web Session、CSRF 和近期认证；现有直接 Submission
+  审核 API 的权限和近期认证规则不变。
+* Agent 新增 `action_proposal_prepare_submission_decision_v1`，提示词/目录升级
+  `r15d-b2-v1`，rolling summary schema v5 保存 Submission target/decision/eligibility 引用。
+* Web 作业台默认展示人类可读回执，强制展开 HIGH/CRITICAL/blocking 风险，可查看
+  固定版本材料、完整追溯和原始结构化决定。新增 21 个 Submission trajectory/security case。
 
 ## R15a：只读内部实验治理 Agent
 
@@ -255,18 +274,17 @@
 * README、开发日志和框架图同步至 R14。
 * 本地真实 CockroachDB 完成 revision 12 升级、跨版本降级和再升级验收。
 
-## 下一步唯一实现目标
+## 下一步唯一目标
 
-只实现 R15d-b2 Submission 审核提案，不提前实现长期记忆、自动研究规划或开放式写工具：
+先制定 R15e 的详细计划，不在 R15d-b2 中顺带实现。计划必须先收敛：
 
-1. 复用现有 Submission Review Eligibility 和正式确认事务，不复制审核状态机。
-2. LOW/MEDIUM 可按现有角色确认，HIGH 仍只允许 Owner，CRITICAL/blocking 不得生成批准提案。
-3. Proposal 冻结审核回执、风险、Artifact 完整性、Manifest 追溯、决定、理由和来源哈希。
-4. 模型只能准备提案，不能确认 Submission 或创建正式 Experiment。
-5. Web 明确展示建议与正式事实，执行前重新校验 Submission、风险、embedding 和 Artifact。
+1. 阶段性研究总结的显式 Experiment 选择、可比性门禁和引用契约。
+2. Agent Research Memory 与正式 Experiment `Memory` 的物理、语义和权限隔离。
+3. 稳定结论、冲突结论、开放问题和建议的状态与过期规则。
+4. 结构化过滤先于向量候选的长期召回，以及 embedding 失败的明确降级。
+5. Bedrock `AgentChatModel` provider parity 和同一 eval suite，不改变业务权限边界。
 
-仍不增加任意 SQL、训练/改代码、自动审批、通用高影响操作工具、Agent 长期向量记忆或自动
-实验分组。
+仍不增加任意 SQL、训练/改代码、自动审批、通用高影响操作工具或自动实验分组。
 
 ## 每轮更新规则
 

@@ -1225,6 +1225,11 @@ class AgentActionProposal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "target_plan_check_id",
             "status",
         ),
+        Index(
+            "ix_agent_action_proposals_submission_status",
+            "target_submission_id",
+            "status",
+        ),
         CheckConstraint("source_draft_revision >= 1", name="source_revision_positive"),
         CheckConstraint("length(payload_hash) = 64", name="payload_hash_length"),
         CheckConstraint(
@@ -1240,7 +1245,8 @@ class AgentActionProposal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "(source_draft_id IS NOT NULL AND source_draft_revision_id IS NOT NULL "
             "AND source_draft_revision IS NOT NULL AND source_candidate_hash IS NOT NULL "
             "AND base_policy_hash IS NOT NULL AND pending_state_hash IS NOT NULL "
-            "AND target_plan_check_id IS NULL AND target_state_hash IS NULL)",
+            "AND target_plan_check_id IS NULL AND target_submission_id IS NULL "
+            "AND target_state_hash IS NULL)",
             name="policy_publish_fields",
         ),
         CheckConstraint(
@@ -1248,8 +1254,18 @@ class AgentActionProposal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "(source_draft_id IS NULL AND source_draft_revision_id IS NULL "
             "AND source_draft_revision IS NULL AND source_candidate_hash IS NULL "
             "AND base_policy_hash IS NULL AND pending_state_hash IS NULL "
-            "AND target_plan_check_id IS NOT NULL AND target_state_hash IS NOT NULL)",
+            "AND target_plan_check_id IS NOT NULL AND target_submission_id IS NULL "
+            "AND target_state_hash IS NOT NULL)",
             name="plan_decision_fields",
+        ),
+        CheckConstraint(
+            "operation != 'SUBMISSION_DECISION' OR "
+            "(source_draft_id IS NULL AND source_draft_revision_id IS NULL "
+            "AND source_draft_revision IS NULL AND source_candidate_hash IS NULL "
+            "AND base_policy_hash IS NULL AND pending_state_hash IS NULL "
+            "AND target_plan_check_id IS NULL AND target_submission_id IS NOT NULL "
+            "AND target_state_hash IS NOT NULL)",
+            name="submission_decision_fields",
         ),
     )
 
@@ -1290,6 +1306,9 @@ class AgentActionProposal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     target_plan_check_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("plan_checks.id"), nullable=True
     )
+    target_submission_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("experiment_submissions.id"), nullable=True
+    )
     target_state_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     base_context_id: Mapped[UUID] = mapped_column(
         ForeignKey("project_contexts.id"), nullable=False
@@ -1319,6 +1338,9 @@ class AgentActionProposal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     executed_context_version: Mapped[int | None] = mapped_column(Integer)
     executed_approval_record_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("approval_records.id")
+    )
+    executed_experiment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("experiments.id")
     )
     execution_result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     execution_error: Mapped[dict[str, Any] | None] = mapped_column(JSON)

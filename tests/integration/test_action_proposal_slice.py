@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from experiment_guardian.application.action_proposals import ActionProposalService
 from experiment_guardian.application.agent_tools import AgentToolRegistry
 from experiment_guardian.application.errors import AuthorizationError, ConflictError
+from experiment_guardian.application.experiments import ExperimentReviewService
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.policy_drafts import PolicyDraftService
 from experiment_guardian.application.services import GuardianApplication, PlanApprovalService
@@ -52,6 +53,7 @@ from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyGovernanceRepository,
     SqlAlchemyPlanCheckRepository,
     SqlAlchemyProjectRepository,
+    SqlAlchemySubmissionRepository,
 )
 from experiment_guardian.infrastructure.storage import UnconfiguredArtifactStorage
 from tests.integration.test_agent_slice import _setup
@@ -79,7 +81,20 @@ def _services(
         projects,
         SqlAlchemyGovernanceRepository(),
     )
-    return drafts, ActionProposalService(factory, projects, drafts, web, approvals)
+    reviews = ExperimentReviewService(
+        factory,
+        projects,
+        SqlAlchemyGovernanceRepository(),
+        SqlAlchemySubmissionRepository(),
+    )
+    return drafts, ActionProposalService(
+        factory,
+        projects,
+        drafts,
+        web,
+        approvals,
+        reviews,
+    )
 
 
 def _proposal_source(
@@ -264,17 +279,15 @@ def test_owner_confirms_frozen_policy_proposal_atomically_and_idempotently(
         assert session.scalar(select(func.count()).select_from(AgentActionProposal)) == 1
         assert (
             session.scalar(
-                select(func.count()).select_from(IdempotencyRecord).where(
-                    IdempotencyRecord.operation == "agent.action_proposal.confirm"
-                )
+                select(func.count())
+                .select_from(IdempotencyRecord)
+                .where(IdempotencyRecord.operation == "agent.action_proposal.confirm")
             )
             == 1
         )
         actions = set(
             session.scalars(
-                select(AuditLog.action).where(
-                    AuditLog.target_id == prepared.proposal_id
-                )
+                select(AuditLog.action).where(AuditLog.target_id == prepared.proposal_id)
             ).all()
         )
         assert {
@@ -337,9 +350,7 @@ def test_changed_draft_and_expiry_are_persisted_without_policy_publish(
         proposal_id=prepared.proposal_id,
         identity=identity,
         idempotency_key=uuid4(),
-        request=ActionProposalConfirmRequest(
-            proposal_digest=prepared.proposal_digest
-        ),
+        request=ActionProposalConfirmRequest(proposal_digest=prepared.proposal_digest),
     )
     assert stale.status is ActionProposalStatus.STALE
     assert any("revision" in reason for reason in stale.confirmability_reasons)
@@ -373,9 +384,7 @@ def test_changed_draft_and_expiry_are_persisted_without_policy_publish(
         proposal_id=expiring.proposal_id,
         identity=identity,
         idempotency_key=uuid4(),
-        request=ActionProposalConfirmRequest(
-            proposal_digest=expiring.proposal_digest
-        ),
+        request=ActionProposalConfirmRequest(proposal_digest=expiring.proposal_digest),
     )
     assert expired.status is ActionProposalStatus.EXPIRED
     with plan_check_session_factory() as session:
@@ -462,9 +471,7 @@ def test_researcher_may_prepare_own_proposal_but_only_owner_can_confirm(
             proposal_id=prepared.proposal_id,
             identity=researcher,
             idempotency_key=uuid4(),
-            request=ActionProposalConfirmRequest(
-                proposal_digest=prepared.proposal_digest
-            ),
+            request=ActionProposalConfirmRequest(proposal_digest=prepared.proposal_digest),
         )
 
     owner_view = proposals.get_proposal(
@@ -478,9 +485,7 @@ def test_researcher_may_prepare_own_proposal_but_only_owner_can_confirm(
         proposal_id=prepared.proposal_id,
         identity=owner,
         idempotency_key=uuid4(),
-        request=ActionProposalConfirmRequest(
-            proposal_digest=prepared.proposal_digest
-        ),
+        request=ActionProposalConfirmRequest(proposal_digest=prepared.proposal_digest),
     )
     assert executed.status is ActionProposalStatus.EXECUTED
 
@@ -524,9 +529,7 @@ def test_owner_confirms_plan_decision_proposal_atomically(
         assert session.scalar(select(func.count()).select_from(ApprovalRecord)) == 0
 
     key = uuid4()
-    confirmation = ActionProposalConfirmRequest(
-        proposal_digest=prepared.proposal_digest
-    )
+    confirmation = ActionProposalConfirmRequest(proposal_digest=prepared.proposal_digest)
     executed = proposals.confirm(
         project_id=project_id,
         proposal_id=prepared.proposal_id,
@@ -612,9 +615,7 @@ def test_direct_plan_decision_makes_proposal_stale(
         proposal_id=prepared.proposal_id,
         identity=identity,
         idempotency_key=uuid4(),
-        request=ActionProposalConfirmRequest(
-            proposal_digest=prepared.proposal_digest
-        ),
+        request=ActionProposalConfirmRequest(proposal_digest=prepared.proposal_digest),
     )
     assert stale.status is ActionProposalStatus.STALE
     assert any("审批状态" in reason for reason in stale.confirmability_reasons)

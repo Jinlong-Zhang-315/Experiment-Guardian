@@ -1,8 +1,8 @@
 # 内部实验治理 Agent 开发计划
 
-更新时间：2026-07-24
+更新时间：2026-07-27
 计划轮次：R15a-R15e
-当前状态：R15d-b1 Plan Check 批准/拒绝提案已完成；下一步只实施 R15d-b2
+当前状态：R15d-b2 Submission 批准/拒绝提案已完成；下一步先收敛 R15e 计划
 
 ## 1. 目标与定位
 
@@ -39,15 +39,16 @@ Agent 的职责是提高查询、分析、解释和草稿准备效率，不成�
 * `Memory VECTOR(1024)` 只保存已确认 Experiment 记忆，并执行 project/protocol/status 等
   结构化过滤后再做向量排序。
 
-### R15c 后的当前缺口
+### R15d-b2 后的当前缺口
 
 * `SummaryTextGenerator` 继续拒绝 `tool_calls`；R15a 已新增独立 `AgentChatModel` 和百炼适配器。
-* Thread、Message、Run、ModelCall、ToolCall、Citation、Event 和 Policy Draft 已完成；
-  Action Proposal 仍未实现。
-* 有界 Agent loop、版本化 Prompt/工具目录、rolling summary、确定性分析和候选草稿工具已完成。
-* Web 治理 Agent 已支持只读问答、比较、统计、诊断和完整 Bundle 草稿工作台；没有正式确认页。
-* 草稿已表达候选约束语义、未解决歧义、diff 和影响，但不能转换为可确认的正式操作提案。
-* 现有业务服务适合复用，但不应直接把大量 ORM 对象或内部方法暴露为模型工具。
+* Thread、Message、Run、ModelCall、ToolCall、Citation、Event、Policy Draft 和三种白名单
+  Action Proposal 已完成。
+* 有界 Agent loop、版本化 Prompt/工具目录、rolling summary v5、确定性分析、候选草稿和
+  Policy/Plan/Submission 提案已完成。
+* Web 已支持草稿编辑与提案复核；正式执行始终使用独立 Web 确认请求，不返回模型循环。
+* 尚未实现带正式 Experiment 引用的阶段研究总结、独立 Agent Research Memory 与 Bedrock
+  `AgentChatModel` provider parity。
 
 ## 3. 本轮采纳、调整和拒绝
 
@@ -465,7 +466,7 @@ R15a 继续使用现有 `httpx` 调用百炼，不为了 OpenAI-compatible 协�
 ### R15d：用户确认后的白名单正式操作
 
 1. R15d-a 增加 Action Proposal 和 digest/base-version 协议并接入 Policy Bundle 发布。
-2. R15d-b1 接入 Plan 批准/拒绝；R15d-b2 再评估 Submission 确认/拒绝。
+2. R15d-b1 接入 Plan 批准/拒绝；R15d-b2 已接入 Submission 确认/拒绝。
 3. 独立确认 API 执行 CSRF、近期认证、实时 RBAC、事务锁和幂等。
 4. 目标状态或版本变化时返回 STALE，不自动重做提案。
 5. CRITICAL、blocking、HIGH 风险角色限制和不可变记录规则保持不变。
@@ -480,8 +481,8 @@ R15a 继续使用现有 `httpx` 调用百炼，不为了 OpenAI-compatible 协�
 5. 实现 Bedrock AgentChatModel，并用同一 provider contract/eval suite 验证。
 6. 增加成本、token、延迟、工具错误和模型回归观测。
 
-一次只实现一个阶段。当前下一步只开始 R15d-b2；任何正式操作仍必须由独立人类确认请求执行，
-模型本身不获得 execute 工具。
+一次只实现一个阶段。当前下一步先为 R15e 形成细化计划；任何正式操作仍必须由独立人类
+确认请求执行，模型本身不获得 execute 工具。
 
 ## 13. 测试与评测
 
@@ -575,6 +576,17 @@ R15d-b1 已按相同不可变 Proposal 协议接入 Plan Check `APPROVED/REJECTE
 TTL 均受 digest 保护。Owner 独立确认后复用 `PlanApprovalService` 事务核心，Proposal、
 ApprovalRecord、Plan 状态、幂等和审计原子提交。Agent 仍没有 execute 工具。
 
-R15d-b2 才评估 Submission 确认/拒绝提案，必须复用现有风险权限：`CRITICAL`/blocking
-不可绕过、HIGH 仅 Owner。R15d-b1 没有实现 Submission 操作，也没有加入任意 SQL、训练、
-代码修改或长期 Agent Memory。
+R15d-b2 已按同一 Proposal 协议接入 Submission `APPROVED/REJECTED`：
+
+* 准备时冻结审核回执、风险、Artifact 固定版本证据、Manifest/Plan/Context/Intent 追溯、
+  embedding 元数据、决定和理由；不改变 Submission 状态。
+* `CRITICAL`/blocking 不可准备批准，HIGH 批准仅 Owner 可确认。Researcher 可准备自己
+  HIGH 批准提案供 Owner 审阅，并可确认自己 LOW/MEDIUM 批准或拒绝提案。
+* 确认前重算回执来源哈希、审核资格、材料、embedding 和追溯；任一漂移使提案进入
+  `STALE`，不自动 rebase。
+* 确认复用 `ExperimentReviewService.decide_in_session()`，正式实验、指标、记忆、Artifact 关联、
+  ApprovalRecord、Proposal、双幂等和审计在同一 CockroachDB 事务中提交。
+* `r15d-b2-v1` 工具目录仅新增 prepare 工具，没有 Submission confirm/execute 工具。
+  rolling summary schema v5 只保存有界的 target/decision/eligibility 引用。
+
+R15d-b2 仍没有加入任意 SQL、训练、代码修改、自动审批或长期 Agent Memory。

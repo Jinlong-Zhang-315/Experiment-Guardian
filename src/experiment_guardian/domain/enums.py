@@ -283,6 +283,7 @@ class PolicyDraftSource(StrEnum):
 class ActionProposalOperation(StrEnum):
     POLICY_PUBLISH = "POLICY_PUBLISH"
     PLAN_CHECK_DECISION = "PLAN_CHECK_DECISION"
+    SUBMISSION_DECISION = "SUBMISSION_DECISION"
 
 
 class ActionProposalStatus(StrEnum):

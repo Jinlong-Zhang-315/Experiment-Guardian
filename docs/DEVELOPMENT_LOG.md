@@ -1497,6 +1497,74 @@
 * R15d-b2 只实现 Submission 审核提案，必须复用现有 Review Eligibility 和正式 Experiment
   确认事务：LOW/MEDIUM 保持现有权限、HIGH 仅 Owner、CRITICAL/blocking 禁止批准。
 
+## 2026-07-27 / R15d-b2：Submission 批准/拒绝提案
+
+版本：working tree，基于 `6f48e66`。
+
+### 更新内容
+
+* revision `20260727_20` 扩展 `agent_action_proposals`：增加 `SUBMISSION_DECISION`、
+  `target_submission_id`、`executed_experiment_id`、Submission 复合索引和按 operation 分离的数据库约束。
+  历史 Policy/Plan 提案的 digest 算法不变；downgrade 只删除候选 Submission Proposal，不回滚
+  已执行的 ApprovalRecord 或 Experiment。
+* 从 `ExperimentReviewService` 抽取 `decide_in_session()` 和只读 `SubmissionReviewBasis`。
+  直接审核与 Proposal 确认复用同一权限、状态机、幂等、审计和正式 Experiment 入库核心。
+* Submission Proposal 冻结完整审核回执、风险详情、Artifact 大小/类型/SHA-256/固定
+  VersionId、Manifest/Plan/Context/Intent 追溯、embedding provider/model/dimension/输入哈希、
+  决定和必填理由。状态哈希和 proposal digest 同时绑定目标、版本、payload 和 TTL。
+* 准备和确认均重算审核回执来源哈希、Review Eligibility、追溯、Artifact 和 embedding。
+  风险、回执、材料、Submission 状态或正式记录变化后，旧提案不再执行。
+* Researcher 可准备自己 HIGH 风险批准提案供 Owner 复核，只能确认自己 LOW/MEDIUM
+  批准或拒绝提案；HIGH 批准仅 Owner，CRITICAL/blocking 批准提案在准备时就被拒绝。
+  所有 Agent Proposal 确认统一要求近期认证，不改动现有直接审核 API。
+* Agent 新增 `action_proposal_prepare_submission_decision_v1`；`submission_diagnose_v1` 增加
+  动态 eligibility、回执来源一致性和批准材料完整性。Prompt/工具目录升级 `r15d-b2-v1`，
+  旧 Run 仍使用冻结的 r15a-r15d-b1 目录。
+* rolling summary schema v5 增加 Submission target、decision 和 review eligibility 的有界引用，
+  不把 Proposal 升级为已执行事实。新增 21 个 Submission 工具选择、风险门禁、权限、过期和
+  prompt injection trajectory/security case。
+* Web Action Proposal Workspace 扩展为三操作判别联合视图。Submission 默认展示目标、
+  决定、资格和人类可读回执，强制展开 HIGH/CRITICAL/blocking 风险，保留固定版本材料、
+  完整追溯和原始 JSON 高级视图。
+
+### 修复的问题
+
+* Agent 对 Submission 的诊断和建议现在可以变成可审阅、可追溯的候选决定，但不会提前
+  改变 Submission 或创建正式记录。
+* Proposal 确认与正式 Experiment 创建不再存在跨事务部分成功窗口；任一步失败均回滚。
+* 审核回执、风险、Artifact VersionId、embedding 或追溯变化后，旧提案不会基于过期依据执行。
+* 提案确认的幂等重放现在返回首次保存的完整响应，不因 `updated_at` 或后续派生视图差异
+  产生不等价结果。
+
+### 验证结果
+
+* Python 共收集 289 项，全量执行退出码 0：280 passed、9 skipped。Submission Proposal
+  聚焦集成测试覆盖无正式写入准备、LOW/MEDIUM Researcher 确认、HIGH Owner 接管、
+  CRITICAL 批准门禁与拒绝路径、近期认证、Artifact 漂移失效、幂等和注入失败整体回滚。
+* Agent 工具测试验证只生成 `ACTION_PROPOSAL` evidence，不创建 ApprovalRecord/Experiment。
+* Ruff 全仓通过；mypy 检查 76 个源文件通过。
+* Web ESLint、Vitest 8 项和 production TypeScript/Vite build 通过。
+* Compose 重新构建 API、Worker、Agent Worker 和 Web 镜像；一次性 migration 成功执行
+  `20260724_19 -> 20260727_20`，local-init 幂等成功，API 与 Web 代理健康检查均返回 200，
+  CockroachDB 中 `alembic_version=20260727_20`。
+* 真实 CockroachDB 隔离测试确认 revision 20 升级和 `20 -> 19` 降级均成功。继续执行历史
+  全链降级到 revision 12 时，节点因剩余容量 3.6% 低于 CockroachDB 5% 保护阈值，在旧
+  revision 13 的 `memories.embedding_provider` 列回填处暂停；因此本轮未把历史全链标为通过。
+
+### 已知遗留项
+
+* 提案失效后不自动 rebase；用户需重新诊断当前 Submission 并创建新提案。
+* 真实百炼 Agent 遵守 `r15d-b2-v1` 提示词的稳定性仍通过
+  `RUN_BAILIAN_AGENT_INTEGRATION=1` 可选验收，默认测试不访问外网。
+* R15e 尚未实现；长期 Agent Research Memory 不与正式 Experiment Memory 混用。
+* 当前本机 CockroachDB store 只剩 3.6% 可用容量；执行大范围历史 schema backfill 前需要
+  先清理底层磁盘或迁移数据。本轮未降低数据库容量保护阈值。
+
+### 下一步
+
+* 先详细规划 R15e 的显式实验集总结、引用绑定、结论状态、独立 Research Memory、
+  结构化过滤先行的向量召回和 Bedrock provider parity，不在本轮提前落实。
+
 ## 新日志模板
 
 ```text

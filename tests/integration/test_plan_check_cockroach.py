@@ -265,6 +265,10 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         assert "embedding_provider" in {
             column["name"] for column in inspect(test_engine).get_columns("memories")
         }
+        assert {"target_submission_id", "executed_experiment_id"} <= {
+            column["name"]
+            for column in inspect(test_engine).get_columns("agent_action_proposals")
+        }
         assert {
             "upload_verified_at",
             "upload_verified_by",
