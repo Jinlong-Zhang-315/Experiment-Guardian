@@ -9,6 +9,7 @@ services:
     command:
       - start-single-node
       - --insecure
+      - --store=path=/cockroach/cockroach-data,size=${COCKROACH_STORE_SIZE:-200GiB}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${COCKROACH_SQL_PORT:-26257}:26257"

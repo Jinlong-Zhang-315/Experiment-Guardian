@@ -160,3 +160,9 @@ docker compose --env-file .env.local --profile agent logs -f api worker agent-wo
 
 CockroachDB 和 MinIO 使用命名卷，普通 stop/start 不丢数据。不要随意执行 `down -v`；它会
 永久删除本地数据库和 Artifact。单机模式不提供多节点 HA、远程暴露或自动备份。
+
+Compose 默认通过 `COCKROACH_STORE_SIZE=200GiB` 为本地单节点设置明确的 store 容量口径。
+该值不会预分配 200GiB，也不是宿主磁盘扩容；它用于避免共享大文件系统接近容量阈值时，
+CockroachDB 按整个文件系统总量计算可用比例而误阻止本项目的小型 schema backfill。调整时
+必须保证该值高于 CockroachDB 实际数据量且低于底层文件系统真实可用空间。生产或多节点部署
+应按实际磁盘规划容量，不能照搬本地默认值。

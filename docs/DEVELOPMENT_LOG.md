@@ -1547,9 +1547,9 @@
 * Compose 重新构建 API、Worker、Agent Worker 和 Web 镜像；一次性 migration 成功执行
   `20260724_19 -> 20260727_20`，local-init 幂等成功，API 与 Web 代理健康检查均返回 200，
   CockroachDB 中 `alembic_version=20260727_20`。
-* 真实 CockroachDB 隔离测试确认 revision 20 升级和 `20 -> 19` 降级均成功。继续执行历史
-  全链降级到 revision 12 时，节点因剩余容量 3.6% 低于 CockroachDB 5% 保护阈值，在旧
-  revision 13 的 `memories.embedding_provider` 列回填处暂停；因此本轮未把历史全链标为通过。
+* 真实 CockroachDB 隔离测试完成 revision 20 升降级、
+  `head -> 05 -> head -> 03 -> head -> base -> head` 全迁移链，以及完整
+  Plan/审批/Manifest/Submission 业务回归。
 
 ### 已知遗留项
 
@@ -1557,13 +1557,38 @@
 * 真实百炼 Agent 遵守 `r15d-b2-v1` 提示词的稳定性仍通过
   `RUN_BAILIAN_AGENT_INTEGRATION=1` 可选验收，默认测试不访问外网。
 * R15e 尚未实现；长期 Agent Research Memory 不与正式 Experiment Memory 混用。
-* 当前本机 CockroachDB store 只剩 3.6% 可用容量；执行大范围历史 schema backfill 前需要
-  先清理底层磁盘或迁移数据。本轮未降低数据库容量保护阈值。
+* rootless Docker 所在 `/dev/md0` 共享文件系统仍已使用约 97%；本地 CockroachDB 已通过
+  独立 store 容量口径避免受共享盘总容量比例误判，但其他 Docker 工作负载仍需监控物理空间。
 
 ### 下一步
 
 * 先详细规划 R15e 的显式实验集总结、引用绑定、结论状态、独立 Research Memory、
   结构化过滤先行的向量召回和 Bedrock provider parity，不在本轮提前落实。
+
+## 2026-07-27 / 本地 CockroachDB store 容量修复
+
+版本：working tree，与 R15d-b2 同批交付。
+
+### 更新内容
+
+* 审计确认 CockroachDB 数据卷实际仅使用约 2.5GB，但 rootless Docker 位于 11TB 的共享
+  `/dev/md0`，该文件系统剩余约 387GB/3.6%。CockroachDB 按整个文件系统容量计算 5% DDL
+  保护阈值，导致本项目 schema backfill 被错误阻止。
+* `docker-compose.yml` 为本地单节点新增
+  `--store=path=/cockroach/cockroach-data,size=${COCKROACH_STORE_SIZE:-200GiB}`；配置不预分配
+  空间、不删除命名卷，也不降低 CockroachDB 的 5% 安全阈值。
+* `.env.local.example` 和本地部署文档增加 `COCKROACH_STORE_SIZE=200GiB` 及调整边界说明。
+
+### 验证结果
+
+* 原命名卷重建容器后数据保留，节点健康；store 报告容量 200GiB、可用约 199.65GiB。
+* API、Worker、Web 在数据库短暂重建后保持运行，CockroachDB revision 仍为 `20260727_20`。
+* 先前因 3.6% 容量比例失败的真实 CockroachDB 全迁移链测试重新执行并通过。
+
+### 已知遗留项
+
+* 这是本地开发单节点的容量口径修复，不是 `/dev/md0` 的物理扩容。共享盘仍为 97% 使用率；
+  若其真实剩余空间接近 200GiB，必须先清理或扩容底层存储，再提高或继续使用该配额。
 
 ## 新日志模板
 
