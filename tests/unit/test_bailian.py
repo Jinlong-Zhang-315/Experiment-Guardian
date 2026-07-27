@@ -7,7 +7,11 @@ import httpx
 import pytest
 
 from experiment_guardian.application.errors import ServiceUnavailableError
-from experiment_guardian.domain.agent import AgentChatMessage, AgentToolSpec
+from experiment_guardian.domain.agent import (
+    AgentChatMessage,
+    AgentResponseFormat,
+    AgentToolSpec,
+)
 from experiment_guardian.infrastructure.bailian import (
     BailianAgentChatModel,
     BailianEmbeddingGenerator,
@@ -225,7 +229,11 @@ def test_bailian_agent_streams_text_usage_and_json_mode() -> None:
             tools=[],
             tool_choice="none",
             max_output_tokens=200,
-            response_json=True,
+            response_format=AgentResponseFormat(
+                name="TestAnswer",
+                description="Test JSON answer.",
+                json_schema={"type": "object"},
+            ),
         )
     )
     assert "".join(item.text or "" for item in events) == '{"answer_markdown":"ok"}'

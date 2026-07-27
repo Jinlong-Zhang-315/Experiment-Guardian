@@ -154,3 +154,38 @@ def test_agent_configuration_is_conditional_and_uses_a_separate_model_slot() -> 
     assert enabled.agent_provider == "bailian"
     assert enabled.bailian_summary_model == "summary-model"
     assert enabled.bailian_agent_model == "qwen-agent"
+
+
+def test_bedrock_agent_configuration_does_not_require_bailian_credentials() -> None:
+    settings = Settings.model_validate(
+        {
+            **_local_settings(agent_enabled=False),
+            "deployment_mode": "cloud",
+            "web_auth_mode": "cognito",
+            "object_storage_backend": "aws_s3",
+            "queue_backend": "sqs",
+            "llm_provider": "bedrock",
+            "agent_enabled": True,
+            "agent_provider": "bedrock",
+            "bedrock_agent_model_id": "us.anthropic.test-model-v1:0",
+            "bailian_api_key": None,
+            "bailian_base_url": "",
+            "bailian_agent_model": "",
+        }
+    )
+    assert settings.agent_model_id == "us.anthropic.test-model-v1:0"
+
+
+def test_local_agent_rejects_bedrock_and_partial_pricing() -> None:
+    with pytest.raises(ValidationError, match="只允许使用 bailian"):
+        Settings.model_validate(
+            _local_settings(
+                agent_enabled=True,
+                agent_provider="bedrock",
+                bedrock_agent_model_id="model",
+            )
+        )
+    with pytest.raises(ValidationError, match="费率必须同时配置"):
+        Settings.model_validate(
+            _local_settings(agent_input_cost_per_million_tokens="1")
+        )

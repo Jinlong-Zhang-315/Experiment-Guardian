@@ -6,8 +6,14 @@ from uuid import uuid4
 import pytest
 
 from experiment_guardian.core.config import Settings
+from experiment_guardian.domain.agent import (
+    AgentChatMessage,
+    AgentResponseFormat,
+    AgentToolSpec,
+)
 from experiment_guardian.domain.contracts import SummaryQueueEnvelope
 from experiment_guardian.infrastructure.bedrock import (
+    BedrockAgentChatModel,
     BedrockSummaryGenerator,
     BedrockTitanV2EmbeddingGenerator,
 )
@@ -82,3 +88,60 @@ def test_real_titan_v2_embedding_has_fixed_normalized_dimension() -> None:
         "Experiment objective: verify the configured Titan V2 embedding model."
     )
     assert len(result.vector) == 1024
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_BEDROCK_AGENT_INTEGRATION") != "1",
+    reason="设置 RUN_BEDROCK_AGENT_INTEGRATION=1 后才执行真实 Bedrock Agent 验收",
+)
+def test_real_bedrock_agent_supports_strict_output_and_function_calling() -> None:
+    settings = Settings()
+    if not settings.bedrock_agent_model_id:
+        pytest.fail("RUN_BEDROCK_AGENT_INTEGRATION=1 时必须配置 BEDROCK_AGENT_MODEL_ID")
+    model = BedrockAgentChatModel(
+        model_id=settings.bedrock_agent_model_id,
+        region=settings.aws_region,
+        connect_timeout_seconds=settings.bedrock_connect_timeout_seconds,
+        read_timeout_seconds=settings.bedrock_read_timeout_seconds,
+    )
+    events = list(
+        model.stream_turn(
+            messages=[
+                AgentChatMessage(
+                    role="system",
+                    content=(
+                        "Call project_status_get_v1 exactly once. Do not answer directly."
+                    ),
+                ),
+                AgentChatMessage(role="user", content="Read the project status."),
+            ],
+            tools=[
+                AgentToolSpec(
+                    name="project_status_get_v1",
+                    version="1",
+                    description="Read the current project status.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                )
+            ],
+            tool_choice="auto",
+            max_output_tokens=256,
+            response_format=AgentResponseFormat(
+                name="ProviderContractAnswer",
+                description="Strict provider integration response.",
+                json_schema={
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                    "additionalProperties": False,
+                },
+            ),
+        )
+    )
+    tool_calls = [event.tool_call for event in events if event.tool_call is not None]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].name == "project_status_get_v1"
+    assert tool_calls[0].arguments == {}

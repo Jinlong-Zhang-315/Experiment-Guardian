@@ -20,6 +20,7 @@ from experiment_guardian.domain.agent import (
     AgentChatMessage,
     AgentModelEvent,
     AgentModelUsage,
+    AgentResponseFormat,
     AgentToolRequest,
     AgentToolSpec,
 )
@@ -310,7 +311,7 @@ class BailianAgentChatModel(AgentChatModel):
         tools: Sequence[AgentToolSpec],
         tool_choice: str,
         max_output_tokens: int,
-        response_json: bool = False,
+        response_format: AgentResponseFormat | None = None,
     ) -> Iterator[AgentModelEvent]:
         if tool_choice not in {"auto", "none"}:
             raise ValueError("百炼 Agent tool_choice 只允许 auto 或 none")
@@ -334,7 +335,7 @@ class BailianAgentChatModel(AgentChatModel):
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if response_json:
+        if response_format is not None:
             payload["response_format"] = {"type": "json_object"}
 
         tool_fragments: dict[int, dict[str, str]] = {}

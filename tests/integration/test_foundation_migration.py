@@ -122,7 +122,13 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         "agent_action_proposals",
     } <= set(inspector.get_table_names())
     assert "current_summary_id" in {item["name"] for item in inspector.get_columns("agent_threads")}
-    assert "purpose" in {item["name"] for item in inspector.get_columns("agent_model_calls")}
+    assert {
+        "purpose",
+        "provider",
+        "model_id",
+        "latency_ms",
+        "estimated_cost",
+    } <= {item["name"] for item in inspector.get_columns("agent_model_calls")}
     assert {
         "covered_sequence_from",
         "covered_sequence_to",

@@ -250,6 +250,28 @@ class AgentContextSummaryStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class ResearchMemoryType(StrEnum):
+    RESEARCH_SYNTHESIS = "RESEARCH_SYNTHESIS"
+    CONFLICT = "CONFLICT"
+    OPEN_QUESTION = "OPEN_QUESTION"
+    RECOMMENDATION = "RECOMMENDATION"
+
+
+class ResearchMemoryStatus(StrEnum):
+    """研究记忆在 R15e-b 中始终是候选分析，不是正式事实。"""
+
+    CANDIDATE = "CANDIDATE"
+
+
+class ResearchMemoryEmbeddingStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    RETRYABLE_FAILURE = "RETRYABLE_FAILURE"
+    READY = "READY"
+    FAILED = "FAILED"
+    DEAD_LETTER = "DEAD_LETTER"
+
+
 class AgentEvidenceKind(StrEnum):
     CONFIRMED_FACT = "CONFIRMED_FACT"
     USER_PROVIDED = "USER_PROVIDED"

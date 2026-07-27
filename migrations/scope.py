@@ -37,6 +37,9 @@ AGENT_TABLES = frozenset(
         "agent_policy_drafts",
         "agent_policy_draft_revisions",
         "agent_action_proposals",
+        "agent_research_reports",
+        "agent_research_memories",
+        "agent_research_memory_embeddings",
     }
 )
 MIGRATED_TABLES = (

@@ -40,9 +40,16 @@ locals {
     { name = "COGNITO_WEB_CLIENT_ID", value = aws_cognito_user_pool_client.web.id },
     { name = "AGENT_ENABLED", value = tostring(var.agent_enabled) },
     ], var.agent_enabled ? [
-    { name = "AGENT_PROVIDER", value = "bailian" },
+    { name = "AGENT_PROVIDER", value = var.agent_provider },
+    { name = "AGENT_COST_CURRENCY", value = var.agent_cost_currency },
+    ] : [], var.agent_enabled && var.agent_provider == "bailian" ? [
     { name = "BAILIAN_BASE_URL", value = var.bailian_agent_base_url },
     { name = "BAILIAN_AGENT_MODEL", value = var.bailian_agent_model },
+    ] : [], var.agent_enabled && var.agent_provider == "bedrock" ? [
+    { name = "BEDROCK_AGENT_MODEL_ID", value = var.bedrock_agent_model_id },
+    ] : [], var.agent_enabled && var.agent_input_cost_per_million_tokens != null && var.agent_output_cost_per_million_tokens != null ? [
+    { name = "AGENT_INPUT_COST_PER_MILLION_TOKENS", value = tostring(var.agent_input_cost_per_million_tokens) },
+    { name = "AGENT_OUTPUT_COST_PER_MILLION_TOKENS", value = tostring(var.agent_output_cost_per_million_tokens) },
   ] : [])
 
   common_secrets = concat([
@@ -50,7 +57,7 @@ locals {
     { name = "WEB_OIDC_STATE_KEY", valueFrom = "${aws_secretsmanager_secret.runtime.arn}:web_oidc_state_key::" },
     { name = "WEB_CSRF_SECRET", valueFrom = "${aws_secretsmanager_secret.runtime.arn}:web_csrf_secret::" },
     { name = "COGNITO_WEB_CLIENT_SECRET", valueFrom = "${aws_secretsmanager_secret.runtime.arn}:cognito_web_client_secret::" },
-    ], var.agent_enabled ? [
+    ], var.agent_enabled && var.agent_provider == "bailian" ? [
     { name = "BAILIAN_API_KEY", valueFrom = "${aws_secretsmanager_secret.runtime.arn}:bailian_agent_api_key::" },
   ] : [])
 }

@@ -1590,6 +1590,199 @@
 * 这是本地开发单节点的容量口径修复，不是 `/dev/md0` 的物理扩容。共享盘仍为 97% 使用率；
   若其真实剩余空间接近 200GiB，必须先清理或扩容底层存储，再提高或继续使用该配额。
 
+## 2026-07-27 / R15e-a：显式实验集候选研究报告
+
+版本：working tree。
+
+### 更新内容
+
+* 新增 `agent_research_reports` 和 Alembic revision `20260727_21`。报告不可变地绑定 Team、
+  Project、创建人、来源 Thread/Run/ToolCall/最终 Message、显式 Experiment 集、确定性来源
+  快照、报告正文、双 SHA-256 以及 provider/model/prompt/schema 元数据。
+* 新增严格的报告领域契约。用户必须显式选择 2-8 个不重复正式 Experiment；默认只接受
+  `COMPLETED/FAILED`，`DEPRECATED/SUPERSEDED` 必须显式允许，其他状态拒绝。
+* 新增 `research_report_prepare_v1`。工具按 confirmed_at/ID 稳定排序，冻结指标、失败原因、
+  正式摘要和 Submission/Manifest/Plan/Intent/Context 追溯，并复用既有两两可比性和整组重复
+  统计；最多仅展示五个差异路径，不把完整配置值扩散到模型上下文。
+* Prompt 和工具目录升级 `r15e-a-v1`，此前所有目录保持冻结。报告工具不能与 Policy Draft
+  或 Action Proposal 工具在同一批调用中混用，也不允许单轮准备多个报告。
+* 报告正文固定为阶段摘要、支持结论、冲突、开放问题、建议和限制。结论/冲突至少引用两个
+  正式 Experiment 事实及一个确定性分析，且全部选择实验都必须被引用覆盖；source hash、
+  实验集合或引用越界时只允许一次模型修复，失败后不写报告。
+* 最终 Assistant Message、Citation、Report、Run 完成状态与两类 AuditLog 在同一事务中提交。
+  rolling summary 升级 schema v6，只保存有界报告引用，不复制报告全文或把它变成正式事实。
+* 增加项目成员共享的报告列表/详情只读 API 和 Agent list/get 工具。读取时复核正文哈希、来源
+  ToolCall 输出哈希和引用契约；来源 Experiment 状态变化或缺失时显示警告，不追溯修改历史。
+* Web 治理 Agent 页增加研究报告入口和消息级报告链接；新增桌面/移动自适应的共享报告工作台，
+  默认显示人类可读结论、引用与限制，并保留来源快照、provider 元数据和原始 JSON 高级视图。
+* 增加 24 个 R15e-a trajectory/security case、领域引用校验单测、真实业务对象工具集成测试、
+  Agent 原子落库/项目共享权限测试和 Web 组件测试。
+* README、迭代状态、内部 Agent 计划、本地部署说明和文本架构图均同步到 revision 21；下一轮
+  唯一目标收敛为 R15e-b 独立 Research Memory，不与 provider parity 同轮开发。
+
+### 修复的问题
+
+* 阶段性总结不再只存在于一次对话文本中，而是有独立、不可变、可共享和可审计的候选报告。
+* 模型不能自行扩大实验集合或引用未读取记录；报告遗漏所选实验、把单实验观察写成跨实验结论、
+  或缺少确定性分析依据时会在持久化前被拒绝。
+* 后续状态变化不再静默让旧报告看似仍基于当前状态；读取端明确展示来源变化警告。
+* 长对话压缩不再丢失报告身份，但也不会把旧报告全文反复注入模型上下文。
+* 报告读取会独立重算去除本次 evidence ID 后的规范化来源哈希，并核对标题、目标、实验集合、
+  指标和历史开关与正文/来源一致；冗余元数据误写不会造成列表与详情表达分叉。
+
+### 验证结果
+
+* Python 全量收集 296 项：287 passed、9 skipped；外部服务测试仍按既有环境开关跳过。
+* R15e-a 聚焦后端测试 21 项通过；Ruff 全仓通过；mypy 检查 78 个源文件通过。
+* 真实 CockroachDB 隔离测试通过，显式验证 `21 -> 20 -> 21`，并继续跑通完整迁移、Plan、
+  Approval、Manifest、Submission、数据库队列和向量查询回归。Inspector 对既有 `vector`
+  类型有已知识别警告，但实际 1024 维向量读写和查询通过。
+* Web ESLint、Vitest 9 项和 TypeScript/Vite production build 通过；Playwright 在桌面和移动
+  视口各 1 项通过，覆盖治理 Agent 入口、研究报告空状态、弹窗开关和页面横向溢出检查。
+* 本机 Compose 完成 migration/API/Worker/Web 重建；持久数据库
+  `alembic_version=20260727_21` 且存在 `agent_research_reports`。API health、Web 根页面、
+  local_owner Session/RBAC、项目列表和研究报告列表真实 HTTP 链路均返回成功。
+
+### 已知遗留项
+
+* R15e-a 报告没有 embedding，也不参与跨会话长期语义召回；独立候选 Research Memory 留到
+  R15e-b，不能与正式 Experiment `Memory` 混用。
+* 当前仅有百炼 `AgentChatModel`。Bedrock provider parity、同套真实模型评测及成本/延迟观测
+  留到 R15e-c。
+* 来源变化只显示警告，不自动重新生成、rebase 或废弃报告；用户需基于当前正式记录显式创建
+  新报告。
+* 本机 `.env.local` 的 `AGENT_ENABLED=false`，因此没有执行真实百炼生成验收，也未擅自启动
+  Agent Worker。可通过 `RUN_BAILIAN_AGENT_INTEGRATION=1` 和现有 Agent profile 显式验收。
+
+### 下一步
+
+* R15e-b 只实现独立候选 Research Memory、来源/状态/过期规则、结构化过滤优先的向量召回和
+  embedding 失败降级；不加入正式事实晋升、自动实验分组或 Bedrock provider parity。
+
+## 2026-07-27 / R15e-b：独立候选 Research Memory 与结构化过滤召回
+
+版本：working tree。
+
+### 更新内容
+
+* 新增 revision `20260727_22`、`agent_research_memories` 和
+  `agent_research_memory_embeddings`。每个研究报告 finding 确定性物化为一条不可变候选记忆，
+  正文、来源引用和内容哈希与可变的 provider/model/document version 索引任务分离。
+* 新报告在原子事务中只做本地记忆物化，不调用模型；Agent Worker 幂等补建旧报告和当前模型
+  任务，并复用 claim、`FOR UPDATE SKIP LOCKED`、lease、generation、退避、最大尝试和死信。
+* 新增 Research Memory 检索服务。查询先按 team/project/CANDIDATE/type、协议、实验引用、
+  来源状态、当前 provider/model/dimension/document version 和输入哈希过滤，再对最多 200 条
+  候选执行 CockroachDB `<=>` 精确排序；空候选不会调用模型。
+* 新增候选记忆搜索 API 和 Owner 索引重试 API。重试要求 Web Session、实时 Owner、CSRF 与
+  `Idempotency-Key`；终态失败和人工重试均保留审计，历史模型版本不被覆盖。
+* Agent 增加 `research_memories_search_v1`，Prompt/目录升级 `r15e-b-v1`。返回值固定标记
+  `ANALYSIS/CANDIDATE_EVIDENCE`；rolling summary schema v7 只保留有界 memory/report/
+  finding/content hash 引用，不复制正文。
+* Web 研究报告工作台增加 finding 索引状态、错误、来源新鲜度、Owner 重试和候选语义检索；
+  结果明确显示候选证据，原始向量不下发浏览器。
+* 增加 20 个 R15e-b trajectory/security case、确定性文档单测、索引成功/死信/幂等重试、
+  来源失效过滤和 Web 搜索/重试测试。旧 `r15e-a-v1` Prompt 与工具目录保持冻结。
+
+### 修复的问题
+
+* 阶段结论不再只能通过报告 ID 或对话上下文定位，可跨会话按语义召回并追溯到报告和实验。
+* embedding 超时、畸形响应或 Worker 崩溃不会损坏报告，也不会留下永久 `RUNNING` 或伪造向量。
+* 旧报告补建查询只选择尚未物化的报告，避免固定扫描最早十条造成后续报告饥饿。
+* 检索前复核报告、记忆、embedding 输入三层哈希；来源状态变化默认排除，显式历史查询也会
+  返回警告，不会把过期分析静默描述为当前事实。
+* Agent Worker 改为使用完整依赖装配，避免后台进程缺失 R15c-R15e 工具服务。
+
+### 验证结果
+
+* Python 全量收集 301 项并通过：292 passed、9 skipped；外部服务测试继续受显式开关控制。
+* Ruff 全仓通过；mypy 严格检查 80 个源文件通过。
+* Web ESLint、Vitest 10 项和 TypeScript/Vite production build 通过。
+* 真实 CockroachDB 隔离测试通过，覆盖 `21 -> 22 -> 21 -> 22`、完整迁移降级链、1024 维
+  VECTOR 建表及原有 Plan/Submission/Outbox/正式实验向量查询。Inspector 仍有既有 vector
+  类型识别警告，不影响实际读写和查询。
+* 本机 Compose 已重建 migration/API/Worker/Web；持久数据库为
+  `alembic_version=20260727_22`，两张 Research Memory 表存在。API health、Web 静态页和两个
+  新路由的认证边界均通过真实 HTTP 验收，容器启动日志无应用异常。
+
+### 已知遗留项
+
+* 候选 Research Memory 只有 `CANDIDATE`，不支持确认、晋升或自动 superseded；这避免候选
+  分析被误当作正式事实。
+* 当前按结构过滤后的最近 200 条候选做精确排序，未启用 CockroachDB Distributed Vector
+  Index；待单项目记忆规模或 p95 延迟形成真实瓶颈后再评估。
+* `AgentChatModel` 仍只有百炼实现。Bedrock provider parity、统一成本/延迟/失败观测和同套
+  评测对照留到 R15e-c。
+
+### 下一步
+
+* R15e-c 只实现 Bedrock `AgentChatModel` provider parity、统一模型调用观测和百炼/Bedrock
+  对照验收；不增加候选记忆晋升、自动实验分组或治理规则旁路。
+
+## 2026-07-27 / R15e-c：Agent provider parity 与模型运行观测
+
+版本：working tree。
+
+### 更新内容
+
+* `AgentChatModel` 新增 provider 无关的 `AgentResponseFormat`。治理回答和 rolling summary 都传入
+  Pydantic 导出的 JSON Schema；调用审计同时冻结 schema 名称与规范化 SHA-256。
+* 新增 `BedrockAgentChatModel`，使用 ConverseStream 映射 system/user/assistant/tool、严格
+  Tool Spec、碎片化 tool input、usage、finish reason 和 provider request ID。Bedrock 调用必须
+  使用 Structured Outputs；缺少 Schema 会直接失败，不提供 prompt-only JSON fallback。
+* Settings 增加 `AGENT_PROVIDER=bailian|bedrock`、`BEDROCK_AGENT_MODEL_ID` 和成对的输入/输出
+  每百万 token 配置费率。组合根只实例化选中的 adapter；本地模式仍只允许百炼，Run 执行前
+  核对持久化 provider/model，禁止重试时静默切换平台。
+* revision `20260727_23` 为 `agent_model_calls` 增加 provider/model、延迟、币种、输入/输出冻结
+  费率和估算费用，为 ModelCall 与项目 Run 观测增加索引及非负约束。历史 ModelCall 从所属 Run
+  回填 provider/model；历史费用保持空值，不按当前费率追溯重算。
+* 模型调用成功和失败均记录单调时钟延迟、已收到 usage 和费用估算；Run 详情返回最多 50 条
+  去内容化调用元数据。新增 Owner-only 项目观测服务/API，支持 1-90 天及 provider/model 过滤，
+  聚合调用、token、延迟、失败、放弃、重试、缺失 usage、未计价和分币种估算。
+* Web Agent 页增加 Owner“模型观测”入口和消息级 Run 详情。项目面板提供 7/30/90 天窗口、
+  provider/model/purpose 分组和失败分类；Run 面板显示调用状态与成本。两者不展示提示词、回答、
+  工具输入或工具输出，费用明确标记为配置费率估算而非云平台账单。
+* Terraform 支持云端百炼/Bedrock 条件装配、仅百炼路径注入 API Key，并验证 provider 必填项和
+  成对费率。`.env.example`/`.env.local.example` 已同步；本地配置 Bedrock 会在启动时被拒绝。
+* 新增 16 个百炼/Bedrock 共享 provider trajectory/security case、Bedrock 事件流合约测试、
+  Web 观测组件测试和 `RUN_BEDROCK_AGENT_INTEGRATION=1` 可选真实验收。没有修改 Prompt 版本、
+  工具目录、权限、治理状态机或正式确认事务。
+
+### 修复的问题
+
+* 云端治理 Agent 不再被百炼单一 provider 锁定，同时避免“一个 provider 失败后换模型继续写入”
+  导致同一 Run 执行条件漂移。
+* Bedrock 结构化回答不依赖提示词自觉输出 JSON；不支持 Structured Outputs 的模型会明确失败。
+* 模型使用量、延迟、失败和重试不再只能从日志推断，Owner 可按项目查看有界结构化数据。
+* 费用不再使用事后当前价格猜测；每次调用冻结配置费率和币种，未配置或缺失 usage 时明确标记
+  未计价，并始终与真实云账单区分。
+* Provider 观测不会把敏感请求/响应快照下发前端；MCP/OAuth 身份也不能调用 Owner Web 观测。
+* revision 23 的项目观测索引已同时写入迁移和 ORM 元数据，避免后续 Alembic 误报 schema drift；
+  回填 SQL 使用非关键字别名，CockroachDB 升降级已验证。
+
+### 验证结果
+
+* Python 默认全量收集 315 项并通过：305 passed、10 skipped；真实云、MinIO 和 Cockroach 集成
+  仍由既有显式环境开关控制。Ruff 全仓通过，mypy 检查 81 个源文件通过。
+* 聚焦 provider/config/Agent 集成共 68 项通过。真实 CockroachDB 隔离链通过，覆盖完整建库、
+  `22 -> 23 -> 22 -> 23`、既有迁移降级链和 Plan/Submission/Outbox/向量查询回归；仅有 SQLAlchemy
+  Inspector 对既有 `vector` 类型的已知警告。
+* Web Vitest 12 项、ESLint、TypeScript/Vite production build 全部通过；Playwright 桌面/移动
+  2 项通过并覆盖模型观测弹窗和横向溢出检查。Terraform 1.9.8 fmt 检查和 AWS/Random provider
+  schema validate 通过。
+* 本机 Compose 已重建 migration/API/Worker/Web；持久数据库为 `20260727_23` 且四个核心观测列
+  存在。API health、Web 根页、local_owner 登录、项目列表和 Owner 观测 API 真实 HTTP 请求成功。
+
+### 已知遗留项
+
+* 本机 `.env.local` 保持 `AGENT_ENABLED=false`，没有调用真实百炼或 Bedrock。真实模型行为和费用
+  只通过显式 `RUN_BAILIAN_AGENT_INTEGRATION=1` / `RUN_BEDROCK_AGENT_INTEGRATION=1` 验收。
+* 百炼 OpenAI-compatible 接口当前不暴露原生 JSON Schema Structured Outputs，因此仍由服务端
+  Pydantic 严格验证；Bedrock 则强制原生 Structured Outputs。两者失败都不会自动互相回退。
+* 费用来自静态配置费率，不含缓存、批处理、区域折扣、免费额度或税费，不能用于财务对账。
+* 观测聚合当前是请求时 SQL 聚合，适合 MVP 数据量；形成真实 p95 或数据规模瓶颈后再评估预聚合。
+* R16 只做 release candidate hardening：真实 provider 对照、并发/恢复压测、告警阈值、部署
+  Runbook 和安全回归，不增加 Agent 工具、候选事实晋升或自动审批。
+
 ## 新日志模板
 
 ```text

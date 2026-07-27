@@ -15,7 +15,10 @@ from experiment_guardian.application.agent import TERMINAL_RUN_STATUSES
 from experiment_guardian.application.container import (
     get_action_proposal_service,
     get_agent_conversation_service,
+    get_agent_observability_service,
     get_policy_draft_service,
+    get_research_memory_service,
+    get_research_report_service,
 )
 from experiment_guardian.core.config import get_settings
 from experiment_guardian.domain.action_proposal import (
@@ -26,6 +29,7 @@ from experiment_guardian.domain.action_proposal import (
 )
 from experiment_guardian.domain.agent import (
     AgentMessageCreateRequest,
+    AgentModelObservabilityView,
     AgentRunReceipt,
     AgentRunView,
     AgentThreadCreateRequest,
@@ -34,6 +38,7 @@ from experiment_guardian.domain.agent import (
     AgentThreadUpdateRequest,
     AgentThreadView,
 )
+from experiment_guardian.domain.agent_research import ResearchReportPage, ResearchReportView
 from experiment_guardian.domain.enums import PolicyDraftStatus
 from experiment_guardian.domain.policy_draft import (
     PolicyDraftAbandonRequest,
@@ -43,8 +48,89 @@ from experiment_guardian.domain.policy_draft import (
     PolicyDraftSummary,
     PolicyDraftView,
 )
+from experiment_guardian.domain.research_memory import (
+    ResearchMemoryRetryResult,
+    ResearchMemorySearchRequest,
+    ResearchMemorySearchResponse,
+)
 
 router = APIRouter(prefix="/projects/{project_id}/agent", tags=["governance-agent"])
+
+
+@router.get("/model-observability", response_model=AgentModelObservabilityView)
+async def get_agent_model_observability(
+    project_id: UUID,
+    identity: ApiIdentity,
+    window_days: Annotated[int, Query(ge=1, le=90)] = 7,
+    provider: Annotated[str | None, Query(min_length=1, max_length=50)] = None,
+    model_id: Annotated[str | None, Query(min_length=1, max_length=500)] = None,
+) -> AgentModelObservabilityView:
+    return get_agent_observability_service().get_project_observability(
+        project_id=project_id,
+        identity=identity,
+        window_days=window_days,
+        provider=provider,
+        model_id=model_id,
+    )
+
+
+@router.post("/research-memories/search", response_model=ResearchMemorySearchResponse)
+async def search_research_memories(
+    project_id: UUID,
+    request: ResearchMemorySearchRequest,
+    identity: ApiIdentity,
+) -> ResearchMemorySearchResponse:
+    return get_research_memory_service().search(
+        project_id=project_id,
+        identity=identity,
+        request=request,
+    )
+
+
+@router.post(
+    "/research-memories/{memory_id}/embedding/retry",
+    response_model=ResearchMemoryRetryResult,
+)
+async def retry_research_memory_embedding(
+    project_id: UUID,
+    memory_id: UUID,
+    identity: CsrfIdentity,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> ResearchMemoryRetryResult:
+    return get_research_memory_service().retry_embedding(
+        project_id=project_id,
+        memory_id=memory_id,
+        identity=identity,
+        idempotency_key=idempotency_key,
+    )
+
+
+@router.get("/research-reports", response_model=ResearchReportPage)
+async def list_research_reports(
+    project_id: UUID,
+    identity: ApiIdentity,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> ResearchReportPage:
+    return get_research_report_service().list_reports(
+        project_id=project_id,
+        identity=identity,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+@router.get("/research-reports/{report_id}", response_model=ResearchReportView)
+async def get_research_report(
+    project_id: UUID,
+    report_id: UUID,
+    identity: ApiIdentity,
+) -> ResearchReportView:
+    return get_research_report_service().get_report(
+        project_id=project_id,
+        report_id=report_id,
+        identity=identity,
+    )
 
 
 @router.get("/action-proposals", response_model=ActionProposalPage)

@@ -92,6 +92,16 @@ variable "agent_enabled" {
   description = "Create the optional R15a governance Agent worker and expose the Web feature."
 }
 
+variable "agent_provider" {
+  type        = string
+  default     = "bailian"
+  description = "Governance Agent provider: bailian or bedrock. There is no runtime fallback."
+  validation {
+    condition     = contains(["bailian", "bedrock"], var.agent_provider)
+    error_message = "agent_provider must be bailian or bedrock."
+  }
+}
+
 variable "bailian_agent_base_url" {
   type        = string
   default     = ""
@@ -109,4 +119,40 @@ variable "bailian_agent_api_key" {
   default     = ""
   sensitive   = true
   description = "Alibaba Cloud Model Studio API key; stored in the encrypted runtime secret."
+}
+
+variable "bedrock_agent_model_id" {
+  type        = string
+  default     = ""
+  description = "Bedrock Converse model ID used when agent_provider is bedrock."
+}
+
+variable "agent_cost_currency" {
+  type        = string
+  default     = "USD"
+  description = "ISO-like three-letter label for configured Agent rate estimates."
+  validation {
+    condition     = can(regex("^[A-Z]{3}$", var.agent_cost_currency))
+    error_message = "agent_cost_currency must contain exactly three uppercase letters."
+  }
+}
+
+variable "agent_input_cost_per_million_tokens" {
+  type        = number
+  default     = null
+  description = "Optional configured input-token rate per million tokens; not a billing feed."
+  validation {
+    condition     = var.agent_input_cost_per_million_tokens == null || var.agent_input_cost_per_million_tokens >= 0
+    error_message = "agent_input_cost_per_million_tokens must be non-negative."
+  }
+}
+
+variable "agent_output_cost_per_million_tokens" {
+  type        = number
+  default     = null
+  description = "Optional configured output-token rate per million tokens; not a billing feed."
+  validation {
+    condition     = var.agent_output_cost_per_million_tokens == null || var.agent_output_cost_per_million_tokens >= 0
+    error_message = "agent_output_cost_per_million_tokens must be non-negative."
+  }
 }

@@ -10,9 +10,14 @@ cockroach_database_url        = "cockroachdb+psycopg://user:password@cluster.exa
 bedrock_summary_model_id      = "anthropic.claude-3-haiku-20240307-v1:0"
 container_image_tag           = "r14-demo"
 agent_enabled                 = false
+agent_provider                = "bailian"
 bailian_agent_base_url        = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 bailian_agent_model           = ""
 bailian_agent_api_key         = ""
+bedrock_agent_model_id        = ""
+agent_cost_currency           = "USD"
+# agent_input_cost_per_million_tokens  = 0
+# agent_output_cost_per_million_tokens = 0
 
 mcp_clients = {
   codex = {

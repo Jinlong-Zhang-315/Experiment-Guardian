@@ -32,17 +32,24 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/auth/me")) {
-      return route.fulfill({ json: { user_id: "owner-1", team_id: "team-1", session_id: "session-1", name: "Zhang Owner", email: "owner@example.com", role: "OWNER", csrf_token: "csrf", recent_authentication: true, absolute_expires_at: "2026-07-29T00:00:00Z" } });
+      return route.fulfill({ json: { user_id: "owner-1", team_id: "team-1", session_id: "session-1", name: "Zhang Owner", email: "owner@example.com", role: "OWNER", csrf_token: "csrf", recent_authentication: true, absolute_expires_at: "2026-07-29T00:00:00Z", agent_enabled: true } });
     }
     if (path === "/api/v1/projects") {
       return route.fulfill({ json: { items: [settings.project] } });
     }
     if (path.endsWith("/settings")) return route.fulfill({ json: settings });
+    if (path.endsWith("/agent/model-observability")) return route.fulfill({ json: {
+      project_id: "p1", window_from: "2026-07-20T00:00:00Z", window_to: "2026-07-27T00:00:00Z",
+      current_provider: "bailian", current_model_id: "qwen-agent", pricing_configured: true,
+      totals: { run_count: 2, model_call_count: 3, succeeded_call_count: 3, failed_call_count: 0, abandoned_call_count: 0, retry_count: 0, input_tokens: 1500, output_tokens: 400, missing_usage_call_count: 0, unpriced_call_count: 0, average_latency_ms: 380, maximum_latency_ms: 610 },
+      groups: [{ provider: "bailian", model_id: "qwen-agent", purpose: "AGENT_TURN", run_count: 2, model_call_count: 3, succeeded_call_count: 3, failed_call_count: 0, abandoned_call_count: 0, retry_count: 0, input_tokens: 1500, output_tokens: 400, missing_usage_call_count: 0, unpriced_call_count: 0, average_latency_ms: 380, maximum_latency_ms: 610 }],
+      costs: [{ currency: "CNY", estimated_cost: "0.0042000000" }], failure_categories: {},
+    } });
     return route.fulfill({ json: { items: [] } });
   });
 });
 
-test("four-page workspace remains readable without horizontal overflow", async ({ page }, testInfo) => {
+test("workspace and research reports remain readable without horizontal overflow", async ({ page }, testInfo) => {
   await page.goto("/projects/p1/settings");
   await expect(page.getByRole("heading", { name: "NTU60 Governance", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "项目正式说明" })).toBeVisible();
@@ -62,6 +69,20 @@ test("four-page workspace remains readable without horizontal overflow", async (
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
     await expectNoPageOverflow(page);
   }
+
+  await page.getByRole("link", { name: "治理 Agent" }).click();
+  await expect(page.getByRole("heading", { name: "项目实验助手" })).toBeVisible();
+  await page.getByRole("button", { name: "研究报告" }).click();
+  await expect(page.getByRole("dialog", { name: "候选研究报告" })).toBeVisible();
+  await expect(page.getByText("通过治理 Agent 显式选择实验并生成第一份报告")).toBeVisible();
+  await expectNoPageOverflow(page);
+  await page.getByRole("button", { name: "关闭研究报告" }).click();
+  await expect(page.getByRole("dialog", { name: "候选研究报告" })).not.toBeVisible();
+  await page.getByRole("button", { name: "模型观测" }).click();
+  await expect(page.getByRole("dialog", { name: "模型运行观测" })).toBeVisible();
+  await expect(page.getByText("CNY 0.0042000000")).toBeVisible();
+  await expectNoPageOverflow(page);
+  await page.getByRole("button", { name: "关闭模型运行观测" }).click();
 });
 
 async function expectNoPageOverflow(page: import("@playwright/test").Page) {

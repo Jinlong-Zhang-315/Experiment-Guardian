@@ -1,11 +1,11 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-27
-当前实现：R15d-b2 Submission 批准/拒绝提案
+当前实现：R15e-c Agent provider parity 与模型运行观测
 
-下一计划：先收敛 R15e 研究总结、长期记忆与 provider parity。R15 总体边界见
+下一计划：R16 release candidate hardening，不扩展治理工具或业务范围。R15 总体边界见
 `INTERNAL_GOVERNANCE_AGENT_PLAN.md`。
-数据库 head：`20260727_20`
+数据库 head：`20260727_23`
 
 除明确标记“计划”的章节外，本文描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与
 自动化验证，`[EXTERNAL]` 表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
@@ -26,7 +26,7 @@
 | - Plan approval  | + CSRF   | - web_sessions      | exchange | - human client   |
 | - Submission     |          | - live RBAC         |          | - MCP clients    |
 | - Experiments    |          | - recent auth       |          +------------------+
-| - Governance AI |          | - Agent SSE API     |
+| - Governance AI |          | - Agent/report API  |
 +---------+--------+          | - management APIs   |
           |                   +----------+-----------+
           |                              |
@@ -92,7 +92,10 @@ private ECS API/MCP/Worker
    +-- Bedrock Converse / Titan Embeddings V2
 
 optional private Agent Worker
-   +-- Bailian streaming Function Calling
+   +-- AgentChatModel selected once at startup
+       |-- Bailian streaming Function Calling
+       +-- Bedrock ConverseStream + required Structured Outputs
+   +-- no automatic provider fallback
    +-- CockroachDB Agent run/event/tool/citation tables
 
 ECR -> immutable application image
@@ -136,6 +139,7 @@ FastAPI TrustedHost -> local_owner login --------+--> CockroachDB
                             Agent Worker lease
                                   |
                                   +--> BailianAgentChatModel
+                                  +--> configured-rate cost snapshot
                                   +--> eight authorized read/analysis tools
                                   +--> four candidate-only policy draft tools
                                   +--> one prepare-only Policy publish proposal tool
@@ -172,6 +176,7 @@ src/experiment_guardian/
 |   +-- async_review.py         embedding/确定性回执
 |   +-- agent.py                对话、幂等入队、归档、恢复与身份解析
 |   +-- agent_runtime.py        有界 LangGraph loop、lease、审计与最终提交
+|   +-- agent_observability.py  Owner-only token/latency/failure/cost aggregation
 |   +-- agent_tools.py          八个只读/分析 + 四个候选草稿工具
 |   +-- policy_drafts.py        完整 Bundle revision、权限、diff 与影响模拟
 |   +-- action_proposals.py     24h 冻结提案、实时失效、Owner 原子确认
@@ -187,7 +192,7 @@ src/experiment_guardian/
 |   +-- storage.py              AWS/MinIO 固定 VersionId 上传/读取/下载
 |   +-- database.py/models/     SQLAlchemy/CockroachDB
 |   +-- queue.py                SQS/DatabaseOutboxQueue adapters
-|   +-- bedrock.py/bailian.py   摘要与 embedding adapters
+|   +-- bedrock.py/bailian.py   摘要、embedding 与 AgentChatModel adapters
 |   +-- repositories/agent.py   Agent event/claim/lease/generation persistence
 |
 +-- workflows/                  LangGraph 固定拓扑，DB 游标负责恢复
@@ -205,7 +210,7 @@ scripts/verify_r14_deployment.py 公开部署认证/发现验收
 依赖方向保持：接口层 -> 应用层 -> 领域层；基础设施实现应用端口。前端不重新计算风险、
 审批资格或角色权限。
 
-## R15d-b2 Agent 当前框架图
+## R15e-c Agent 当前框架图
 
 ```text
 Web 治理 Agent 页
@@ -216,9 +221,10 @@ Agent API
    |
    +--> AgentConversationService
    |       +--> Thread / Message / Run / Citation / answer sections [DONE]
-   |       +--> rolling summary v5 / draft + typed proposal references [DONE]
+   |       +--> rolling summary v6 / draft + proposal + report references [DONE]
    |       +--> Policy Draft list / revision / abandon [DONE]
    |       +--> Action Proposal list / confirm / cancel [DONE]
+   |       +--> shared Research Report list / detail [DONE]
    |       +--> idempotent enqueue / archive / retry [DONE]
    |       +--> durable SSE replay / heartbeat [DONE]
    |
@@ -229,11 +235,12 @@ Agent API
            |
    +--> GovernanceAgentRuntime [DONE]
    |       +--> bounded single-agent LangGraph, max calls/tools/wall time
-   |       +--> r15a/r15b/r15c/r15d/r15d-b1/r15d-b2 prompt + catalog compatibility
+   |       +--> frozen prior catalogs + r15e-b prompt/catalog compatibility
    |       +--> recent messages + non-authoritative rolling summary
    |       +--> AgentChatModel
    |       |       +--> Bailian streaming Function Calling [DONE]
-   |       |       +--> other provider adapters [PLANNED]
+   |       |       +--> Bedrock ConverseStream + strict JSON Schema [DONE]
+   |       |       +--> startup-selected provider; no fallback [DONE]
    |       +--> AgentToolRegistry
    |               +--> project_status_get_v1 [DONE]
    |               +--> experiments_list_v1 [DONE]
@@ -250,18 +257,37 @@ Agent API
    |               +--> action_proposal_prepare_v1 [DONE, no execute]
    |               +--> action_proposal_prepare_plan_decision_v1 [DONE, no execute]
    |               +--> action_proposal_prepare_submission_decision_v1 [DONE, no execute]
+   |               +--> research_report_prepare_v1 [DONE, explicit 2-8 experiments]
+   |               +--> research_reports_list_v1 [DONE, shared read]
+   |               +--> research_report_get_v1 [DONE, shared read]
+   |               +--> research_memories_search_v1 [DONE, candidate evidence]
    |               +--> FORMAL EXECUTE [NOT REGISTERED]
    +--> validated AgentAnswer + evidence/citations + AuditLog [DONE]
+   +--> immutable AgentResearchReport + frozen source/hash [DONE]
+
+Owner Web Session
+   |
+   +--> AgentObservabilityService [DONE, metadata columns only]
+           +--> 7/30/90-day project aggregate
+           +--> provider/model/purpose, token, latency, failure and retry
+           +--> per-currency configured-rate estimate (not cloud billing)
+
+Project member -> Run detail [DONE, max 50 model calls]
+                   provider/model/purpose/status/token/latency/cost/error code only
+                   no prompt/answer/tool payload exposure
 
 Experiment Memory VECTOR(1024)       formal confirmed experiments only
-Agent Research Memory                not present; planned R15e separate store
+Agent Research Report                immutable ANALYSIS, shared in project
+Agent Research Memory                finding-level CANDIDATE, separate VECTOR(1024) jobs
 ```
 
-R15d-b2 的模型写工具仍只能追加候选草稿或准备不可变 Policy/Plan/Submission 提案。
+R15e-c 的模型写工具仍只能追加候选草稿、准备不可变 Policy/Plan/Submission 提案，或基于
+用户显式实验集生成候选研究报告。
 正式执行没有注册为模型工具；独立 Web 确认请求分别复用 Policy 发布、Plan 审批和 Submission
 审核事务核心。Submission Proposal 确认时，Proposal、ApprovalRecord、Experiment、Metric、Memory、
 Artifact 关联、双幂等结果和审计在同一事务中落库。正式事实、候选草稿、操作提案和影响分析
-继续使用独立 evidence，摘要不参与正式判断。
+继续使用独立 evidence，摘要和研究报告不参与正式判断。报告生成时冻结来源 ToolCall 输出、
+Experiment 顺序、provider/model/prompt/schema 与双哈希；后续来源状态变化只显示警告，不追溯改写。
 
 ## 数据关系
 
@@ -292,6 +318,7 @@ User(cognito_sub)
                                |
                                +--< AgentThread
                                       +--< AgentMessage
+                                      |      +--0..1 AgentResearchReport(final response)
                                       +--0..1 current READY AgentContextSummary
                                       +--< AgentPolicyDraft(originating thread)
                                       |      +--< AgentPolicyDraftRevision(append-only)
@@ -300,10 +327,18 @@ User(cognito_sub)
                                       +--< AgentRun(lease/generation/retry)
                                              +--< AgentModelCall
                                              |      purpose=AGENT_TURN/CONTEXT_SUMMARY
+                                             |      provider/model + schema hash
+                                             |      usage/latency/provider request ID
+                                             |      frozen configured rates/estimated cost
                                              +--< AgentToolCall
+                                             |      +--0..1 AgentResearchReport(source snapshot)
                                              +--< AgentRunEvent
                                              +--< AgentCitation
                                              +--0..1 AgentContextSummary attempt
+                                      +--< AgentResearchReport
+                                             +--< AgentResearchMemory(CANDIDATE)
+                                                    +--< AgentResearchMemoryEmbedding
+                                                         lease/generation/provider version
 
 AccessToken                     local API/stdio MCP compatibility
 IdempotencyRecord               unique actor + operation + key
@@ -340,11 +375,13 @@ Owner/Researcher Web Agent message
 -> Agent Worker atomically claims lease/generation
 -> bounded Bailian Function Calling
 -> authorized tools return structured facts/analysis, append a candidate-only draft revision,
-   or prepare an immutable Policy/Plan/Submission proposal
+   prepare an immutable Policy/Plan/Submission proposal, or freeze an explicit experiment set
 -> validate answer/citations
--> atomically persist assistant message, citations, completion and AuditLog
+-> atomically persist assistant message, citations, optional immutable Research Report,
+   completion and AuditLog
 -> browser SSE replays durable events; disconnect does not cancel the run
 -> Web draft workbench edits full Bundle with optimistic revision and displays deterministic diff/impact
+-> Web report workbench reads project-shared candidate reports and source-change warnings
 -> no execute tool exists; proposal confirmation is a separate recent-authenticated Web transaction
 ```
 

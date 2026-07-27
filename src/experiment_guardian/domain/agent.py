@@ -5,19 +5,27 @@
 """
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import Field, model_validator
 
+from experiment_guardian.domain.agent_research import (
+    AgentResearchReportPayload,
+    ResearchReportReference,
+)
 from experiment_guardian.domain.contracts import ContractModel
 from experiment_guardian.domain.enums import (
+    AgentCallStatus,
     AgentContextSummaryStatus,
     AgentEvidenceKind,
     AgentMessageRole,
+    AgentModelCallPurpose,
     AgentRunStatus,
     AgentThreadStatus,
 )
+from experiment_guardian.domain.research_memory import ResearchMemoryReference
 
 MAX_AGENT_MESSAGE_BYTES = 8 * 1024
 
@@ -74,6 +82,7 @@ class AgentMessageView(ContractModel):
     role: AgentMessageRole
     content: str
     run_id: UUID | None = None
+    research_report_id: UUID | None = None
     sections: list["AgentAnswerSection"] = Field(default_factory=list)
     citations: list[AgentCitationView] = Field(default_factory=list)
     created_at: datetime
@@ -111,11 +120,71 @@ class AgentRunView(AgentRunReceipt):
     max_attempts: int
     provider: str
     model_id: str
+    usage: dict[str, Any] = Field(default_factory=dict)
+    model_calls: list["AgentModelCallView"] = Field(default_factory=list, max_length=50)
     error: dict[str, Any] | None = None
     final_message_id: UUID | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+class AgentModelCallView(ContractModel):
+    call_id: UUID
+    generation: int = Field(ge=0)
+    ordinal: int = Field(ge=0)
+    purpose: AgentModelCallPurpose
+    status: AgentCallStatus
+    provider: str
+    model_id: str
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    latency_ms: int | None = Field(default=None, ge=0)
+    estimated_cost: Decimal | None = Field(default=None, ge=0)
+    cost_currency: str | None = None
+    finish_reason: str | None = None
+    error_code: str | None = None
+    started_at: datetime
+    completed_at: datetime | None = None
+
+
+class AgentObservabilityTotals(ContractModel):
+    run_count: int = Field(ge=0)
+    model_call_count: int = Field(ge=0)
+    succeeded_call_count: int = Field(ge=0)
+    failed_call_count: int = Field(ge=0)
+    abandoned_call_count: int = Field(ge=0)
+    retry_count: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    missing_usage_call_count: int = Field(ge=0)
+    unpriced_call_count: int = Field(ge=0)
+    average_latency_ms: int | None = Field(default=None, ge=0)
+    maximum_latency_ms: int | None = Field(default=None, ge=0)
+
+
+class AgentObservabilityGroup(AgentObservabilityTotals):
+    provider: str
+    model_id: str
+    purpose: AgentModelCallPurpose
+
+
+class AgentCostTotal(ContractModel):
+    currency: str
+    estimated_cost: Decimal = Field(ge=0)
+
+
+class AgentModelObservabilityView(ContractModel):
+    project_id: UUID
+    window_from: datetime
+    window_to: datetime
+    current_provider: str
+    current_model_id: str
+    pricing_configured: bool
+    totals: AgentObservabilityTotals
+    groups: list[AgentObservabilityGroup]
+    costs: list[AgentCostTotal]
+    failure_categories: dict[str, int]
 
 
 class AgentChatMessage(ContractModel):
@@ -130,6 +199,14 @@ class AgentToolSpec(ContractModel):
     version: str = Field(min_length=1, max_length=20)
     description: str = Field(min_length=1, max_length=1000)
     input_schema: dict[str, Any]
+
+
+class AgentResponseFormat(ContractModel):
+    """Provider 无关的严格 JSON 输出契约。"""
+
+    name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+    description: str = Field(min_length=1, max_length=500)
+    json_schema: dict[str, Any]
 
 
 class AgentToolRequest(ContractModel):
@@ -164,6 +241,7 @@ class AgentAnswer(ContractModel):
     sections: list[AgentAnswerSection] = Field(min_length=1, max_length=20)
     citations: list[str] = Field(default_factory=list, max_length=100)
     follow_up_required: bool = False
+    research_report: AgentResearchReportPayload | None = None
 
 
 class AgentDraftSummaryReference(ContractModel):
@@ -210,7 +288,7 @@ class AgentProposalSummaryReference(ContractModel):
 
 
 class AgentContextSummaryPayload(ContractModel):
-    schema_version: Literal[1, 2, 3, 4, 5] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7] = 1
     covered_sequence_from: int = Field(ge=1)
     covered_sequence_to: int = Field(ge=1)
     user_requests_and_context: list[str] = Field(default_factory=list, max_length=30)
@@ -226,6 +304,14 @@ class AgentContextSummaryPayload(ContractModel):
         default_factory=list,
         max_length=20,
     )
+    research_report_references: list[ResearchReportReference] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+    research_memory_references: list[ResearchMemoryReference] = Field(
+        default_factory=list,
+        max_length=20,
+    )
 
     @model_validator(mode="after")
     def validate_sequence_range(self) -> "AgentContextSummaryPayload":
@@ -237,6 +323,10 @@ class AgentContextSummaryPayload(ContractModel):
             raise ValueError("schema_version=1 的上下文摘要不能包含 draft_references")
         if self.schema_version in {1, 2} and self.proposal_references:
             raise ValueError("schema_version<3 的上下文摘要不能包含 proposal_references")
+        if self.schema_version < 6 and self.research_report_references:
+            raise ValueError("schema_version<6 的上下文摘要不能包含研究报告引用")
+        if self.schema_version < 7 and self.research_memory_references:
+            raise ValueError("schema_version<7 的上下文摘要不能包含研究记忆引用")
         return self
 
 

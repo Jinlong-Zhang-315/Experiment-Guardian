@@ -270,6 +270,49 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
             for column in inspect(test_engine).get_columns("agent_action_proposals")
         }
         assert {
+            "source_thread_id",
+            "source_run_id",
+            "source_tool_call_id",
+            "final_message_id",
+            "experiment_ids",
+            "source_snapshot",
+            "source_hash",
+            "report_payload",
+            "payload_hash",
+            "provider",
+            "model_id",
+            "prompt_version",
+            "schema_version",
+        } <= {
+            column["name"]
+            for column in inspect(test_engine).get_columns("agent_research_reports")
+        }
+        assert {"agent_research_memories", "agent_research_memory_embeddings"} <= set(
+            inspect(test_engine).get_table_names()
+        )
+        assert {"finding_id", "memory_type", "content_hash", "embedding_document"} <= {
+            column["name"]
+            for column in inspect(test_engine).get_columns("agent_research_memories")
+        }
+        assert {"embedding", "generation", "lease_owner", "last_error"} <= {
+            column["name"]
+            for column in inspect(test_engine).get_columns(
+                "agent_research_memory_embeddings"
+            )
+        }
+        assert {
+            "provider",
+            "model_id",
+            "latency_ms",
+            "cost_currency",
+            "input_cost_per_million",
+            "output_cost_per_million",
+            "estimated_cost",
+        } <= {
+            column["name"]
+            for column in inspect(test_engine).get_columns("agent_model_calls")
+        }
+        assert {
             "upload_verified_at",
             "upload_verified_by",
             "upload_verification_snapshot",
@@ -292,6 +335,59 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         }
         test_engine.dispose()
         test_engine = None
+
+        _run_alembic(rendered_test_url, "downgrade", "20260727_20")
+        revision_20_engine = create_engine(test_url)
+        try:
+            assert "agent_research_reports" not in inspect(
+                revision_20_engine
+            ).get_table_names()
+            assert "agent_action_proposals" in inspect(
+                revision_20_engine
+            ).get_table_names()
+        finally:
+            revision_20_engine.dispose()
+        _run_alembic(rendered_test_url, "upgrade", "head")
+        revision_22_engine = create_engine(test_url)
+        try:
+            assert "agent_research_reports" in inspect(
+                revision_22_engine
+            ).get_table_names()
+            assert "agent_research_memories" in inspect(
+                revision_22_engine
+            ).get_table_names()
+        finally:
+            revision_22_engine.dispose()
+
+        _run_alembic(rendered_test_url, "downgrade", "20260727_22")
+        revision_22_engine = create_engine(test_url)
+        try:
+            assert "agent_research_memories" in inspect(
+                revision_22_engine
+            ).get_table_names()
+            assert not (
+                {"provider", "model_id", "latency_ms", "estimated_cost"}
+                & {
+                    column["name"]
+                    for column in inspect(revision_22_engine).get_columns(
+                        "agent_model_calls"
+                    )
+                }
+            )
+        finally:
+            revision_22_engine.dispose()
+        _run_alembic(rendered_test_url, "upgrade", "head")
+
+        _run_alembic(rendered_test_url, "downgrade", "20260727_21")
+        revision_21_engine = create_engine(test_url)
+        try:
+            tables = set(inspect(revision_21_engine).get_table_names())
+            assert "agent_research_reports" in tables
+            assert "agent_research_memories" not in tables
+        finally:
+            revision_21_engine.dispose()
+        _run_alembic(rendered_test_url, "upgrade", "head")
+
         _run_alembic(rendered_test_url, "downgrade", "20260721_05")
         revision_05_engine = create_engine(test_url)
         try:

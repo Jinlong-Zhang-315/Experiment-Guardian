@@ -28,6 +28,7 @@ from experiment_guardian.domain.agent import (
     AgentContextSummaryView,
     AgentMessageCreateRequest,
     AgentMessageView,
+    AgentModelCallView,
     AgentRunReceipt,
     AgentRunView,
     AgentThreadCreateRequest,
@@ -48,6 +49,8 @@ from experiment_guardian.infrastructure.models import (
     AgentCitation,
     AgentContextSummary,
     AgentMessage,
+    AgentModelCall,
+    AgentResearchReport,
     AgentRun,
     AgentThread,
     AuditLog,
@@ -59,8 +62,8 @@ from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyProjectRepository,
 )
 
-PROMPT_VERSION = "r15d-b2-v1"
-TOOL_CATALOG_VERSION = "r15d-b2-v1"
+PROMPT_VERSION = "r15e-b-v1"
+TOOL_CATALOG_VERSION = "r15e-b-v1"
 TERMINAL_RUN_STATUSES = {
     AgentRunStatus.SUCCEEDED,
     AgentRunStatus.FAILED,
@@ -232,6 +235,20 @@ class AgentConversationService:
                 if run_ids
                 else {}
             )
+            reports = (
+                {
+                    item.final_message_id: item.id
+                    for item in session.scalars(
+                        select(AgentResearchReport).where(
+                            AgentResearchReport.final_message_id.in_(
+                                [item.id for item in messages]
+                            )
+                        )
+                    ).all()
+                }
+                if messages
+                else {}
+            )
             by_message: dict[UUID, list[AgentCitationView]] = {}
             for item in citations:
                 by_message.setdefault(item.message_id, []).append(
@@ -301,6 +318,7 @@ class AgentConversationService:
                         role=item.role,
                         content=item.content,
                         run_id=item.run_id,
+                        research_report_id=reports.get(item.id),
                         sections=[
                             AgentAnswerSection.model_validate(section)
                             for section in (
@@ -433,7 +451,7 @@ class AgentConversationService:
                     request_hash=request_hash,
                     status=AgentRunStatus.PENDING,
                     provider=self._settings.agent_provider,
-                    model_id=self._settings.bailian_agent_model,
+                    model_id=self._settings.agent_model_id,
                     prompt_version=PROMPT_VERSION,
                     tool_catalog_version=TOOL_CATALOG_VERSION,
                     context_snapshot={},
@@ -479,7 +497,19 @@ class AgentConversationService:
             run = self._require_owned_run(
                 session, project_id=project_id, run_id=run_id, identity=identity
             )
-            return self._run_view(run)
+            calls = list(
+                session.scalars(
+                    select(AgentModelCall)
+                    .where(AgentModelCall.run_id == run.id)
+                    .order_by(
+                        AgentModelCall.generation.desc(),
+                        AgentModelCall.ordinal.desc(),
+                    )
+                    .limit(50)
+                ).all()
+            )
+            calls.reverse()
+            return self._run_view(run, calls)
 
     def retry_run(
         self,
@@ -536,7 +566,7 @@ class AgentConversationService:
                     request_hash=retry_hash,
                     status=AgentRunStatus.PENDING,
                     provider=self._settings.agent_provider,
-                    model_id=self._settings.bailian_agent_model,
+                    model_id=self._settings.agent_model_id,
                     prompt_version=old.prompt_version,
                     tool_catalog_version=old.tool_catalog_version,
                     context_snapshot={"retry_of": str(old.id)},
@@ -695,7 +725,11 @@ class AgentConversationService:
             ),
         )
 
-    def _run_view(self, run: AgentRun) -> AgentRunView:
+    def _run_view(
+        self,
+        run: AgentRun,
+        calls: list[AgentModelCall],
+    ) -> AgentRunView:
         receipt = self._run_receipt(run)
         return AgentRunView(
             **receipt.model_dump(),
@@ -703,11 +737,48 @@ class AgentConversationService:
             max_attempts=run.max_attempts,
             provider=run.provider,
             model_id=run.model_id,
+            usage=run.usage,
+            model_calls=[self._model_call_view(item) for item in calls],
             error=run.error,
             final_message_id=run.final_message_id,
             created_at=run.created_at,
             started_at=run.started_at,
             completed_at=run.completed_at,
+        )
+
+    @staticmethod
+    def _model_call_view(call: AgentModelCall) -> AgentModelCallView:
+        input_tokens = call.usage.get("input_tokens")
+        output_tokens = call.usage.get("output_tokens")
+        return AgentModelCallView(
+            call_id=call.id,
+            generation=call.generation,
+            ordinal=call.ordinal,
+            purpose=call.purpose,
+            status=call.status,
+            provider=call.provider,
+            model_id=call.model_id,
+            input_tokens=(
+                input_tokens
+                if isinstance(input_tokens, int) and not isinstance(input_tokens, bool)
+                else None
+            ),
+            output_tokens=(
+                output_tokens
+                if isinstance(output_tokens, int) and not isinstance(output_tokens, bool)
+                else None
+            ),
+            latency_ms=call.latency_ms,
+            estimated_cost=call.estimated_cost,
+            cost_currency=call.cost_currency,
+            finish_reason=call.finish_reason,
+            error_code=(
+                str(call.error["code"])
+                if call.error is not None and "code" in call.error
+                else None
+            ),
+            started_at=call.started_at,
+            completed_at=call.completed_at,
         )
 
 

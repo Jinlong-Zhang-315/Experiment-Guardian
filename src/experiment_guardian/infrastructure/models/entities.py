@@ -5,6 +5,7 @@
 """
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -18,6 +19,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -51,6 +53,9 @@ from experiment_guardian.domain.enums import (
     PolicyDraftSource,
     PolicyDraftStatus,
     ProtectionLevel,
+    ResearchMemoryEmbeddingStatus,
+    ResearchMemoryStatus,
+    ResearchMemoryType,
     RiskSeverity,
     SubmissionStatus,
     SubmittedRunStatus,
@@ -954,6 +959,13 @@ class AgentRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "created_at",
         ),
         Index("ix_agent_runs_thread_created", "thread_id", "created_at"),
+        Index(
+            "ix_agent_runs_project_observability",
+            "project_id",
+            "created_at",
+            "provider",
+            "model_id",
+        ),
         CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
         CheckConstraint("max_attempts >= 1", name="max_attempts_positive"),
         CheckConstraint("generation >= 0", name="generation_nonnegative"),
@@ -997,6 +1009,21 @@ class AgentModelCall(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __table_args__ = (
         UniqueConstraint("run_id", "generation", "ordinal", name="uq_agent_model_call_order"),
         Index("ix_agent_model_calls_run", "run_id", "generation", "ordinal"),
+        Index(
+            "ix_agent_model_calls_observability",
+            "provider",
+            "model_id",
+            "created_at",
+            "status",
+        ),
+        CheckConstraint(
+            "latency_ms IS NULL OR latency_ms >= 0",
+            name="latency_nonnegative",
+        ),
+        CheckConstraint(
+            "estimated_cost IS NULL OR estimated_cost >= 0",
+            name="estimated_cost_nonnegative",
+        ),
     )
 
     run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
@@ -1007,6 +1034,8 @@ class AgentModelCall(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         default=AgentModelCallPurpose.AGENT_TURN,
         nullable=False,
     )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(500), nullable=False)
     status: Mapped[AgentCallStatus] = mapped_column(
         enum_column(AgentCallStatus, "agent_call_status", length=16), nullable=False
     )
@@ -1016,6 +1045,11 @@ class AgentModelCall(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     finish_reason: Mapped[str | None] = mapped_column(String(100))
     usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    cost_currency: Mapped[str | None] = mapped_column(String(3))
+    input_cost_per_million: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    output_cost_per_million: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(20, 10))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -1363,6 +1397,164 @@ class AgentCitation(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     entity_version: Mapped[str | None] = mapped_column(String(100))
     label: Mapped[str] = mapped_column(String(300), nullable=False)
     excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AgentResearchReport(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """由显式正式实验集合生成的不可变候选分析。"""
+
+    __tablename__ = "agent_research_reports"
+    __table_args__ = (
+        UniqueConstraint("source_run_id", name="uq_agent_research_reports_source_run"),
+        UniqueConstraint(
+            "source_tool_call_id", name="uq_agent_research_reports_source_tool_call"
+        ),
+        UniqueConstraint(
+            "final_message_id", name="uq_agent_research_reports_final_message"
+        ),
+        Index(
+            "ix_agent_research_reports_project_created",
+            "project_id",
+            "created_at",
+            "id",
+        ),
+        CheckConstraint("length(source_hash) = 64", name="source_hash_length"),
+        CheckConstraint("length(payload_hash) = 64", name="payload_hash_length"),
+        CheckConstraint("schema_version = 1", name="schema_version"),
+    )
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    source_thread_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_threads.id"), nullable=False
+    )
+    source_run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    source_tool_call_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_tool_calls.id"), nullable=False
+    )
+    final_message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_messages.id"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    experiment_ids: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    metric_name: Mapped[str | None] = mapped_column(String(200))
+    include_historical: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    source_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AgentResearchMemory(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """研究报告 finding 的不可变候选记忆；与正式 Experiment Memory 完全隔离。"""
+
+    __tablename__ = "agent_research_memories"
+    __table_args__ = (
+        UniqueConstraint("report_id", "finding_id", name="uq_agent_research_memory_finding"),
+        Index(
+            "ix_agent_research_memories_filter",
+            "project_id",
+            "status",
+            "memory_type",
+            "created_at",
+        ),
+        CheckConstraint("length(report_source_hash) = 64", name="report_source_hash_length"),
+        CheckConstraint("length(report_payload_hash) = 64", name="report_payload_hash_length"),
+        CheckConstraint("length(content_hash) = 64", name="content_hash_length"),
+    )
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    report_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_research_reports.id"), nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    finding_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    memory_type: Mapped[ResearchMemoryType] = mapped_column(
+        enum_column(ResearchMemoryType, "research_memory_type", length=32), nullable=False
+    )
+    status: Mapped[ResearchMemoryStatus] = mapped_column(
+        enum_column(ResearchMemoryStatus, "research_memory_status", length=16), nullable=False
+    )
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    limitations: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    citation_ids: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    experiment_ids: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    protocols: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    source_references: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    report_source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding_document: Mapped[str] = mapped_column(Text, nullable=False)
+    document_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class AgentResearchMemoryEmbedding(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """候选研究记忆的可恢复 embedding 任务及版本化输出。"""
+
+    __tablename__ = "agent_research_memory_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "memory_id",
+            "provider",
+            "model_id",
+            "document_version",
+            name="uq_agent_research_memory_embedding_version",
+        ),
+        Index(
+            "ix_agent_research_memory_embeddings_claim",
+            "status",
+            "available_at",
+            "lease_expires_at",
+            "created_at",
+        ),
+        CheckConstraint("dimension = 1024", name="dimension_1024"),
+        CheckConstraint("length(input_sha256) = 64", name="input_sha256_length"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
+        CheckConstraint("max_attempts >= 1", name="max_attempts_positive"),
+        CheckConstraint("generation >= 0", name="generation_nonnegative"),
+        CheckConstraint(
+            "status != 'READY' OR (embedding IS NOT NULL AND normalized)",
+            name="ready_output_complete",
+        ),
+    )
+
+    memory_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_research_memories.id"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    document_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding: Mapped[list[float] | None] = mapped_column(VectorType(1024))
+    normalized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[ResearchMemoryEmbeddingStatus] = mapped_column(
+        enum_column(
+            ResearchMemoryEmbeddingStatus,
+            "research_memory_embedding_status",
+            length=32,
+        ),
+        nullable=False,
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(300))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AgentRunEvent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

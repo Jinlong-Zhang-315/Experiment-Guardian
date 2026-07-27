@@ -14,6 +14,7 @@ from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.domain.agent import (
     AgentChatMessage,
     AgentModelEvent,
+    AgentResponseFormat,
     AgentToolSpec,
 )
 from experiment_guardian.domain.contracts import (
@@ -219,5 +220,5 @@ class AgentChatModel(Protocol):
         tools: Sequence[AgentToolSpec],
         tool_choice: str,
         max_output_tokens: int,
-        response_json: bool = False,
+        response_format: AgentResponseFormat | None = None,
     ) -> Iterator[AgentModelEvent]: ...

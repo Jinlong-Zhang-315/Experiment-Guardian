@@ -4,6 +4,7 @@
 将数据库密码、AWS Key 或 MCP Token 意外提交到仓库。
 """
 
+from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlparse
@@ -108,8 +109,12 @@ class Settings(BaseSettings):
     # 内部治理 Agent 与摘要/Embedding 使用独立模型槽位。默认关闭，避免已有部署被迫
     # 配置新的模型和 Worker。
     agent_enabled: bool = False
-    agent_provider: Literal["bailian"] = "bailian"
+    agent_provider: Literal["bailian", "bedrock"] = "bailian"
     bailian_agent_model: str = ""
+    bedrock_agent_model_id: str = ""
+    agent_cost_currency: str = "USD"
+    agent_input_cost_per_million_tokens: Decimal | None = Field(default=None, ge=0)
+    agent_output_cost_per_million_tokens: Decimal | None = Field(default=None, ge=0)
     agent_max_model_calls: int = Field(default=4, ge=1, le=8)
     agent_max_tool_calls: int = Field(default=8, ge=1, le=20)
     agent_max_wall_seconds: int = Field(default=90, ge=10, le=300)
@@ -132,6 +137,14 @@ class Settings(BaseSettings):
 
         return value.upper() if isinstance(value, str) else value
 
+    @field_validator("agent_cost_currency", mode="before")
+    @classmethod
+    def normalize_agent_cost_currency(cls, value: object) -> object:
+        normalized = value.upper() if isinstance(value, str) else value
+        if not isinstance(normalized, str) or len(normalized) != 3 or not normalized.isalpha():
+            raise ValueError("AGENT_COST_CURRENCY 必须是三位英文字母")
+        return normalized
+
     @field_validator("embedding_dimension")
     @classmethod
     def require_r12b_embedding_dimension(cls, value: int) -> int:
@@ -148,14 +161,26 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_deployment_backends(self) -> "Settings":
+        pricing = (
+            self.agent_input_cost_per_million_tokens,
+            self.agent_output_cost_per_million_tokens,
+        )
+        if (pricing[0] is None) != (pricing[1] is None):
+            raise ValueError("Agent 输入和输出 Token 费率必须同时配置或同时留空")
         if self.agent_enabled:
-            required_agent = {
-                "BAILIAN_API_KEY": (
-                    self.bailian_api_key.get_secret_value() if self.bailian_api_key else ""
-                ),
-                "BAILIAN_BASE_URL": self.bailian_base_url,
-                "BAILIAN_AGENT_MODEL": self.bailian_agent_model,
-            }
+            required_agent = (
+                {
+                    "BAILIAN_API_KEY": (
+                        self.bailian_api_key.get_secret_value()
+                        if self.bailian_api_key
+                        else ""
+                    ),
+                    "BAILIAN_BASE_URL": self.bailian_base_url,
+                    "BAILIAN_AGENT_MODEL": self.bailian_agent_model,
+                }
+                if self.agent_provider == "bailian"
+                else {"BEDROCK_AGENT_MODEL_ID": self.bedrock_agent_model_id}
+            )
             missing_agent = [name for name, value in required_agent.items() if not value.strip()]
             if missing_agent:
                 raise ValueError("治理 Agent 缺少配置: " + ", ".join(missing_agent))
@@ -171,6 +196,8 @@ class Settings(BaseSettings):
             invalid = [name for name, values in expected.items() if values[0] != values[1]]
             if invalid:
                 raise ValueError("本地部署后端配置不一致: " + ", ".join(invalid))
+            if self.agent_enabled and self.agent_provider != "bailian":
+                raise ValueError("本地部署治理 Agent 只允许使用 bailian provider")
             if not self.database_url.startswith("cockroachdb+psycopg://"):
                 raise ValueError("本地 DATABASE_URL 必须使用 cockroachdb+psycopg:// dialect")
             local_urls = {
@@ -258,6 +285,16 @@ class Settings(BaseSettings):
             if self.mcp_oauth_resource_identifier.rstrip("/") != self.mcp_public_url.rstrip("/"):
                 raise ValueError("MCP OAuth resource identifier 必须与 MCP_PUBLIC_URL 一致")
         return self
+
+    @property
+    def agent_model_id(self) -> str:
+        """返回当前治理 Agent 槽位的模型 ID，不触发任何客户端初始化。"""
+
+        return (
+            self.bailian_agent_model
+            if self.agent_provider == "bailian"
+            else self.bedrock_agent_model_id
+        )
 
     def local_web_allowed_hosts(self) -> list[str]:
         """返回 URL 中明确配置的回环 Host，供应用层拒绝 DNS rebinding。"""

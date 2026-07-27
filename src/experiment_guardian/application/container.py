@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from experiment_guardian.application.action_proposals import ActionProposalService
 from experiment_guardian.application.agent import AgentConversationService
+from experiment_guardian.application.agent_observability import AgentObservabilityService
 from experiment_guardian.application.agent_tools import AgentToolRegistry
 from experiment_guardian.application.experiments import (
     ExperimentQueryService,
@@ -18,6 +19,8 @@ from experiment_guardian.application.ports import (
     EmbeddingModelOutput,
     GuardianUseCases,
 )
+from experiment_guardian.application.research_memories import ResearchMemoryService
+from experiment_guardian.application.research_reports import ResearchReportService
 from experiment_guardian.application.services import (
     GuardianApplication,
     PlanApprovalService,
@@ -25,12 +28,15 @@ from experiment_guardian.application.services import (
 )
 from experiment_guardian.application.web_auth import LocalOwnerWebAuthService, WebAuthService
 from experiment_guardian.application.web_management import WebManagementService
-from experiment_guardian.core.config import get_settings
+from experiment_guardian.core.config import Settings, get_settings
 from experiment_guardian.infrastructure.bailian import (
     BailianAgentChatModel,
     BailianEmbeddingGenerator,
 )
-from experiment_guardian.infrastructure.bedrock import BedrockTitanV2EmbeddingGenerator
+from experiment_guardian.infrastructure.bedrock import (
+    BedrockAgentChatModel,
+    BedrockTitanV2EmbeddingGenerator,
+)
 from experiment_guardian.infrastructure.cognito import CognitoOidcProvider
 from experiment_guardian.infrastructure.database import get_session_factory
 from experiment_guardian.infrastructure.mcp_oauth import (
@@ -173,6 +179,8 @@ def get_agent_tool_registry() -> AgentToolRegistry:
         get_project_repository(),
         get_policy_draft_service(),
         get_action_proposal_service(),
+        get_research_report_service(),
+        get_research_memory_service(),
     )
 
 
@@ -204,18 +212,71 @@ def get_agent_conversation_service() -> AgentConversationService:
 
 
 @lru_cache(maxsize=1)
+def get_research_report_service() -> ResearchReportService:
+    return ResearchReportService(
+        get_session_factory(),
+        get_project_repository(),
+        get_research_memory_service(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_research_memory_service() -> ResearchMemoryService:
+    settings = get_settings()
+    return ResearchMemoryService(
+        get_session_factory(),
+        get_project_repository(),
+        _LazyQueryEmbeddingGenerator(
+            settings.llm_provider,
+            (
+                settings.bailian_embedding_model
+                if settings.llm_provider == "bailian"
+                else settings.bedrock_embedding_model_id
+            ),
+            settings.embedding_dimension,
+        ),
+        settings,
+    )
+
+
+@lru_cache(maxsize=1)
 def get_agent_chat_model() -> AgentChatModel:
     settings = get_settings()
+    return build_agent_chat_model(settings)
+
+
+@lru_cache(maxsize=1)
+def get_agent_observability_service() -> AgentObservabilityService:
+    return AgentObservabilityService(
+        get_session_factory(),
+        get_project_repository(),
+        get_settings(),
+    )
+
+
+def build_agent_chat_model(settings: Settings) -> AgentChatModel:
+    """只在装配边界选择 provider，业务 Runtime 始终依赖统一端口。"""
+
     if not settings.agent_enabled:
         raise ValueError("AGENT_ENABLED=false，不能初始化治理 Agent 模型")
-    api_key = settings.bailian_api_key
-    return BailianAgentChatModel(
-        api_key=api_key.get_secret_value() if api_key else "",
-        base_url=settings.bailian_base_url,
-        model_id=settings.bailian_agent_model,
-        connect_timeout_seconds=settings.bailian_connect_timeout_seconds,
+    if settings.agent_provider == "bailian":
+        api_key = settings.bailian_api_key
+        return BailianAgentChatModel(
+            api_key=api_key.get_secret_value() if api_key else "",
+            base_url=settings.bailian_base_url,
+            model_id=settings.bailian_agent_model,
+            connect_timeout_seconds=settings.bailian_connect_timeout_seconds,
+            read_timeout_seconds=max(
+                settings.bailian_read_timeout_seconds,
+                settings.agent_max_wall_seconds,
+            ),
+        )
+    return BedrockAgentChatModel(
+        model_id=settings.bedrock_agent_model_id,
+        region=settings.aws_region,
+        connect_timeout_seconds=settings.bedrock_connect_timeout_seconds,
         read_timeout_seconds=max(
-            settings.bailian_read_timeout_seconds,
+            settings.bedrock_read_timeout_seconds,
             settings.agent_max_wall_seconds,
         ),
     )

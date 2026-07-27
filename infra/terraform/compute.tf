@@ -242,6 +242,31 @@ resource "aws_ecs_task_definition" "agent_worker" {
       }
     }
   }])
+
+  lifecycle {
+    precondition {
+      condition = var.agent_provider != "bailian" || (
+        trimspace(var.bailian_agent_base_url) != "" &&
+        trimspace(var.bailian_agent_model) != "" &&
+        trimspace(var.bailian_agent_api_key) != ""
+      )
+      error_message = "Bailian Agent requires base URL, model and API key."
+    }
+    precondition {
+      condition     = var.agent_provider != "bedrock" || trimspace(var.bedrock_agent_model_id) != ""
+      error_message = "Bedrock Agent requires bedrock_agent_model_id."
+    }
+    precondition {
+      condition = (
+        var.agent_input_cost_per_million_tokens == null &&
+        var.agent_output_cost_per_million_tokens == null
+        ) || (
+        var.agent_input_cost_per_million_tokens != null &&
+        var.agent_output_cost_per_million_tokens != null
+      )
+      error_message = "Agent input and output cost rates must be configured together."
+    }
+  }
 }
 
 resource "random_password" "origin_verify" {

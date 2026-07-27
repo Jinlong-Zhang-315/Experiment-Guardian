@@ -3,6 +3,7 @@
 import json
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from experiment_guardian.application.agent import (
     AgentConversationService,
     AgentRunIdentityResolver,
 )
+from experiment_guardian.application.agent_observability import AgentObservabilityService
 from experiment_guardian.application.agent_runtime import (
     AgentRunProcessor,
     GovernanceAgentRuntime,
@@ -21,35 +23,47 @@ from experiment_guardian.application.agent_runtime import (
 from experiment_guardian.application.agent_tools import AgentToolRegistry
 from experiment_guardian.application.errors import (
     AuthorizationError,
+    ConflictError,
     InputValidationError,
     ServiceUnavailableError,
 )
+from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.ports import AgentChatModel
+from experiment_guardian.application.research_reports import ResearchReportService
 from experiment_guardian.application.services import ProjectAdministrationService
 from experiment_guardian.application.web_auth import OWNER_WEB_SCOPES
 from experiment_guardian.core.config import Settings
 from experiment_guardian.domain.agent import (
     AgentChatMessage,
+    AgentEvidence,
     AgentMessageCreateRequest,
     AgentModelEvent,
     AgentModelUsage,
+    AgentResponseFormat,
     AgentThreadCreateRequest,
     AgentToolRequest,
+    AgentToolResult,
     AgentToolSpec,
 )
+from experiment_guardian.domain.agent_research import research_report_source_hash
 from experiment_guardian.domain.enums import (
     AgentContextSummaryStatus,
+    AgentEvidenceKind,
     AgentModelCallPurpose,
     AgentRunStatus,
+    TeamRole,
 )
 from experiment_guardian.infrastructure.models import (
     AgentCitation,
     AgentContextSummary,
     AgentMessage,
     AgentModelCall,
+    AgentResearchReport,
     AgentRun,
     AgentRunEvent,
     AuditLog,
+    TeamMember,
+    User,
     WebSession,
 )
 from experiment_guardian.infrastructure.repositories import (
@@ -65,11 +79,11 @@ class ScriptedAgentModel(AgentChatModel):
 
     @property
     def provider(self) -> str:
-        return "scripted"
+        return "bailian"
 
     @property
     def model_id(self) -> str:
-        return "scripted-r15a"
+        return "qwen-agent"
 
     def stream_turn(
         self,
@@ -78,9 +92,9 @@ class ScriptedAgentModel(AgentChatModel):
         tools: Sequence[AgentToolSpec],
         tool_choice: str,
         max_output_tokens: int,
-        response_json: bool = False,
+        response_format: AgentResponseFormat | None = None,
     ) -> Iterator[AgentModelEvent]:
-        del tools, max_output_tokens, response_json
+        del tools, max_output_tokens, response_format
         self.calls += 1
         if self.calls == 1:
             assert tool_choice == "auto"
@@ -126,11 +140,11 @@ class SummaryAwareAgentModel(AgentChatModel):
 
     @property
     def provider(self) -> str:
-        return "scripted"
+        return "bailian"
 
     @property
     def model_id(self) -> str:
-        return "scripted-r15b"
+        return "qwen-agent"
 
     def stream_turn(
         self,
@@ -139,15 +153,19 @@ class SummaryAwareAgentModel(AgentChatModel):
         tools: Sequence[AgentToolSpec],
         tool_choice: str,
         max_output_tokens: int,
-        response_json: bool = False,
+        response_format: AgentResponseFormat | None = None,
     ) -> Iterator[AgentModelEvent]:
-        del tools, tool_choice, max_output_tokens, response_json
+        del tools, tool_choice, max_output_tokens, response_format
         if messages[0].content.startswith("你负责压缩"):
             if self.fail_summary:
                 raise ServiceUnavailableError("summary provider unavailable")
             source = json.loads(messages[1].content.split("\n", 1)[1])
             schema_version = (
-                5
+                7
+                if "schema_version=7" in messages[1].content
+                else 6
+                if "schema_version=6" in messages[1].content
+                else 5
                 if "schema_version=5" in messages[1].content
                 else 4
                 if "schema_version=4" in messages[1].content
@@ -171,6 +189,10 @@ class SummaryAwareAgentModel(AgentChatModel):
                 payload["draft_references"] = []
             if schema_version >= 3:
                 payload["proposal_references"] = []
+            if schema_version >= 6:
+                payload["research_report_references"] = []
+            if schema_version >= 7:
+                payload["research_memory_references"] = []
             yield AgentModelEvent(event_type="text_delta", text=json.dumps(payload))
             yield AgentModelEvent(event_type="completed", finish_reason="stop")
             return
@@ -199,7 +221,7 @@ class CatalogInspectingModel(SummaryAwareAgentModel):
         tools: Sequence[AgentToolSpec],
         tool_choice: str,
         max_output_tokens: int,
-        response_json: bool = False,
+        response_format: AgentResponseFormat | None = None,
     ) -> Iterator[AgentModelEvent]:
         assert {item.name for item in tools} == {
             "project_status_get_v1",
@@ -212,7 +234,153 @@ class CatalogInspectingModel(SummaryAwareAgentModel):
             tools=tools,
             tool_choice=tool_choice,
             max_output_tokens=max_output_tokens,
-            response_json=response_json,
+            response_format=response_format,
+        )
+
+
+class ResearchReportAgentModel(AgentChatModel):
+    provider = "bailian"
+    model_id = "qwen-agent"
+
+    def __init__(self, experiment_ids: list[str]) -> None:
+        self.experiment_ids = experiment_ids
+        self.calls = 0
+
+    def stream_turn(
+        self,
+        *,
+        messages: Sequence[AgentChatMessage],
+        tools: Sequence[AgentToolSpec],
+        tool_choice: str,
+        max_output_tokens: int,
+        response_format: AgentResponseFormat | None = None,
+    ) -> Iterator[AgentModelEvent]:
+        del tools, tool_choice, max_output_tokens, response_format
+        self.calls += 1
+        if self.calls == 1:
+            yield AgentModelEvent(
+                event_type="tool_call",
+                tool_call=AgentToolRequest(
+                    call_id="call-report",
+                    name="research_report_prepare_v1",
+                    arguments={
+                        "experiment_ids": self.experiment_ids,
+                        "objective": "总结两次显式实验",
+                        "include_historical": False,
+                    },
+                ),
+            )
+            yield AgentModelEvent(event_type="completed", finish_reason="tool_calls")
+            return
+        assert any(item.role == "tool" for item in messages)
+        answer = {
+            "answer_markdown": "候选研究报告已生成，不属于正式事实。",
+            "sections": [
+                {
+                    "evidence_kind": "ANALYSIS",
+                    "title": "候选分析",
+                    "content": "两个实验的确定性比较已完成。",
+                    "citation_ids": ["ev_1_3"],
+                }
+            ],
+            "citations": ["ev_1_3"],
+            "follow_up_required": False,
+            "research_report": {
+                "schema_version": 1,
+                "source_hash": json.loads(
+                    next(item.content for item in reversed(messages) if item.role == "tool")
+                )["content"]["source_hash"],
+                "title": "两次实验阶段总结",
+                "executive_summary": "两次实验均已纳入候选分析。",
+                "executive_summary_citation_ids": ["ev_1_1", "ev_1_2", "ev_1_3"],
+                "findings": [
+                    {
+                        "finding_id": "F001",
+                        "kind": "SUPPORTED_CONCLUSION",
+                        "statement": "两次实验的正式状态均已读取。",
+                        "rationale": "该结论仅复述来源快照和确定性比较。",
+                        "citation_ids": ["ev_1_1", "ev_1_2", "ev_1_3"],
+                        "limitations": ["不构成因果结论"],
+                    }
+                ],
+                "limitations": [],
+                "selected_experiment_ids": self.experiment_ids,
+            },
+        }
+        yield AgentModelEvent(event_type="text_delta", text=json.dumps(answer))
+        yield AgentModelEvent(event_type="completed", finish_reason="stop")
+
+
+class ResearchReportToolRegistry:
+    def __init__(self, experiment_ids: list[str]) -> None:
+        self.experiment_ids = experiment_ids
+
+    def specs_for_version(self, catalog_version: str) -> list[AgentToolSpec]:
+        assert catalog_version == "r15e-b-v1"
+        return [
+            AgentToolSpec(
+                name="research_report_prepare_v1",
+                version="1",
+                description="测试报告来源",
+                input_schema={"type": "object"},
+            )
+        ]
+
+    def execute(self, **kwargs: object) -> AgentToolResult:
+        assert kwargs["tool_name"] == "research_report_prepare_v1"
+        experiments = [
+            {
+                "experiment_id": experiment_id,
+                "status": "COMPLETED",
+                "evidence_id": f"ev_1_{index}",
+            }
+            for index, experiment_id in enumerate(self.experiment_ids, start=1)
+        ]
+        comparison = {
+            "comparability": "COMPARABLE",
+            "evidence_id": "ev_1_3",
+        }
+        content = {
+            "schema_version": 1,
+            "objective": "总结两次显式实验",
+            "metric_name": None,
+            "include_historical": False,
+            "experiment_ids": self.experiment_ids,
+            "experiments": experiments,
+            "comparisons": [comparison],
+            "repeated_group": {"analysis": {"accepted": False}},
+        }
+        content["source_hash"] = research_report_source_hash(content)
+        return AgentToolResult(
+            content=content,
+            evidence=[
+                AgentEvidence(
+                    evidence_id="ev_1_1",
+                    evidence_kind=AgentEvidenceKind.CONFIRMED_FACT,
+                    entity_type="EXPERIMENT",
+                    entity_id=self.experiment_ids[0],
+                    label="实验一",
+                    excerpt="COMPLETED",
+                    payload={},
+                ),
+                AgentEvidence(
+                    evidence_id="ev_1_2",
+                    evidence_kind=AgentEvidenceKind.CONFIRMED_FACT,
+                    entity_type="EXPERIMENT",
+                    entity_id=self.experiment_ids[1],
+                    label="实验二",
+                    excerpt="COMPLETED",
+                    payload={},
+                ),
+                AgentEvidence(
+                    evidence_id="ev_1_3",
+                    evidence_kind=AgentEvidenceKind.ANALYSIS,
+                    entity_type="EXPERIMENT_COMPARISON",
+                    label="确定性比较",
+                    excerpt="COMPARABLE",
+                    payload={},
+                ),
+            ],
         )
 
 
@@ -621,3 +789,236 @@ def test_pending_r15a_run_keeps_original_prompt_and_tool_catalog(
         ).status
         is AgentRunStatus.SUCCEEDED
     )
+
+
+def test_research_report_is_persisted_atomically_and_shared_as_analysis(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    service, identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    thread = service.create_thread(
+        project_id=project_id,
+        identity=identity,
+        request=AgentThreadCreateRequest(),
+    )
+    service.create_message(
+        project_id=project_id,
+        thread_id=thread.thread_id,
+        identity=identity,
+        idempotency_key=uuid4(),
+        request=AgentMessageCreateRequest(content="请基于两个显式实验生成阶段研究报告"),
+    )
+    experiment_ids = [str(uuid4()), str(uuid4())]
+    repository = SqlAlchemyAgentRepository()
+    runtime = GovernanceAgentRuntime(
+        plan_check_session_factory,
+        repository,
+        ResearchReportToolRegistry(experiment_ids),  # type: ignore[arg-type]
+        ResearchReportAgentModel(experiment_ids),
+        settings,
+    )
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        runtime,
+        settings,
+        worker_id="research-report-worker",
+    )
+    assert processor.process_once()
+
+    view = service.get_thread(
+        project_id=project_id,
+        thread_id=thread.thread_id,
+        identity=identity,
+    )
+    assert view.messages[-1].research_report_id is not None
+    report_service = ResearchReportService(
+        plan_check_session_factory,
+        SqlAlchemyProjectRepository(),
+    )
+    report = report_service.get_report(
+        project_id=project_id,
+        report_id=view.messages[-1].research_report_id,
+        identity=identity,
+    )
+    assert report.authoritative is False
+    assert report.evidence_classification == "ANALYSIS"
+    assert [str(item) for item in report.experiment_ids] == experiment_ids
+    assert len(report.source_warnings) == 2
+    researcher_id = uuid4()
+    researcher_session_id = uuid4()
+    now = datetime.now(UTC)
+    with plan_check_session_factory() as session, session.begin():
+        session.add(
+            User(
+                id=researcher_id,
+                name="Report Researcher",
+                email="report-reader@example.com",
+            )
+        )
+        session.flush()
+        session.add(
+            TeamMember(
+                team_id=identity.team_id,
+                user_id=researcher_id,
+                role=TeamRole.RESEARCHER,
+            )
+        )
+        session.add(
+            WebSession(
+                id=researcher_session_id,
+                user_id=researcher_id,
+                team_id=identity.team_id,
+                session_hash="b" * 64,
+                authenticated_at=now,
+                reauthenticated_at=now,
+                last_seen_at=now,
+                absolute_expires_at=now + timedelta(hours=8),
+            )
+        )
+    researcher = identity.__class__(
+        user_id=researcher_id,
+        team_id=identity.team_id,
+        token_id=researcher_session_id,
+        scopes=frozenset({"experiment:read"}),
+        authentication_method="WEB_SESSION",
+    )
+    assert report_service.list_reports(
+        project_id=project_id,
+        identity=researcher,
+        cursor=None,
+        limit=20,
+    ).items[0].report_id == report.report_id
+    with plan_check_session_factory() as session:
+        assert session.scalar(select(AgentResearchReport)) is not None
+        assert (
+            session.scalar(
+                select(AuditLog).where(
+                    AuditLog.action == "agent.research_report.created"
+                )
+            )
+            is not None
+        )
+    with plan_check_session_factory() as session, session.begin():
+        persisted_report = session.get(AgentResearchReport, report.report_id)
+        assert persisted_report is not None
+        persisted_report.title = "与不可变正文不一致的标题"
+    with pytest.raises(ConflictError, match="来源或内容哈希不一致"):
+        report_service.get_report(
+            project_id=project_id,
+            report_id=report.report_id,
+            identity=researcher,
+        )
+
+
+def test_agent_model_calls_freeze_pricing_and_owner_observability(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    _, identity, initialized, base_settings = _setup(plan_check_session_factory)
+    settings = base_settings.model_copy(
+        update={
+            "agent_input_cost_per_million_tokens": Decimal("2"),
+            "agent_output_cost_per_million_tokens": Decimal("4"),
+            "agent_cost_currency": "USD",
+        }
+    )
+    projects = SqlAlchemyProjectRepository()
+    service = AgentConversationService(
+        plan_check_session_factory,
+        projects,
+        SqlAlchemyAgentRepository(),
+        settings,
+    )
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    thread = service.create_thread(
+        project_id=project_id,
+        identity=identity,  # type: ignore[arg-type]
+        request=AgentThreadCreateRequest(),
+    )
+    receipt = service.create_message(
+        project_id=project_id,
+        thread_id=thread.thread_id,
+        identity=identity,  # type: ignore[arg-type]
+        idempotency_key=uuid4(),
+        request=AgentMessageCreateRequest(content="读取状态并记录模型观测"),
+    )
+    repository = SqlAlchemyAgentRepository()
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, projects),
+            ScriptedAgentModel(),
+            settings,
+        ),
+        settings,
+        worker_id="observability-agent-worker",
+    )
+    assert processor.process_once()
+
+    run = service.get_run(
+        project_id=project_id,
+        run_id=receipt.run_id,
+        identity=identity,  # type: ignore[arg-type]
+    )
+    assert len(run.model_calls) == 2
+    assert run.model_calls[0].estimated_cost is None
+    assert run.model_calls[1].estimated_cost == Decimal("0.0000800000")
+    assert run.model_calls[1].cost_currency == "USD"
+    assert run.model_calls[1].latency_ms is not None
+
+    view = AgentObservabilityService(
+        plan_check_session_factory,
+        projects,
+        settings,
+    ).get_project_observability(
+        project_id=project_id,
+        identity=identity,  # type: ignore[arg-type]
+        window_days=7,
+        provider=None,
+        model_id=None,
+    )
+    assert view.totals.run_count == 1
+    assert view.totals.model_call_count == 2
+    assert view.totals.input_tokens == 20
+    assert view.totals.output_tokens == 10
+    assert view.totals.unpriced_call_count == 1
+    assert view.costs[0].estimated_cost == Decimal("0.0000800000")
+
+    observability = AgentObservabilityService(
+        plan_check_session_factory,
+        projects,
+        settings,
+    )
+    with pytest.raises(AuthorizationError, match="Web Session"):
+        observability.get_project_observability(
+            project_id=project_id,
+            identity=RequestIdentity(
+                user_id=identity.user_id,  # type: ignore[union-attr]
+                team_id=identity.team_id,  # type: ignore[union-attr]
+                token_id=identity.token_id,  # type: ignore[union-attr]
+                scopes=OWNER_WEB_SCOPES,
+                authentication_method="MCP_OAUTH",
+            ),
+            window_days=7,
+            provider=None,
+            model_id=None,
+        )
+    with pytest.raises(AuthorizationError, match="project:write"):
+        observability.get_project_observability(
+            project_id=project_id,
+            identity=RequestIdentity(
+                user_id=identity.user_id,  # type: ignore[union-attr]
+                team_id=identity.team_id,  # type: ignore[union-attr]
+                token_id=identity.token_id,  # type: ignore[union-attr]
+                scopes=frozenset({"project:read"}),
+                authentication_method="WEB_SESSION",
+            ),
+            window_days=7,
+            provider=None,
+            model_id=None,
+        )

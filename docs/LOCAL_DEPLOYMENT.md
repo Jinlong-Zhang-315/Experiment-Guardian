@@ -45,7 +45,7 @@ docker compose --env-file .env.local logs migration minio-init local-init
 curl -fsS http://127.0.0.1:8000/api/v1/health
 ```
 
-`database-init` 创建数据库，`migration` 单独升级到当前 head `20260727_20`，`minio-init` 创建 Bucket、
+`database-init` 创建数据库，`migration` 单独升级到当前 head `20260727_23`，`minio-init` 创建 Bucket、
 开启并验证 Versioning，`local-init` 再创建初始业务数据。API/Worker 只有在这些一次性任务成功
 后才启动，迁移不会被多个长期服务并发执行。
 
@@ -60,6 +60,10 @@ Owner Membership 后创建正常的 HttpOnly Session Cookie 和 CSRF Cookie。
 AGENT_ENABLED=true
 AGENT_PROVIDER=bailian
 BAILIAN_AGENT_MODEL=<支持流式 Function Calling 的百炼模型>
+AGENT_COST_CURRENCY=CNY
+# 以下两个可选费率必须同时配置，只用于模型运行估算，不代表百炼账单。
+AGENT_INPUT_COST_PER_MILLION_TOKENS=
+AGENT_OUTPUT_COST_PER_MILLION_TOKENS=
 ```
 
 使用 Compose 的 `agent` profile 启动专用 Worker：
@@ -76,6 +80,11 @@ Context/Intent/Constraint 草稿，以及准备策略发布、Plan 决策和 Sub
 执行任意 SQL、绕过 Plan Check、直接修改运行记录、训练或修改代码。每轮运行使用当前 Web
 Session 对应的真实用户身份，工具执行时再次校验 Team Membership 和项目权限。浏览器断开
 SSE 不会取消后台运行，重连会从 `Last-Event-ID` 继续读取持久化事件。
+
+本地模式只允许 `AGENT_PROVIDER=bailian`；配置 `bedrock` 会在启动校验阶段失败，不会实例化
+AWS Client 或要求 AWS 凭据。项目 Owner 可从 Agent 页打开“模型观测”，查看 7/30/90 天的
+调用、token、延迟、失败、重试和配置费率估算；项目成员可从消息打开单个 Run 的有界调用
+元数据。两个视图都不会返回提示词、回答正文、工具输入或工具输出。
 
 ## 幂等初始化
 

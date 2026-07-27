@@ -44,9 +44,12 @@ Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Contex
 * MCP 2025-11-25 OAuth Resource Server、RFC 9728、PKCE、RFC 8707 和预注册客户端；
 * AWS CloudFront/WAF/ALB/ECS/S3/SQS/Cognito/Bedrock Terraform 部署定义；
 * CockroachDB、MinIO、数据库队列、百炼和 local_owner 的单机 Compose 部署模式；
-* R15d-b2 内部治理 Agent：持久化对话、八个只读查询/分析工具、四个候选草稿工具及三个
-  只准备不执行的 Policy/Plan/Submission 提案工具；有权审核者通过独立 Web 确认、
-  近期认证和实时依据复核执行。
+* R15e-b 内部治理 Agent：候选研究报告的每条 finding 会形成独立 Research Memory，并在
+  team/project/status/来源有效性等结构化过滤后进行语义召回；结果始终是
+  `CANDIDATE_EVIDENCE`，不能发布治理事实或触发正式操作。
+* R15e-c Agent provider parity：治理 Agent 可在云端选择百炼或 Bedrock ConverseStream；
+  两者共用严格响应契约、工具目录、权限和状态机，不做静默 provider 回退。Owner 可查看
+  项目级调用量、token、延迟、失败、重试及按调用时配置费率冻结的费用估算。
 
 MCP 只暴露七个工具：
 
@@ -132,9 +135,10 @@ docker compose --env-file .env.local logs local-init
 [`docs/POLICY_DUAL_REPRESENTATION.md`](docs/POLICY_DUAL_REPRESENTATION.md)。
 内部实验治理 Agent 的能力边界、工具目录、上下文压缩、确认协议和分期计划见
 [`docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md`](docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md)；
-当前完成 R15d-b2 Submission 批准/拒绝提案纵向切片。Agent 只能冻结候选、差异、影响、
-审核回执和决定；所有提案确认都需近期认证。LOW/MEDIUM 保持既有审核权限，HIGH 批准
-只能由 Owner 确认，CRITICAL/blocking 不能批准。Agent 没有 confirm/execute 工具。
+当前完成 R15e-c Agent provider parity 与模型运行观测。报告仍由用户明确选择 Experiment；每条
+finding 使用确定性模板形成独立候选记忆，embedding 由可恢复 Worker 异步生成。报告和正式
+Experiment Memory 均不受索引失败影响；所有提案仍需独立 Web 确认。Bedrock Agent 强制使用
+Structured Outputs JSON Schema，不接受仅靠提示词约束 JSON 的降级路径。
 
 启用本地治理 Agent 时，在 `.env.local` 设置：
 
@@ -142,6 +146,10 @@ docker compose --env-file .env.local logs local-init
 AGENT_ENABLED=true
 AGENT_PROVIDER=bailian
 BAILIAN_AGENT_MODEL=<支持 Function Calling 的百炼模型>
+# 可选：输入/输出每百万 token 的配置费率，仅用于估算，不是云平台账单。
+AGENT_COST_CURRENCY=CNY
+AGENT_INPUT_COST_PER_MILLION_TOKENS=
+AGENT_OUTPUT_COST_PER_MILLION_TOKENS=
 ```
 
 然后带 `agent` profile 启动。Agent Worker 与 Submission Worker 独立部署：
@@ -165,7 +173,7 @@ experiment-guardian-api
 
 默认 API：`http://127.0.0.1:8000`，OpenAPI：`/docs`。
 
-当前 Alembic head 为 `20260727_20`：
+当前 Alembic head 为 `20260727_23`：
 
 ```text
 01 foundation/context
@@ -187,6 +195,9 @@ experiment-guardian-api
 18 immutable Agent Policy publish action proposals
 19 Agent Plan Check decision proposals
 20 Agent Submission decision proposals
+21 immutable Agent research reports
+22 candidate Research Memory and recoverable embeddings
+23 Agent provider/model, latency and configured-rate cost observability
 ```
 
 初始化现有团队和首个项目仍可使用可信本地 CLI/API：

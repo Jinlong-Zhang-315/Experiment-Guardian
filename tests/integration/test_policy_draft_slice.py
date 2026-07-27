@@ -25,6 +25,7 @@ from experiment_guardian.domain.agent import (
     AgentChatMessage,
     AgentMessageCreateRequest,
     AgentModelEvent,
+    AgentResponseFormat,
     AgentThreadCreateRequest,
     AgentToolRequest,
     AgentToolSpec,
@@ -132,11 +133,11 @@ class _ScriptedPolicyDraftModel(AgentChatModel):
 
     @property
     def provider(self) -> str:
-        return "scripted"
+        return "bailian"
 
     @property
     def model_id(self) -> str:
-        return "scripted-r15c"
+        return "qwen-agent"
 
     def stream_turn(
         self,
@@ -145,9 +146,9 @@ class _ScriptedPolicyDraftModel(AgentChatModel):
         tools: Sequence[AgentToolSpec],
         tool_choice: str,
         max_output_tokens: int,
-        response_json: bool = False,
+        response_format: AgentResponseFormat | None = None,
     ) -> Iterator[AgentModelEvent]:
-        del messages, tool_choice, max_output_tokens, response_json
+        del messages, tool_choice, max_output_tokens, response_format
         assert "policy_draft_create_v1" in {item.name for item in tools}
         self.calls += 1
         if self.calls == 1:

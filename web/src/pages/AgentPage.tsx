@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Bot, FilePenLine, MessageSquarePlus, RotateCcw, Send, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Activity, Archive, ArchiveRestore, Bot, BookOpenText, FilePenLine, Gauge, MessageSquarePlus, RotateCcw, Send, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api, formatTime, idempotencyKey, streamServerEvents } from "../api";
 import { Badge, Empty, ErrorNotice } from "../components";
@@ -11,9 +11,12 @@ import type {
   AgentThread,
   AgentThreadView,
   Page,
+  Session,
 } from "../types";
 import { PolicyDraftWorkspace } from "./PolicyDraftWorkspace";
 import { ActionProposalWorkspace } from "./ActionProposalWorkspace";
+import { ResearchReportWorkspace } from "./ResearchReportWorkspace";
+import { AgentObservabilityWorkspace, AgentRunDetailsDialog } from "./AgentObservabilityWorkspace";
 
 const ACTIVE_RUNS = new Set(["PENDING", "RUNNING", "RETRYABLE_FAILURE"]);
 
@@ -33,10 +36,14 @@ function Message({
   value,
   onOpenDraft,
   onOpenProposal,
+  onOpenReport,
+  onOpenRun,
 }: {
   value: AgentMessage;
   onOpenDraft: (draftId: string) => void;
   onOpenProposal: (proposalId: string) => void;
+  onOpenReport: (reportId: string) => void;
+  onOpenRun: (runId: string) => void;
 }) {
   return <article className={`agent-message ${value.role.toLowerCase()}`}>
     <header><strong>{value.role === "USER" ? "你" : "治理 Agent"}</strong><time>{formatTime(value.created_at)}</time></header>
@@ -59,6 +66,8 @@ function Message({
           : <section key={citation.evidence_id}>{content}</section>;
       })}</div>
     </details>}
+    {value.role === "USER" && value.run_id && <button className="button agent-run-link" onClick={() => onOpenRun(value.run_id!)}><Activity />运行详情</button>}
+    {value.research_report_id && <button className="button agent-report-link" onClick={() => onOpenReport(value.research_report_id!)}><BookOpenText />查看研究报告</button>}
   </article>;
 }
 
@@ -75,12 +84,16 @@ export function AgentPage() {
   const [streamError, setStreamError] = useState<unknown>();
   const [draftWorkspace, setDraftWorkspace] = useState<{ open: boolean; draftId?: string }>({ open: false });
   const [proposalWorkspace, setProposalWorkspace] = useState<{ open: boolean; proposalId?: string }>({ open: false });
+  const [reportWorkspace, setReportWorkspace] = useState<{ open: boolean; reportId?: string }>({ open: false });
+  const [observabilityOpen, setObservabilityOpen] = useState(false);
+  const [selectedRunId, setSelectedRunId] = useState("");
   const lastEventId = useRef(0);
 
   const threads = useQuery({
     queryKey: ["agent-threads", projectId, showArchived],
     queryFn: () => api<Page<AgentThread>>(`/projects/${projectId}/agent/threads?archived=${showArchived}`),
   });
+  const session = useQuery({ queryKey: ["session"], queryFn: () => api<Session>("/auth/me") });
   const thread = useQuery({
     queryKey: ["agent-thread", projectId, selectedId],
     queryFn: () => api<AgentThreadView>(`/projects/${projectId}/agent/threads/${selectedId}`),
@@ -225,8 +238,10 @@ export function AgentPage() {
   return <main className="page agent-page">
     <header className="page-header"><div><span className="eyebrow">治理 Agent</span><h1>项目实验助手</h1><p>回答仅基于当前身份可见的正式记录</p></div>
       <div className="agent-header-actions">
+        {session.data?.role === "OWNER" && <button className="button" onClick={() => setObservabilityOpen(true)}><Gauge />模型观测</button>}
         <button className="button" onClick={() => setDraftWorkspace({ open: true })}><FilePenLine />治理草稿</button>
         <button className="button" onClick={() => setProposalWorkspace({ open: true })}><ShieldCheck />发布提案</button>
+        <button className="button" onClick={() => setReportWorkspace({ open: true })}><BookOpenText />研究报告</button>
         <button className="button" onClick={() => setShowArchived((value) => !value)}>{showArchived ? <ArchiveRestore /> : <Archive />}{showArchived ? "当前会话" : "已归档"}</button>
         <button className="button primary" onClick={() => createThread.mutate()} disabled={createThread.isPending}><MessageSquarePlus />新对话</button>
       </div>
@@ -244,7 +259,7 @@ export function AgentPage() {
           </div>
           <div className="agent-message-list">
             {thread.data?.context_summary?.degraded && <div className="agent-summary-warning"><TriangleAlert /> <span>{thread.data.context_summary.warning}</span></div>}
-            {thread.isPending ? <div className="page-loading">正在加载消息</div> : thread.data?.messages.map((message) => <Message key={message.message_id} value={message} onOpenDraft={(draftId) => setDraftWorkspace({ open: true, draftId })} onOpenProposal={(proposalId) => setProposalWorkspace({ open: true, proposalId })} />)}
+            {thread.isPending ? <div className="page-loading">正在加载消息</div> : thread.data?.messages.map((message) => <Message key={message.message_id} value={message} onOpenDraft={(draftId) => setDraftWorkspace({ open: true, draftId })} onOpenProposal={(proposalId) => setProposalWorkspace({ open: true, proposalId })} onOpenReport={(reportId) => setReportWorkspace({ open: true, reportId })} onOpenRun={setSelectedRunId} />)}
             {(streamedAnswer || activity) && ACTIVE_RUNS.has(runStatus) && <article className="agent-message assistant streaming"><header><strong>治理 Agent</strong><Badge value={runStatus || "RUNNING"} /></header>{streamedAnswer ? <AnswerContent content={streamedAnswer} /> : <p>{activity}</p>}</article>}
           </div>
           {streamError ? <ErrorNotice error={streamError} /> : null}
@@ -255,5 +270,8 @@ export function AgentPage() {
       </div>}
     {draftWorkspace.open && <PolicyDraftWorkspace projectId={projectId} initialDraftId={draftWorkspace.draftId} onClose={() => setDraftWorkspace({ open: false })} />}
     {proposalWorkspace.open && <ActionProposalWorkspace projectId={projectId} initialProposalId={proposalWorkspace.proposalId} onClose={() => setProposalWorkspace({ open: false })} />}
+    {reportWorkspace.open && <ResearchReportWorkspace projectId={projectId} initialReportId={reportWorkspace.reportId} onClose={() => setReportWorkspace({ open: false })} />}
+    {observabilityOpen && <AgentObservabilityWorkspace projectId={projectId} onClose={() => setObservabilityOpen(false)} />}
+    {selectedRunId && <AgentRunDetailsDialog projectId={projectId} runId={selectedRunId} onClose={() => setSelectedRunId("")} />}
   </main>;
 }

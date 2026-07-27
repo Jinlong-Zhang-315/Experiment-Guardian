@@ -156,9 +156,127 @@ export interface AgentMessage {
   role: "USER" | "ASSISTANT";
   content: string;
   run_id?: string;
+  research_report_id?: string;
   sections?: AgentAnswerSection[];
   citations: AgentCitation[];
   created_at: string;
+}
+
+export type ResearchFindingKind =
+  "SUPPORTED_CONCLUSION" | "CONFLICT" | "OPEN_QUESTION" | "RECOMMENDATION";
+
+export interface ResearchReportSummary {
+  report_id: string;
+  project_id: string;
+  created_by: string;
+  title: string;
+  objective: string;
+  experiment_ids: string[];
+  metric_name?: string;
+  include_historical: boolean;
+  source_hash: string;
+  provider: string;
+  model_id: string;
+  prompt_version: string;
+  created_at: string;
+}
+
+export interface ResearchReportView extends ResearchReportSummary {
+  schema_version: number;
+  source_snapshot: {
+    content?: Record<string, unknown>;
+    evidence?: Array<{
+      evidence_id: string;
+      evidence_kind: AgentEvidenceKind;
+      entity_type: string;
+      entity_id?: string;
+      entity_version?: string;
+      label: string;
+      excerpt: string;
+    }>;
+  };
+  report: {
+    schema_version: 1;
+    source_hash: string;
+    title: string;
+    executive_summary: string;
+    executive_summary_citation_ids: string[];
+    findings: Array<{
+      finding_id: string;
+      kind: ResearchFindingKind;
+      statement: string;
+      rationale: string;
+      citation_ids: string[];
+      limitations: string[];
+    }>;
+    limitations: Array<{ statement: string; citation_ids: string[] }>;
+    selected_experiment_ids: string[];
+  };
+  payload_hash: string;
+  source_thread_id: string;
+  source_run_id: string;
+  final_message_id: string;
+  source_warnings: Array<{
+    code: "SOURCE_STATUS_CHANGED" | "SOURCE_MISSING";
+    experiment_id: string;
+    snapshot_status: string;
+    current_status?: string;
+    message: string;
+  }>;
+  research_memories?: ResearchMemoryIndex[];
+  memory_materialization_pending?: boolean;
+  authoritative: false;
+  evidence_classification: "ANALYSIS";
+}
+
+export type ResearchMemoryType =
+  "RESEARCH_SYNTHESIS" | "CONFLICT" | "OPEN_QUESTION" | "RECOMMENDATION";
+export type ResearchMemoryEmbeddingStatus =
+  "NOT_SCHEDULED" | "PENDING" | "RUNNING" | "RETRYABLE_FAILURE" |
+  "READY" | "FAILED" | "DEAD_LETTER";
+
+export interface ResearchMemoryIndex {
+  memory_id: string;
+  finding_id: string;
+  memory_type: ResearchMemoryType;
+  status: "CANDIDATE";
+  source_freshness: "CURRENT" | "SOURCE_CHANGED" | "SOURCE_MISSING";
+  embedding_status: ResearchMemoryEmbeddingStatus;
+  provider?: string;
+  model_id?: string;
+  document_version: string;
+  last_error?: { code?: string; message?: string; retryable?: boolean };
+}
+
+export interface ResearchMemorySearchResult {
+  memory_id: string;
+  report_id: string;
+  finding_id: string;
+  memory_type: ResearchMemoryType;
+  statement: string;
+  rationale: string;
+  limitations: string[];
+  citation_ids: string[];
+  experiment_ids: string[];
+  protocols: string[];
+  source_freshness: "CURRENT" | "SOURCE_CHANGED" | "SOURCE_MISSING";
+  source_warnings: string[];
+  similarity: number;
+  provider: string;
+  model_id: string;
+  document_version: string;
+  content_hash: string;
+  authoritative: false;
+  evidence_classification: "ANALYSIS";
+  retrieval_role: "CANDIDATE_EVIDENCE";
+}
+
+export interface ResearchMemorySearchResponse {
+  items: ResearchMemorySearchResult[];
+  candidate_count: number;
+  candidate_truncated: boolean;
+  authoritative: false;
+  retrieval_role: "CANDIDATE_EVIDENCE";
 }
 
 export interface AgentAnswerSection {
@@ -200,11 +318,66 @@ export interface AgentRun extends AgentRunReceipt {
   max_attempts: number;
   provider: string;
   model_id: string;
+  usage: Record<string, unknown>;
+  model_calls: AgentModelCall[];
   error?: { code?: string; message?: string; retryable?: boolean };
   final_message_id?: string;
   created_at: string;
   started_at?: string;
   completed_at?: string;
+}
+
+export interface AgentModelCall {
+  call_id: string;
+  generation: number;
+  ordinal: number;
+  purpose: "AGENT_TURN" | "CONTEXT_SUMMARY";
+  status: "RUNNING" | "SUCCEEDED" | "FAILED" | "ABANDONED";
+  provider: string;
+  model_id: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  latency_ms?: number;
+  estimated_cost?: string;
+  cost_currency?: string;
+  finish_reason?: string;
+  error_code?: string;
+  started_at: string;
+  completed_at?: string;
+}
+
+export interface AgentObservabilityTotals {
+  run_count: number;
+  model_call_count: number;
+  succeeded_call_count: number;
+  failed_call_count: number;
+  abandoned_call_count: number;
+  retry_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  missing_usage_call_count: number;
+  unpriced_call_count: number;
+  average_latency_ms?: number;
+  maximum_latency_ms?: number;
+}
+
+export interface AgentObservabilityGroup extends AgentObservabilityTotals {
+  provider: string;
+  model_id: string;
+  purpose: AgentModelCall["purpose"];
+}
+
+export interface AgentModelObservability {
+  project_id: string;
+  window_from: string;
+  window_to: string;
+  current_provider: string;
+  current_model_id: string;
+  pricing_configured: boolean;
+  totals: AgentObservabilityTotals;
+  groups: AgentObservabilityGroup[];
+  costs: Array<{ currency: string; estimated_cost: string }>;
+  failure_categories: Record<string, number>;
 }
 
 export type AgentEvidenceKind =

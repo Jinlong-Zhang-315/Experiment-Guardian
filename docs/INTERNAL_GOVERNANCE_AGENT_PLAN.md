@@ -2,7 +2,7 @@
 
 更新时间：2026-07-27
 计划轮次：R15a-R15e
-当前状态：R15d-b2 Submission 批准/拒绝提案已完成；下一步先收敛 R15e 计划
+当前状态：R15e-c provider parity 与模型运行观测已完成；下一步 R16 release candidate hardening
 
 ## 1. 目标与定位
 
@@ -39,16 +39,20 @@ Agent 的职责是提高查询、分析、解释和草稿准备效率，不成�
 * `Memory VECTOR(1024)` 只保存已确认 Experiment 记忆，并执行 project/protocol/status 等
   结构化过滤后再做向量排序。
 
-### R15d-b2 后的当前缺口
+### R15e-c 后的当前状态
 
 * `SummaryTextGenerator` 继续拒绝 `tool_calls`；R15a 已新增独立 `AgentChatModel` 和百炼适配器。
 * Thread、Message、Run、ModelCall、ToolCall、Citation、Event、Policy Draft 和三种白名单
   Action Proposal 已完成。
-* 有界 Agent loop、版本化 Prompt/工具目录、rolling summary v5、确定性分析、候选草稿和
+* 有界 Agent loop、版本化 Prompt/工具目录、rolling summary v7、确定性分析、候选草稿和
   Policy/Plan/Submission 提案已完成。
 * Web 已支持草稿编辑与提案复核；正式执行始终使用独立 Web 确认请求，不返回模型循环。
-* 尚未实现带正式 Experiment 引用的阶段研究总结、独立 Agent Research Memory 与 Bedrock
-  `AgentChatModel` provider parity。
+* 显式选择 2-8 个正式 Experiment 的不可变候选研究报告、逐条引用验证、共享只读 Web/API
+  和来源状态变化警告已完成。
+* 独立候选 Research Memory、跨报告结构过滤优先召回和可恢复 embedding 已完成。
+* Bedrock `AgentChatModel`、严格 Structured Outputs、启动期 provider 装配、调用级 token/
+  延迟/失败/冻结费率估算和 Owner Web 观测已完成；没有新增治理工具或正式执行入口。
+* 剩余工作属于发布加固：真实 provider 对照验收、并发/恢复压测、告警阈值和部署 Runbook。
 
 ## 3. 本轮采纳、调整和拒绝
 
@@ -108,7 +112,7 @@ GovernanceAgentRuntime
         |
         +--> AgentChatModel port
         |      +--> BailianAgentChatModel       [R15a]
-        |      +--> BedrockAgentChatModel       [later provider parity]
+        |      +--> BedrockAgentChatModel       [R15e-c]
         |      +--> test fake
         |
         +--> AgentToolRegistry
@@ -136,7 +140,7 @@ CockroachDB
 AgentChatModel
   provider
   model_id
-  complete(messages, tools, tool_choice, max_output_tokens)
+  stream_turn(messages, tools, tool_choice, max_output_tokens, response_format)
       -> text | typed tool calls | usage | finish reason
 ```
 
@@ -152,6 +156,10 @@ R15a 使用百炼 OpenAI-compatible Chat Completions Function Calling。模型�
 `BAILIAN_AGENT_MODEL` 配置，不在代码中锁死。工具顺序和 JSON 字段顺序保持稳定，以利用百炼
 上下文缓存的公共前缀，但缓存命中不能影响正确性。
 
+R15e-c 增加 Bedrock ConverseStream。Bedrock 每次调用必须携带 `AgentResponseFormat` 并映射为
+Structured Outputs JSON Schema；不提供 prompt-only JSON fallback。provider 在进程启动时选择，
+Run 执行时再次核对持久化 provider/model，不因限流、超时或重试自动切换平台。
+
 计划配置：
 
 ```text
@@ -159,6 +167,9 @@ AGENT_ENABLED=false
 AGENT_PROVIDER=bailian
 BAILIAN_AGENT_MODEL=
 BEDROCK_AGENT_MODEL_ID=
+AGENT_COST_CURRENCY=USD
+AGENT_INPUT_COST_PER_MILLION_TOKENS=
+AGENT_OUTPUT_COST_PER_MILLION_TOKENS=
 AGENT_MAX_MODEL_CALLS=4
 AGENT_MAX_TOOL_CALLS=8
 AGENT_MAX_WALL_SECONDS=90
@@ -329,17 +340,17 @@ follow_up_required
 
 ### 长期记忆
 
-R15e 才引入独立 `agent_research_memories`：
+R15e-b 已引入独立 `agent_research_memories`：
 
-* 类型为 `RESEARCH_SYNTHESIS`、`OPEN_QUESTION`、`DECISION_RATIONALE`；
-* 状态为 `CANDIDATE`、`CONFIRMED`、`SUPERSEDED`；
+* 类型为 `RESEARCH_SYNTHESIS`、`CONFLICT`、`OPEN_QUESTION`、`RECOMMENDATION`；
+* 当前状态只允许 `CANDIDATE`，不实现确认、晋升或自动 superseded；
 * 每条结论必须绑定 Experiment/Context/Intent/Plan/Submission 引用；
 * 与正式 `Memory` 分表、分索引、分查询工具；
 * 向量召回前必须做 project/type/status 等结构化过滤；
 * 召回结果仍是候选证据，不能成为约束判断输入。
 
-不在 R15a-R15d 引入 Agent 长期向量记忆，避免在检索消费语义尚未稳定前污染现有 Experiment
-Memory。
+候选记忆与正式 Experiment `Memory` 分表、分索引、分查询服务。来源变化默认从召回中排除，
+显式历史查询也必须标记警告；任何召回均不能参与确定性治理判断。
 
 ## 9. 提示词管理
 
@@ -474,15 +485,13 @@ R15a 继续使用现有 `httpx` 调用百炼，不为了 OpenAI-compatible 协�
 
 ### R15e：研究总结、长期记忆与 provider parity
 
-1. 按用户选择的一组正式实验生成阶段性研究总结。
-2. 每条稳定结论、冲突结论、开放问题和建议绑定正式引用。
-3. 引入独立 Agent Research Memory 和结构化过滤优先的向量召回。
-4. 提供按需项目进展报告，不自动发布为正式项目决策。
-5. 实现 Bedrock AgentChatModel，并用同一 provider contract/eval suite 验证。
-6. 增加成本、token、延迟、工具错误和模型回归观测。
+1. R15e-a：按用户显式选择的一组正式实验生成不可变候选研究报告，每条结论绑定正式引用。
+2. R15e-b：从报告提取独立 Agent Research Memory，并按结构化过滤优先进行候选召回。
+3. R15e-c：实现 Bedrock AgentChatModel，同一 provider contract/eval suite，并增加成本、
+   token、延迟、工具错误和模型回归观测。
 
-一次只实现一个阶段。当前下一步先为 R15e 形成细化计划；任何正式操作仍必须由独立人类
-确认请求执行，模型本身不获得 execute 工具。
+R15a-R15e 已按子阶段完成。后续 R16 只做 release candidate hardening；任何正式操作仍必须
+由独立人类确认请求执行，模型本身不获得 execute 工具。
 
 ## 13. 测试与评测
 
@@ -590,3 +599,37 @@ R15d-b2 已按同一 Proposal 协议接入 Submission `APPROVED/REJECTED`：
   rolling summary schema v5 只保存有界的 target/decision/eligibility 引用。
 
 R15d-b2 仍没有加入任意 SQL、训练、代码修改、自动审批或长期 Agent Memory。
+
+## 17. R15e-a 实现结果与 R15e-b 边界
+
+R15e-a 已实现显式实验集候选研究报告：
+
+* 用户必须明确给出 2-8 个正式 Experiment ID、研究目标和可选指标；工具不会自动选择、
+  扩展、聚类或把语义相似结果加入来源集合。
+* 来源快照按稳定顺序冻结实验状态、指标、失败原因、正式摘要、追溯、两两可比性和整组重复
+  统计。报告严格绑定 source hash、完整实验集合和本 Run 实际取得的 evidence。
+* `SUPPORTED_CONCLUSION`/`CONFLICT` 至少引用两个正式实验事实和一个确定性分析；所有报告
+  必须覆盖全部选择实验。事实、分析和建议仍按 evidence kind 区分。
+* Report、最终 Message、Citation、Run 完成状态和 AuditLog 原子提交。报告无更新/删除接口，
+  来源状态变化只产生可见警告，历史快照不被追溯修改。
+* 项目成员共享只读报告；Web 默认展示人类可读结论、限制和引用，并保留来源快照与原始 JSON。
+* 旧 Run 使用冻结目录，`r15e-a-v1` 新增三个报告工具；rolling summary v6 仅保存有界引用。
+
+R15e-b 已使用独立候选记忆表和版本化 embedding 任务。每个 finding 确定性物化为一条记忆；
+查询先做项目/状态/来源有效性过滤再对最多 200 条候选精确排序。embedding 失败不会影响报告，
+任务可按租约和 generation 恢复并在达到上限后进入死信。没有加入确认、晋升或自动替代。
+Bedrock Agent provider parity 已在 R15e-c 完成。
+
+## 18. R15e-c 实现结果与 R16 边界
+
+R15e-c 已完成：
+
+* provider 无关 `AgentResponseFormat`、百炼服务端严格校验和 Bedrock 原生 Structured Outputs；
+* Bedrock ConverseStream 文本、工具参数碎片、usage、finish reason、request ID 和异常归一化；
+* revision 23 调用 provider/model、延迟、冻结费率与费用估算，旧调用不追溯改价；
+* Owner-only 项目聚合观测和项目成员 Run 详情，均不返回模型或工具内容；
+* 共享 provider eval catalog、默认 mock 合约测试和显式真实 Bedrock 验收开关；
+* Terraform provider 条件装配；本地模式继续只允许百炼，所有失败都不触发 provider fallback。
+
+R16 只允许发布加固和运行验收，不增加 Agent 工具、候选记忆晋升、自动 superseded、自动实验
+分组、分布式向量索引、任意 SQL、训练/代码执行或自动审批。

@@ -25,6 +25,8 @@ from experiment_guardian.application.errors import (
 )
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.policy_drafts import PolicyDraftService
+from experiment_guardian.application.research_memories import ResearchMemoryService
+from experiment_guardian.application.research_reports import ResearchReportService
 from experiment_guardian.domain.action_proposal import (
     ActionProposalPrepareInput,
     PlanDecisionProposalPrepareInput,
@@ -42,6 +44,12 @@ from experiment_guardian.domain.agent_analysis import (
     repeated_experiment_statistics,
     require_finite_metrics,
 )
+from experiment_guardian.domain.agent_research import (
+    ResearchReportListInput,
+    ResearchReportLookupInput,
+    ResearchReportPrepareInput,
+    research_report_source_hash,
+)
 from experiment_guardian.domain.contracts import ContractModel, SubmissionReceipt
 from experiment_guardian.domain.enums import (
     AgentEvidenceKind,
@@ -58,6 +66,7 @@ from experiment_guardian.domain.policy_draft import (
     PolicyDraftCreateInput,
     PolicyDraftRevisionInput,
 )
+from experiment_guardian.domain.research_memory import ResearchMemorySearchToolInput
 from experiment_guardian.infrastructure.models import (
     ApprovalRecord,
     Artifact,
@@ -79,7 +88,9 @@ R15B_TOOL_CATALOG_VERSION = "r15b-v1"
 R15C_TOOL_CATALOG_VERSION = "r15c-v1"
 R15D_TOOL_CATALOG_VERSION = "r15d-v1"
 R15D_B1_TOOL_CATALOG_VERSION = "r15d-b1-v1"
-TOOL_CATALOG_VERSION = "r15d-b2-v1"
+R15D_B2_TOOL_CATALOG_VERSION = "r15d-b2-v1"
+R15E_A_TOOL_CATALOG_VERSION = "r15e-a-v1"
+TOOL_CATALOG_VERSION = "r15e-b-v1"
 AgentToolDefinition = tuple[
     type[ContractModel],
     str,
@@ -143,11 +154,15 @@ class AgentToolRegistry:
         projects: SqlAlchemyProjectRepository,
         policy_drafts: PolicyDraftService | None = None,
         action_proposals: ActionProposalService | None = None,
+        research_reports: ResearchReportService | None = None,
+        research_memories: ResearchMemoryService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._projects = projects
         self._policy_drafts = policy_drafts
         self._action_proposals = action_proposals
+        self._research_reports = research_reports
+        self._research_memories = research_memories
         self._r15a_definitions: AgentToolDefinitions = {
             "project_status_get_v1": (
                 _EmptyArgs,
@@ -249,6 +264,38 @@ class AgentToolRegistry:
                 self._submission_decision_proposal_prepare,
             ),
         }
+        self._r15e_a_definitions: AgentToolDefinitions = {
+            **self._r15d_b2_definitions,
+            "research_report_prepare_v1": (
+                ResearchReportPrepareInput,
+                (
+                    "为 2 至 8 个显式正式实验准备确定性研究证据；用户未明确实验集合时不得调用。"
+                    "该工具不创建正式事实，最终报告仍需通过服务端引用校验。"
+                ),
+                self._research_report_prepare,
+            ),
+            "research_reports_list_v1": (
+                ResearchReportListInput,
+                "列出项目成员共享的不可变候选研究报告；报告属于 ANALYSIS，不是正式事实。",
+                self._research_reports_list,
+            ),
+            "research_report_get_v1": (
+                ResearchReportLookupInput,
+                "读取一份候选研究报告及其引用和来源状态警告。",
+                self._research_report_get,
+            ),
+        }
+        self._r15e_b_definitions: AgentToolDefinitions = {
+            **self._r15e_a_definitions,
+            "research_memories_search_v1": (
+                ResearchMemorySearchToolInput,
+                (
+                    "检索项目共享的候选研究记忆。结果仅是 CANDIDATE_EVIDENCE，"
+                    "不能替代正式实验或治理事实。"
+                ),
+                self._research_memories_search,
+            ),
+        }
 
     @property
     def specs(self) -> list[AgentToolSpec]:
@@ -311,8 +358,12 @@ class AgentToolRegistry:
             return self._r15d_definitions
         if catalog_version == R15D_B1_TOOL_CATALOG_VERSION:
             return self._r15d_b1_definitions
-        if catalog_version == TOOL_CATALOG_VERSION:
+        if catalog_version == R15D_B2_TOOL_CATALOG_VERSION:
             return self._r15d_b2_definitions
+        if catalog_version == R15E_A_TOOL_CATALOG_VERSION:
+            return self._r15e_a_definitions
+        if catalog_version == TOOL_CATALOG_VERSION:
+            return self._r15e_b_definitions
         raise InputValidationError(f"不支持的 Agent 工具目录版本: {catalog_version}")
 
     def _project_status(
@@ -659,6 +710,272 @@ class AgentToolRegistry:
                 },
                 evidence=evidence,
             )
+
+    def _research_report_prepare(
+        self,
+        *,
+        validated: ResearchReportPrepareInput,
+        project_id: UUID,
+        identity: RequestIdentity,
+        evidence_prefix: str,
+    ) -> AgentToolResult:
+        """冻结模型实际看到的正式事实和确定性分析，不在此处调用 LLM。"""
+
+        self._require_scope(identity, "experiment:read")
+        with self._session_factory() as session:
+            self._require_project(session, project_id, identity)
+            rows: list[Experiment] = []
+            for experiment_id in validated.experiment_ids:
+                row = session.get(Experiment, experiment_id)
+                if row is None or row.project_id != project_id:
+                    raise ResourceNotFoundError(
+                        f"项目中不存在正式 Experiment {experiment_id}"
+                    )
+                if row.status in {ExperimentStatus.DEPRECATED, ExperimentStatus.SUPERSEDED}:
+                    if not validated.include_historical:
+                        raise InputValidationError(
+                            "DEPRECATED 或 SUPERSEDED 实验必须显式设置 include_historical=true"
+                        )
+                elif row.status not in {ExperimentStatus.COMPLETED, ExperimentStatus.FAILED}:
+                    raise InputValidationError(f"不支持的正式实验状态: {row.status.value}")
+                rows.append(row)
+            rows.sort(key=lambda item: (item.confirmed_at, str(item.id)))
+            records = [self._analysis_record(session, project_id, item.id) for item in rows]
+            if validated.metric_name and not any(
+                metric.name == validated.metric_name
+                for record in records
+                for metric in record.metrics
+            ):
+                raise InputValidationError(
+                    f"所选实验均不存在指标 {validated.metric_name}"
+                )
+
+            evidence: list[AgentEvidence] = []
+            experiments: list[dict[str, Any]] = []
+            for index, (row, record) in enumerate(zip(rows, records, strict=True), start=1):
+                evidence_id = f"{evidence_prefix}_{index}"
+                item = self._research_experiment_source(session, row, record)
+                experiments.append({**item, "evidence_id": evidence_id})
+                evidence.append(
+                    AgentEvidence(
+                        evidence_id=evidence_id,
+                        evidence_kind=AgentEvidenceKind.CONFIRMED_FACT,
+                        entity_type="EXPERIMENT",
+                        entity_id=row.id,
+                        entity_version=(
+                            f"context:{row.project_context_version}/intent:{row.intent_version}"
+                        ),
+                        label=row.name,
+                        excerpt=(
+                            f"{row.status.value}，{row.dataset}/{row.protocol}，seed={row.seed}"
+                        ),
+                        payload=item,
+                    )
+                )
+
+            comparisons: list[dict[str, Any]] = []
+            next_evidence = len(evidence) + 1
+            for left_index, left in enumerate(records):
+                for right in records[left_index + 1 :]:
+                    raw = compare_experiments(
+                        left,
+                        right,
+                        metric_name=validated.metric_name,
+                    )
+                    changes = raw.get("configuration_changes", [])
+                    compact = {
+                        "left_experiment_id": str(left.experiment_id),
+                        "right_experiment_id": str(right.experiment_id),
+                        "comparability": raw["comparability"],
+                        "hard_blockers": raw["hard_blockers"],
+                        "caveats": raw["caveats"],
+                        "metric": raw["metric"],
+                        "configuration_change_count": len(changes),
+                        "configuration_change_paths": [
+                            str(item.get("path")) for item in changes[:5]
+                        ],
+                        "configuration_changes_truncated": bool(
+                            raw.get("configuration_diff_truncated") or len(changes) > 5
+                        ),
+                        "notice": raw["notice"],
+                    }
+                    evidence_id = f"{evidence_prefix}_{next_evidence}"
+                    next_evidence += 1
+                    comparisons.append({**compact, "evidence_id": evidence_id})
+                    evidence.append(
+                        AgentEvidence(
+                            evidence_id=evidence_id,
+                            evidence_kind=AgentEvidenceKind.ANALYSIS,
+                            entity_type="EXPERIMENT_COMPARISON",
+                            entity_version="r15e-a-v1",
+                            label=f"{left.name} 与 {right.name} 的确定性可比性",
+                            excerpt=(
+                                f"{compact['comparability']}；"
+                                f"{len(compact['hard_blockers'])} 个阻断原因"
+                            ),
+                            payload=compact,
+                        )
+                    )
+
+            repeated = repeated_experiment_statistics(
+                records,
+                metric_name=validated.metric_name,
+            )
+            repeated_evidence_id = f"{evidence_prefix}_{next_evidence}"
+            evidence.append(
+                AgentEvidence(
+                    evidence_id=repeated_evidence_id,
+                    evidence_kind=AgentEvidenceKind.ANALYSIS,
+                    entity_type="EXPERIMENT_GROUP_STATISTICS",
+                    entity_version="r15e-a-v1",
+                    label=f"{len(records)} 个显式实验的严格重复组检查",
+                    excerpt=(
+                        "严格重复组，已计算描述统计"
+                        if repeated["accepted"]
+                        else "不是严格重复组，未计算聚合统计"
+                    ),
+                    payload=repeated,
+                )
+            )
+            source = {
+                "schema_version": 1,
+                "objective": validated.objective,
+                "metric_name": validated.metric_name,
+                "include_historical": validated.include_historical,
+                "experiment_ids": [str(item.id) for item in rows],
+                "experiments": experiments,
+                "comparisons": comparisons,
+                "repeated_group": {
+                    "analysis": repeated,
+                    "evidence_id": repeated_evidence_id,
+                },
+                "notice": (
+                    "这是对显式正式实验集合的候选分析证据，不构成因果结论、统计显著性证明"
+                    "或正式项目决策。"
+                ),
+            }
+            source_hash = research_report_source_hash(source)
+            return AgentToolResult(
+                content={**source, "source_hash": source_hash},
+                evidence=evidence,
+            )
+
+    def _research_reports_list(
+        self,
+        *,
+        validated: ResearchReportListInput,
+        project_id: UUID,
+        identity: RequestIdentity,
+        evidence_prefix: str,
+    ) -> AgentToolResult:
+        service = self._require_research_reports()
+        page = service.list_reports(
+            project_id=project_id,
+            identity=identity,
+            cursor=None,
+            limit=validated.limit,
+        )
+        evidence: list[AgentEvidence] = []
+        items: list[dict[str, Any]] = []
+        for index, report in enumerate(page.items, start=1):
+            evidence_id = f"{evidence_prefix}_{index}"
+            payload = report.model_dump(mode="json")
+            items.append({**payload, "evidence_id": evidence_id})
+            evidence.append(
+                AgentEvidence(
+                    evidence_id=evidence_id,
+                    evidence_kind=AgentEvidenceKind.ANALYSIS,
+                    entity_type="RESEARCH_REPORT",
+                    entity_id=report.report_id,
+                    entity_version=report.prompt_version,
+                    label=report.title,
+                    excerpt=f"候选研究报告，包含 {len(report.experiment_ids)} 个正式实验",
+                    payload=payload,
+                )
+            )
+        return AgentToolResult(
+            content={"items": items, "count": len(items), "authoritative": False},
+            evidence=evidence,
+        )
+
+    def _research_report_get(
+        self,
+        *,
+        validated: ResearchReportLookupInput,
+        project_id: UUID,
+        identity: RequestIdentity,
+        evidence_prefix: str,
+    ) -> AgentToolResult:
+        report = self._require_research_reports().get_report(
+            project_id=project_id,
+            report_id=validated.report_id,
+            identity=identity,
+        )
+        payload = report.model_dump(mode="json", exclude={"source_snapshot"})
+        evidence_id = f"{evidence_prefix}_1"
+        return AgentToolResult(
+            content={**payload, "evidence_id": evidence_id},
+            evidence=[
+                AgentEvidence(
+                    evidence_id=evidence_id,
+                    evidence_kind=AgentEvidenceKind.ANALYSIS,
+                    entity_type="RESEARCH_REPORT",
+                    entity_id=report.report_id,
+                    entity_version=report.prompt_version,
+                    label=report.title,
+                    excerpt=(
+                        f"候选研究报告；{len(report.report.findings)} 条发现；"
+                        f"{len(report.source_warnings)} 条来源状态警告"
+                    ),
+                    payload=payload,
+                )
+            ],
+        )
+
+    def _research_memories_search(
+        self,
+        *,
+        validated: ResearchMemorySearchToolInput,
+        project_id: UUID,
+        identity: RequestIdentity,
+        evidence_prefix: str,
+    ) -> AgentToolResult:
+        if self._research_memories is None:
+            raise InputValidationError("研究记忆服务未装配")
+        response = self._research_memories.search(
+            project_id=project_id,
+            identity=identity,
+            request=validated,
+        )
+        evidence: list[AgentEvidence] = []
+        items: list[dict[str, Any]] = []
+        for index, item in enumerate(response.items, start=1):
+            evidence_id = f"{evidence_prefix}_{index}"
+            payload = item.model_dump(mode="json")
+            items.append({**payload, "evidence_id": evidence_id})
+            evidence.append(
+                AgentEvidence(
+                    evidence_id=evidence_id,
+                    evidence_kind=AgentEvidenceKind.ANALYSIS,
+                    entity_type="AGENT_RESEARCH_MEMORY",
+                    entity_id=item.memory_id,
+                    entity_version=item.content_hash,
+                    label=f"候选研究记忆 {item.finding_id}",
+                    excerpt=item.statement[:500],
+                    payload=payload,
+                )
+            )
+        return AgentToolResult(
+            content={
+                "items": items,
+                "candidate_count": response.candidate_count,
+                "candidate_truncated": response.candidate_truncated,
+                "retrieval_role": "CANDIDATE_EVIDENCE",
+                "authoritative": False,
+                "notice": "候选研究记忆不是正式事实；正式结论必须重新读取正式记录。",
+            },
+            evidence=evidence,
+        )
 
     def _plan_check_explain(
         self,
@@ -1512,6 +1829,86 @@ class AgentToolRegistry:
             ),
             payload=payload,
         )
+
+    @staticmethod
+    def _research_experiment_source(
+        session: Session,
+        row: Experiment,
+        record: ExperimentAnalysisRecord,
+    ) -> dict[str, Any]:
+        submission = session.get(ExperimentSubmission, row.submission_id)
+        failure_reason: str | None = None
+        failure_reason_truncated = False
+        if submission is not None and isinstance(submission.analysis_snapshot, dict):
+            parsed_documents = submission.analysis_snapshot.get("parsed_documents")
+            result_document = (
+                parsed_documents.get("result")
+                if isinstance(parsed_documents, dict)
+                else None
+            )
+            parsed_result = (
+                result_document.get("parsed")
+                if isinstance(result_document, dict)
+                else None
+            )
+            candidate = (
+                parsed_result.get("failure_reason")
+                if isinstance(parsed_result, dict)
+                else None
+            )
+            if isinstance(candidate, str) and candidate:
+                failure_reason_truncated = len(candidate) > 1000
+                failure_reason = candidate[:1000]
+        generated_summary = row.summary_snapshot.get("text")
+        if not isinstance(generated_summary, str):
+            generated_summary = None
+        summary_truncated = bool(generated_summary and len(generated_summary) > 1500)
+        return {
+            "experiment_id": str(row.id),
+            "name": row.name,
+            "status": row.status.value,
+            "historical": row.status
+            in {ExperimentStatus.DEPRECATED, ExperimentStatus.SUPERSEDED},
+            "dataset": record.dataset,
+            "protocol": record.protocol,
+            "model_name": record.model_name,
+            "seed": record.seed,
+            "experiment_mode": record.experiment_mode,
+            "metrics": [
+                {
+                    "name": item.name,
+                    "value": item.value,
+                    "split": item.split,
+                    "aggregation_type": item.aggregation_type,
+                    "epoch": item.epoch,
+                    "is_primary": item.is_primary,
+                }
+                for item in record.metrics
+            ],
+            "failure_reason": failure_reason,
+            "failure_reason_truncated": failure_reason_truncated,
+            "generated_summary": generated_summary[:1500] if generated_summary else None,
+            "generated_summary_truncated": summary_truncated,
+            "trace": {
+                "submission_id": str(row.submission_id),
+                "run_manifest_id": str(row.run_manifest_id),
+                "context_id": str(record.context_id),
+                "context_version": record.context_version,
+                "intent_id": str(record.intent_id),
+                "intent_version": record.intent_version,
+                "git_commit": record.git_commit,
+                "checkpoint": record.checkpoint,
+                "command": record.command,
+                "config_hash": row.config_hash,
+                "trace_complete": record.trace_complete,
+            },
+            "confirmed_at": row.confirmed_at.isoformat(),
+        }
+
+    def _require_research_reports(self) -> ResearchReportService:
+        if self._research_reports is None:
+            raise InputValidationError("研究报告服务未装配")
+        return self._research_reports
 
     @staticmethod
     def _submission_findings(

@@ -13,13 +13,19 @@ from experiment_guardian.application.agent_runtime import (
     GovernanceAgentRuntime,
 )
 from experiment_guardian.application.agent_tools import AgentToolRegistry
+from experiment_guardian.application.container import (
+    build_agent_chat_model,
+    get_agent_tool_registry,
+    get_query_embedding_generator,
+)
+from experiment_guardian.application.research_memories import (
+    ResearchMemoryEmbeddingProcessor,
+)
 from experiment_guardian.core.config import Settings, get_settings
 from experiment_guardian.core.logging import configure_logging
-from experiment_guardian.infrastructure.bailian import BailianAgentChatModel
 from experiment_guardian.infrastructure.database import get_session_factory
 from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyAgentRepository,
-    SqlAlchemyProjectRepository,
 )
 
 
@@ -27,13 +33,20 @@ from experiment_guardian.infrastructure.repositories import (
 class GovernanceAgentWorker:
     processor: AgentRunProcessor
     idle_wait_seconds: float
+    memory_processor: ResearchMemoryEmbeddingProcessor | None = None
 
     def run_forever(self) -> None:
         logger = structlog.get_logger(__name__)
         logger.info("governance_agent_worker_started")
         while True:
             try:
-                if not self.processor.process_once():
+                processed_run = self.processor.process_once()
+                processed_memory = (
+                    self.memory_processor.process_once()
+                    if self.memory_processor is not None
+                    else False
+                )
+                if not processed_run and not processed_memory:
                     time.sleep(self.idle_wait_seconds)
             except Exception:
                 logger.exception("governance_agent_worker_iteration_failed")
@@ -46,18 +59,8 @@ def build_agent_worker(settings: Settings | None = None) -> GovernanceAgentWorke
         raise ValueError("AGENT_ENABLED=false，治理 Agent Worker 不应启动")
     factory = get_session_factory()
     repository = SqlAlchemyAgentRepository()
-    tools = AgentToolRegistry(factory, SqlAlchemyProjectRepository())
-    api_key = current.bailian_api_key
-    model = BailianAgentChatModel(
-        api_key=api_key.get_secret_value() if api_key else "",
-        base_url=current.bailian_base_url,
-        model_id=current.bailian_agent_model,
-        connect_timeout_seconds=current.bailian_connect_timeout_seconds,
-        read_timeout_seconds=max(
-            current.bailian_read_timeout_seconds,
-            current.agent_max_wall_seconds,
-        ),
-    )
+    tools: AgentToolRegistry = get_agent_tool_registry()
+    model = build_agent_chat_model(current)
     runtime = GovernanceAgentRuntime(
         factory,
         repository,
@@ -74,9 +77,16 @@ def build_agent_worker(settings: Settings | None = None) -> GovernanceAgentWorke
         current,
         worker_id=worker_id,
     )
+    memory_processor = ResearchMemoryEmbeddingProcessor(
+        factory,
+        get_query_embedding_generator(),
+        current,
+        worker_id=f"{socket.gethostname()}:{os.getpid()}:research-memory",
+    )
     return GovernanceAgentWorker(
         processor=processor,
         idle_wait_seconds=current.agent_run_poll_interval_seconds,
+        memory_processor=memory_processor,
     )
 
 
