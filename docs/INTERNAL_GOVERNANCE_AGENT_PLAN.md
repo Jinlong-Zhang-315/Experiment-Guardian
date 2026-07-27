@@ -1,8 +1,8 @@
 # 内部实验治理 Agent 开发计划
 
 更新时间：2026-07-27
-计划轮次：R15a-R15e
-当前状态：R15e-c provider parity 与模型运行观测已完成；下一步 R16 release candidate hardening
+计划轮次：R15a-R16-L
+当前状态：R16-L 本地百炼 release candidate hardening 已完成；云端真实验收独立排期
 
 ## 1. 目标与定位
 
@@ -633,3 +633,22 @@ R15e-c 已完成：
 
 R16 只允许发布加固和运行验收，不增加 Agent 工具、候选记忆晋升、自动 superseded、自动实验
 分组、分布式向量索引、任意 SQL、训练/代码执行或自动审批。
+
+## 19. R16-L 本地候选版结果与后续边界
+
+R16-L 只验收 `local_owner + MinIO + CockroachDB Database Queue + Bailian`：
+
+* 默认 RC 脚本不访问模型；显式 live 模式才创建只读对话，并验证引用、工具轨迹、调用观测、
+  Session 撤销和正式状态不变。验收报告不保存提示词、回答、凭据或工具 payload。
+* 百炼真实模型完成摘要、1024 维 embedding、Function Calling、结构化答案、工具选择与越权拒绝
+  用例。生产运行再通过 Web/API/Agent Worker 完成一次只读项目状态问答。
+* `AgentChatModel.structured_final_requires_tool_choice_none` 描述 Provider 协议能力。百炼把 auto
+  工具选择和 strict JSON 最终回答拆开，Bedrock 保持原生 Structured Outputs；运行时不按
+  deployment mode 或厂商名称判断。
+* 正式回答仍由服务端 Pydantic、evidence allowlist、evidence kind 和引用并集校验；模型输出
+  错误不会形成 Assistant Message 或正式事实。
+* 真实 CockroachDB 双 Worker 测试覆盖 claim、lease、generation、重试与死信；没有新增迁移，
+  Prompt 与工具目录继续使用 R15e-b 冻结版本。
+
+下一轮先处理本地 RC 的真实使用缺陷。Bedrock、Cognito、SQS 与 AWS 的 live acceptance 不在
+本地候选版完成声明内，也不应为了补齐云线路而扩展 Agent 权限或工具数量。

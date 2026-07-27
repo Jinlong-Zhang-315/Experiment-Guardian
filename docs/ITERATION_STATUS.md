@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
 更新时间：2026-07-27
-当前完成轮次：R15e-c Agent provider parity 与模型运行观测
-下一步：R16 release candidate hardening
+当前完成轮次：R16-L 本地百炼 release candidate hardening
+下一步：本地 RC 使用反馈与缺陷收敛；云端验收保持独立后续工作
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -36,6 +36,7 @@
 | R15e-a | 显式实验集候选研究报告 | 完成 | 来源冻结、逐条引用、共享只读报告、失效提示 |
 | R15e-b | 独立 Research Memory 与召回 | 完成 | finding 级候选记忆、结构过滤、过期与降级 |
 | R15e-c | Agent provider parity 与观测 | 完成 | Bedrock 严格输出、统一调用观测、同套评测 |
+| R16-L | 本地百炼候选版加固 | 完成 | RC 预检、真实百炼、CRDB 并发恢复、MinIO 与 Web 回归 |
 
 ## R15：内部实验治理 Agent 路线
 
@@ -334,11 +335,31 @@
 * README、开发日志和框架图同步至 R14。
 * 本地真实 CockroachDB 完成 revision 12 升级、跨版本降级和再升级验收。
 
+## R16-L：本地百炼候选版加固
+
+交付：
+
+* 新增 `scripts/verify_r16_local.py`。默认验证本地后端装配、Alembic head、MinIO、Web/API、
+  local_owner、项目初始化和 Session 撤销，不产生模型费用；显式 `--live-bailian` 时再验证真实
+  Agent Run、模型调用 metadata、token/延迟、只读工具、正式引用、观测聚合和正式状态不变。
+* 百炼真实协议覆盖摘要、1024 维 embedding、原生 Function Calling、严格结构化回答、三类
+  只读工具选择和三类越权请求；测试只有在显式环境开关下访问模型服务。
+* 百炼工具选择回合不再与 `json_object` 混用；Provider 通过能力字段声明是否需要独立严格
+  最终回合。运行时保留每次调用审计，并继续由 Pydantic 和 evidence validator 拒绝无效引用。
+* 百炼 SSE 在收到终态 `finish_reason` 后允许缺少 `[DONE]` 的干净 EOF；没有终态标记的截断仍
+  归一化为可重试错误。HTTPX 增加 SOCKS 可选依赖，兼容本机显式代理环境。
+* 新增真实 CockroachDB Agent 队列测试，覆盖双 Worker 唯一 claim、lease 过期接管、generation
+  阻止旧 Worker、最大重试与 DEAD_LETTER，并检查消息、引用和工具调用不重复。
+* 真实 MinIO 测试可直接读取不入库的 `.env.local`，仍支持测试专用环境变量覆盖。Web 单元、
+  lint、build 与桌面/移动 Playwright 保持通过。
+* 本轮没有迁移、Prompt 版本、工具目录、正式状态机、权限或确认事务变更；数据库 head 仍为
+  `20260727_23`。
+
 ## 下一步唯一目标
 
-R16 只做 release candidate hardening：真实百炼/Bedrock 对照验收、并发与恢复压测、可观测告警
-阈值、部署 Runbook 和安全回归。不增加新工具、候选记忆晋升、自动实验分组、任意 SQL、训练/
-改代码、自动审批或通用高影响操作。
+先以 R16-L 作为本地候选版收集真实使用反馈，只修复阻断闭环、安全或数据一致性的缺陷。
+Bedrock、Cognito、SQS 和 AWS 部署的真实云验收单独排期，不阻塞当前仅测试本地百炼线路的范围。
+不增加 Agent 工具、候选记忆晋升、自动实验分组、任意 SQL、训练/改代码或自动审批。
 
 ## 每轮更新规则
 

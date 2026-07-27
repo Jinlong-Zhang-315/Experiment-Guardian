@@ -36,6 +36,13 @@
 | 2026-07-23 | R15a | `working tree` | 只读 Agent 对话纵向切片 |
 | 2026-07-23 | R15b | `working tree` | 实验分析与对话压缩 |
 | 2026-07-24 | R15c | `working tree` | 治理草稿与影响分析 |
+| 2026-07-24 | R15d-a | `working tree` | Policy 发布提案与 Owner 独立确认 |
+| 2026-07-24 | R15d-b1 | `working tree` | Plan Check 决策提案 |
+| 2026-07-27 | R15d-b2 | `working tree` | Submission 决策提案 |
+| 2026-07-27 | R15e-a | `working tree` | 显式实验集候选研究报告 |
+| 2026-07-27 | R15e-b | `working tree` | 候选 Research Memory 与召回 |
+| 2026-07-27 | R15e-c | `working tree` | Agent provider parity 与观测 |
+| 2026-07-27 | R16-L | `working tree` | 本地百炼 release candidate hardening |
 
 ## R0：需求分析与 MVP 收敛
 
@@ -1782,6 +1789,66 @@
 * 观测聚合当前是请求时 SQL 聚合，适合 MVP 数据量；形成真实 p95 或数据规模瓶颈后再评估预聚合。
 * R16 只做 release candidate hardening：真实 provider 对照、并发/恢复压测、告警阈值、部署
   Runbook 和安全回归，不增加 Agent 工具、候选事实晋升或自动审批。
+
+## 2026-07-27 / R16-L：本地百炼 release candidate hardening
+
+版本：`working tree`。
+
+### 更新内容
+
+* 新增 `scripts/verify_r16_local.py`：默认预检 local backend、Alembic head、MinIO、Web/API、
+  local_owner、初始化项目和 Session 撤销；显式 `--live-bailian` 再创建只读 Agent Run，并输出
+  不含提示词、回答或凭据的 JSON 验收报告。
+* 新增真实 CockroachDB Agent 测试：双 Worker 轮询 10 个 Run，验证唯一 claim、lease 过期
+  接管、generation fencing、最大重试、DEAD_LETTER 和实体不重复。
+* 扩展真实百炼测试到摘要、1024 维归一化 embedding、Function Calling、严格 AgentAnswer、
+  三类读取工具选择和三类越权拒绝；新增可选的真实 Compose Agent 全链路测试。
+* MinIO 显式集成测试默认读取 Git 忽略的 `.env.local`，避免本机凭据与示例值漂移，同时保留
+  `MINIO_TEST_*` 覆盖入口。
+* `AgentChatModel` 增加 Provider 协议能力：百炼将 auto 工具选择与严格 JSON 最终回合分离，
+  Bedrock 保持同回合原生 Structured Outputs。运行时不按 deployment mode 或厂商名分支。
+* `httpx[socks]` 和锁文件补入 `socksio`，使显式 SOCKS 代理环境可以实际访问百炼。
+
+### 修复的问题
+
+* 修复百炼 `json_object + tool_choice=auto` 会把工具请求写入正文、导致工具无法执行的问题。
+* 修复 Qwen 同时返回说明正文和原生 ToolCall 时整次调用被拒绝的问题；只要存在合法原生
+  ToolCall，说明草稿不会进入工具事件或最终回答。
+* 修复百炼在已发送终态 `finish_reason` 后干净关闭 SSE、但没有补 `[DONE]` 时被误判为截断；
+  未看到两类终态信号的响应仍按可重试截断处理。
+* 修复 auto 回合没有继续调用工具时直接被当作严格最终 JSON 的协议错配；百炼会另起被审计的
+  `tool_choice=none` 最终回合，并明确约束 evidence_id 字符串引用。
+* 修复本机 `.env.local` 的 Web/API/MinIO 外部端口与实际 Compose 映射不一致，RC 验收能够通过
+  当前回环入口。该文件被 Git 忽略，真实 Key 未写入仓库。
+
+### 验证结果
+
+* 真实百炼适配器 10 项全部通过；模型为 `qwen3.7-plus`，覆盖摘要、embedding、Function
+  Calling、严格 JSON、工具选择和越权拒绝。
+* 真实 Compose 只读 Agent 闭环通过：revision `20260727_23`、MinIO、Web/API、local_owner、
+  `project_status_get_v1`、1 条正式引用、3 次成功模型调用、观测聚合、正式状态不变及 Session
+  撤销均为 PASS；Run 耗时 81.229 秒。
+* 真实 CockroachDB 并发/恢复测试与真实 MinIO 固定版本测试通过。新增协议和独立最终回合的
+  聚焦单元/集成测试 36 项通过。
+* Python 默认全量收集 327 项并通过：308 passed、19 skipped；Ruff 检查本轮全部 Python 文件
+  通过，mypy 检查 82 个源文件通过。
+* Web Vitest 12 项、ESLint 和 TypeScript/Vite production build 通过；Playwright 桌面/移动
+  2 项在本轮前端无变更的候选构建上通过。
+
+### 数据库迁移
+
+本轮没有 schema 变更或新迁移，Alembic head 保持 `20260727_23`。新增可靠性行为仅使用既有
+Agent Run、ModelCall、ToolCall、Citation、Event、lease、generation 和审计记录。
+
+### 已知遗留项
+
+* 本轮按当前范围只验收本地百炼线路；没有声称真实 Bedrock、Cognito、SQS 或 AWS 部署已验收。
+* 百炼不提供与 Bedrock 等价的原生完整 JSON Schema 保证，最终答案仍必须经过服务端 Pydantic
+  和 evidence 校验；额外严格最终回合会增加一次模型调用、token、延迟与费用。
+* 首次失败的真实 Agent Run 已按设计进入 DEAD_LETTER 并保留完整追加式审计；它不是正式事实，
+  也没有改变 Context、Intent、Constraint、Plan、Submission 或 Experiment。
+* 本机运行配置已恢复为本轮开始时的 `AGENT_ENABLED=false`；需要真实 Agent 时必须显式配置模型
+  并启动 Compose `agent` profile。
 
 ## 新日志模板
 

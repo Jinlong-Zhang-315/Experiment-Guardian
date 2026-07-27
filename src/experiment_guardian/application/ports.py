@@ -213,6 +213,12 @@ class AgentChatModel(Protocol):
     @property
     def model_id(self) -> str: ...
 
+    @property
+    def structured_final_requires_tool_choice_none(self) -> bool:
+        """Provider 是否需要把工具选择与严格结构化最终回答拆成两个回合。"""
+
+        ...
+
     def stream_turn(
         self,
         *,

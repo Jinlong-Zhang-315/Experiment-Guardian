@@ -139,6 +139,10 @@ class _ScriptedPolicyDraftModel(AgentChatModel):
     def model_id(self) -> str:
         return "qwen-agent"
 
+    @property
+    def structured_final_requires_tool_choice_none(self) -> bool:
+        return False
+
     def stream_turn(
         self,
         *,

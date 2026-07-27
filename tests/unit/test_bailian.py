@@ -244,6 +244,100 @@ def test_bailian_agent_streams_text_usage_and_json_mode() -> None:
     )
 
 
+def test_bailian_agent_accepts_clean_eof_after_terminal_finish_reason() -> None:
+    terminal_without_done = (
+        b'data: {"id":"req-1","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+    )
+    model = BailianAgentChatModel(
+        api_key="secret",
+        base_url="https://bailian.example/v1",
+        model_id="qwen-agent",
+        client=_client(
+            lambda _: httpx.Response(
+                200,
+                content=terminal_without_done,
+                headers={"Content-Type": "text/event-stream"},
+            )
+        ),
+    )
+
+    events = list(
+        model.stream_turn(
+            messages=[AgentChatMessage(role="user", content="status")],
+            tools=[],
+            tool_choice="none",
+            max_output_tokens=100,
+        )
+    )
+
+    assert "".join(item.text or "" for item in events) == "ok"
+    assert events[-1].event_type == "completed"
+    assert events[-1].finish_reason == "stop"
+
+
+def test_bailian_agent_does_not_mix_json_mode_with_tool_selection() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "content": "我先读取项目状态。",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call-1",
+                                        "function": {
+                                            "name": "project_status_get_v1",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                }
+            ),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    model = BailianAgentChatModel(
+        api_key="secret",
+        base_url="https://bailian.example/v1",
+        model_id="qwen-agent",
+        client=_client(handler),
+    )
+    events = list(
+        model.stream_turn(
+            messages=[AgentChatMessage(role="user", content="status")],
+            tools=[
+                AgentToolSpec(
+                    name="project_status_get_v1",
+                    version="1",
+                    description="status",
+                    input_schema={"type": "object"},
+                )
+            ],
+            tool_choice="auto",
+            max_output_tokens=200,
+            response_format=AgentResponseFormat(
+                name="AgentAnswer",
+                description="Strict final answer",
+                json_schema={"type": "object"},
+            ),
+        )
+    )
+    assert "response_format" not in captured
+    assert any(event.tool_call is not None for event in events)
+    assert not any(event.text for event in events)
+
+
 def test_bailian_agent_assembles_fragmented_tool_call() -> None:
     model = BailianAgentChatModel(
         api_key="secret",

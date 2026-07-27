@@ -1,9 +1,9 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-27
-当前实现：R15e-c Agent provider parity 与模型运行观测
+当前实现：R16-L 本地百炼 release candidate hardening
 
-下一计划：R16 release candidate hardening，不扩展治理工具或业务范围。R15 总体边界见
+下一计划：先收集本地 RC 使用反馈并只修复阻断缺陷；真实云端验收独立排期。R15 总体边界见
 `INTERNAL_GOVERNANCE_AGENT_PLAN.md`。
 数据库 head：`20260727_23`
 
@@ -139,6 +139,8 @@ FastAPI TrustedHost -> local_owner login --------+--> CockroachDB
                             Agent Worker lease
                                   |
                                   +--> BailianAgentChatModel
+                                  |    auto Function Calling
+                                  |    -> separate strict JSON final turn
                                   +--> configured-rate cost snapshot
                                   +--> eight authorized read/analysis tools
                                   +--> four candidate-only policy draft tools
@@ -146,6 +148,10 @@ FastAPI TrustedHost -> local_owner login --------+--> CockroachDB
 
 minio-init: create bucket + enable/verify Versioning, then exit
 database-init -> migration -> local-init: ordered one-shot services
+
+verify_r16_local.py [DONE]
+   +--> config / migration / MinIO / Web / API / local_owner / session revoke
+   +--> optional live Bailian read-only Run / citation / observability / state invariant
 ```
 
 本地与云端共用应用服务、领域规则、数据库状态机和审计。`DEPLOYMENT_MODE` 只在 Settings 校验、
@@ -205,12 +211,13 @@ docker-compose.yml              CRDB/MinIO/API/Worker/Web + 可选 Agent profile
 infra/terraform/                AWS/Cognito/ECS/CloudFront/S3/SQS IaC
 demo/r14/                       最终演示输入文件
 scripts/verify_r14_deployment.py 公开部署认证/发现验收
+scripts/verify_r16_local.py      本地 RC 与可选真实百炼只读验收
 ```
 
 依赖方向保持：接口层 -> 应用层 -> 领域层；基础设施实现应用端口。前端不重新计算风险、
 审批资格或角色权限。
 
-## R15e-c Agent 当前框架图
+## R16-L Agent 当前框架图
 
 ```text
 Web 治理 Agent 页
@@ -239,6 +246,8 @@ Agent API
    |       +--> recent messages + non-authoritative rolling summary
    |       +--> AgentChatModel
    |       |       +--> Bailian streaming Function Calling [DONE]
+   |       |       |    +--> auto 工具选择与 strict JSON 最终回合分离
+   |       |       |    +--> finish_reason 或 [DONE] 证明流完成
    |       |       +--> Bedrock ConverseStream + strict JSON Schema [DONE]
    |       |       +--> startup-selected provider; no fallback [DONE]
    |       +--> AgentToolRegistry
@@ -281,7 +290,8 @@ Agent Research Report                immutable ANALYSIS, shared in project
 Agent Research Memory                finding-level CANDIDATE, separate VECTOR(1024) jobs
 ```
 
-R15e-c 的模型写工具仍只能追加候选草稿、准备不可变 Policy/Plan/Submission 提案，或基于
+R16-L 没有新增模型工具。既有模型写工具仍只能追加候选草稿、准备不可变
+Policy/Plan/Submission 提案，或基于
 用户显式实验集生成候选研究报告。
 正式执行没有注册为模型工具；独立 Web 确认请求分别复用 Policy 发布、Plan 审批和 Submission
 审核事务核心。Submission Proposal 确认时，Proposal、ApprovalRecord、Experiment、Metric、Memory、

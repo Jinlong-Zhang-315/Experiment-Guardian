@@ -77,6 +77,7 @@ class _BailianClient:
     ) -> Iterator[dict[str, Any]]:
         consumed = 0
         completed = False
+        terminal_chunk_received = False
         try:
             with self._client.stream(
                 "POST", f"{self._base_url}{path}", json=payload
@@ -100,8 +101,18 @@ class _BailianClient:
                         raise ServiceUnavailableError("百炼返回了无效 SSE JSON") from exc
                     if not isinstance(decoded, dict):
                         raise ServiceUnavailableError("百炼 SSE 数据不是 JSON 对象")
+                    choices = decoded.get("choices")
+                    if isinstance(choices, list) and any(
+                        isinstance(choice, dict)
+                        and isinstance(choice.get("finish_reason"), str)
+                        and bool(choice["finish_reason"])
+                        for choice in choices
+                    ):
+                        terminal_chunk_received = True
                     yield decoded
-            if not completed:
+            # DashScope 偶尔在已发送 OpenAI 终态 finish_reason 后直接结束 HTTP 流，
+            # 不再补 `[DONE]`。终态 chunk 足以证明语义完成；两者都没有时仍按截断失败。
+            if not completed and not terminal_chunk_received:
                 raise ServiceUnavailableError("百炼流式响应在完成标记前中断")
         except ServiceUnavailableError:
             raise
@@ -304,6 +315,10 @@ class BailianAgentChatModel(AgentChatModel):
     def model_id(self) -> str:
         return self._model_id
 
+    @property
+    def structured_final_requires_tool_choice_none(self) -> bool:
+        return True
+
     def stream_turn(
         self,
         *,
@@ -315,9 +330,10 @@ class BailianAgentChatModel(AgentChatModel):
     ) -> Iterator[AgentModelEvent]:
         if tool_choice not in {"auto", "none"}:
             raise ValueError("百炼 Agent tool_choice 只允许 auto 或 none")
+        message_payloads = [self._message_payload(item) for item in messages]
         payload: dict[str, Any] = {
             "model": self._model_id,
-            "messages": [self._message_payload(item) for item in messages],
+            "messages": message_payloads,
             "tools": [
                 {
                     "type": "function",
@@ -335,14 +351,32 @@ class BailianAgentChatModel(AgentChatModel):
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if response_format is not None:
+        # 百炼 OpenAI-compatible 的 json_object 会让部分 Qwen 模型把工具调用编码进正文。
+        # 工具选择回合保持原生 Function Calling；强制最终回合再启用 JSON，并由服务端
+        # Pydantic 执行完整 Schema 校验。
+        if response_format is not None and tool_choice == "none":
             payload["response_format"] = {"type": "json_object"}
+            schema_instruction = {
+                "role": "system",
+                "content": (
+                    "最终响应只能是符合下列 JSON Schema 的单个 JSON 对象；不得改名、"
+                    "省略 required 字段或增加字段：\n"
+                    + json.dumps(
+                        response_format.json_schema,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                ),
+            }
+            insert_at = 1 if message_payloads and message_payloads[0]["role"] == "system" else 0
+            message_payloads.insert(insert_at, schema_instruction)
 
         tool_fragments: dict[int, dict[str, str]] = {}
         usage: AgentModelUsage | None = None
         finish_reason: str | None = None
         provider_request_id: str | None = None
-        saw_text = False
+        text_parts: list[str] = []
         for chunk in self._api.stream_sse(
             "/chat/completions", payload, max_bytes=MAX_AGENT_RESPONSE_BYTES
         ):
@@ -383,8 +417,7 @@ class BailianAgentChatModel(AgentChatModel):
                     if not isinstance(content, str):
                         raise ValueError("content delta 不是字符串")
                     if content:
-                        saw_text = True
-                        yield AgentModelEvent(event_type="text_delta", text=content)
+                        text_parts.append(content)
                 raw_calls = delta.get("tool_calls")
                 if raw_calls is not None:
                     if not isinstance(raw_calls, list):
@@ -394,22 +427,24 @@ class BailianAgentChatModel(AgentChatModel):
             except (KeyError, TypeError, ValueError) as exc:
                 raise ServiceUnavailableError("百炼返回了无效的 Agent 流式响应") from exc
 
-        if tool_fragments and saw_text:
-            raise ServiceUnavailableError("百炼 Agent 响应同时包含正文和工具调用")
-        for index in sorted(tool_fragments):
-            fragment = tool_fragments[index]
-            try:
-                raw_arguments = json.loads(fragment["arguments"] or "{}")
-                if not isinstance(raw_arguments, dict):
-                    raise ValueError("工具参数不是对象")
-                call = AgentToolRequest(
-                    call_id=fragment["id"],
-                    name=fragment["name"],
-                    arguments=raw_arguments,
-                )
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ServiceUnavailableError("百炼返回了无效的工具调用") from exc
-            yield AgentModelEvent(event_type="tool_call", tool_call=call)
+        if tool_fragments:
+            for index in sorted(tool_fragments):
+                fragment = tool_fragments[index]
+                try:
+                    raw_arguments = json.loads(fragment["arguments"] or "{}")
+                    if not isinstance(raw_arguments, dict):
+                        raise ValueError("工具参数不是对象")
+                    call = AgentToolRequest(
+                        call_id=fragment["id"],
+                        name=fragment["name"],
+                        arguments=raw_arguments,
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ServiceUnavailableError("百炼返回了无效的工具调用") from exc
+                yield AgentModelEvent(event_type="tool_call", tool_call=call)
+        else:
+            for text_part in text_parts:
+                yield AgentModelEvent(event_type="text_delta", text=text_part)
         if usage is not None:
             yield AgentModelEvent(event_type="usage", usage=usage)
         yield AgentModelEvent(

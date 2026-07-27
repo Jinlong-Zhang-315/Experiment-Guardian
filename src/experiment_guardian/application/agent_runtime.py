@@ -432,6 +432,36 @@ class GovernanceAgentRuntime:
                 next_state["pending_calls"] = calls
                 return next_state
 
+            if not force_final and self._model.structured_final_requires_tool_choice_none:
+                # 百炼的 OpenAI-compatible 接口不能稳定地把原生 Function Calling 与
+                # json_object 约束放在同一回合。auto 回合没有继续请求工具时，丢弃其
+                # 非权威草稿，另起一个禁止工具的严格最终回合；模型调用仍逐次审计。
+                evidence_contract = {
+                    evidence_id: item.get("evidence_kind")
+                    for evidence_id, item in next_state["evidence"].items()
+                }
+                next_state["force_final"] = True
+                next_state["messages"].append(
+                    AgentChatMessage(
+                        role="user",
+                        content=(
+                            "工具选择已经结束。忽略上一回合未提交的正文草稿；不要再调用工具，"
+                            "只输出系统 JSON Schema 对象且不要使用 Markdown 代码围栏。"
+                            "citations 必须是 evidence_id 字符串数组，不能是对象；每个 "
+                            "section 必须包含 evidence_kind、title、content、citation_ids。"
+                            "未调用 research_report_prepare_v1 时 research_report 必须为 null "
+                            "或省略。当前允许引用的 evidence_id 与类型为："
+                            + json.dumps(
+                                evidence_contract,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            )
+                        ),
+                    )
+                )
+                return next_state
+
             try:
                 answer = AgentAnswer.model_validate_json(text)
                 self._validate_answer(answer, next_state["evidence"])

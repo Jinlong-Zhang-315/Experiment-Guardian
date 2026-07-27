@@ -85,6 +85,10 @@ class ScriptedAgentModel(AgentChatModel):
     def model_id(self) -> str:
         return "qwen-agent"
 
+    @property
+    def structured_final_requires_tool_choice_none(self) -> bool:
+        return False
+
     def stream_turn(
         self,
         *,
@@ -134,6 +138,64 @@ class ScriptedAgentModel(AgentChatModel):
         )
 
 
+class SeparateFinalTurnAgentModel(AgentChatModel):
+    """模拟必须把 auto 工具选择与严格 JSON 最终回答拆开的 Provider。"""
+
+    provider = "bailian"
+    model_id = "qwen-agent"
+    structured_final_requires_tool_choice_none = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def stream_turn(
+        self,
+        *,
+        messages: Sequence[AgentChatMessage],
+        tools: Sequence[AgentToolSpec],
+        tool_choice: str,
+        max_output_tokens: int,
+        response_format: AgentResponseFormat | None = None,
+    ) -> Iterator[AgentModelEvent]:
+        del tools, max_output_tokens
+        self.calls += 1
+        if self.calls == 1:
+            assert tool_choice == "auto"
+            yield AgentModelEvent(
+                event_type="tool_call",
+                tool_call=AgentToolRequest(
+                    call_id="call-status",
+                    name="project_status_get_v1",
+                    arguments={},
+                ),
+            )
+            yield AgentModelEvent(event_type="completed", finish_reason="tool_calls")
+            return
+        if self.calls == 2:
+            assert tool_choice == "auto"
+            yield AgentModelEvent(event_type="text_delta", text="非结构化中间草稿")
+            yield AgentModelEvent(event_type="completed", finish_reason="stop")
+            return
+        assert tool_choice == "none"
+        assert response_format is not None
+        assert "citations 必须是 evidence_id 字符串数组" in messages[-1].content
+        answer = {
+            "answer_markdown": "当前项目正式目标已读取。",
+            "sections": [
+                {
+                    "evidence_kind": "CONFIRMED_FACT",
+                    "title": "项目目标",
+                    "content": "以当前正式 Context 为准。",
+                    "citation_ids": ["ev_1_1"],
+                }
+            ],
+            "citations": ["ev_1_1"],
+            "follow_up_required": False,
+        }
+        yield AgentModelEvent(event_type="text_delta", text=json.dumps(answer))
+        yield AgentModelEvent(event_type="completed", finish_reason="stop")
+
+
 class SummaryAwareAgentModel(AgentChatModel):
     def __init__(self, *, fail_summary: bool = False) -> None:
         self.fail_summary = fail_summary
@@ -145,6 +207,10 @@ class SummaryAwareAgentModel(AgentChatModel):
     @property
     def model_id(self) -> str:
         return "qwen-agent"
+
+    @property
+    def structured_final_requires_tool_choice_none(self) -> bool:
+        return False
 
     def stream_turn(
         self,
@@ -241,6 +307,7 @@ class CatalogInspectingModel(SummaryAwareAgentModel):
 class ResearchReportAgentModel(AgentChatModel):
     provider = "bailian"
     model_id = "qwen-agent"
+    structured_final_requires_tool_choice_none = False
 
     def __init__(self, experiment_ids: list[str]) -> None:
         self.experiment_ids = experiment_ids
@@ -512,6 +579,47 @@ def test_agent_run_is_idempotent_and_persists_verified_answer(
             "answer.delta",
             "run.completed",
         ]
+
+
+def test_agent_provider_can_require_a_separate_structured_final_turn(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    service, identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    thread = service.create_thread(
+        project_id=project_id,
+        identity=identity,
+        request=AgentThreadCreateRequest(),
+    )
+    receipt = service.create_message(
+        project_id=project_id,
+        thread_id=thread.thread_id,
+        identity=identity,
+        idempotency_key=uuid4(),
+        request=AgentMessageCreateRequest(content="当前项目目标是什么？"),
+    )
+    repository = SqlAlchemyAgentRepository()
+    model = SeparateFinalTurnAgentModel()
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+            model,
+            settings,
+        ),
+        settings,
+        worker_id="separate-final-worker",
+    )
+
+    assert processor.process_once()
+    run = service.get_run(project_id=project_id, run_id=receipt.run_id, identity=identity)
+    assert run.status is AgentRunStatus.SUCCEEDED
+    assert model.calls == 3
+    assert len(run.model_calls) == 3
 
 
 def test_expired_agent_lease_increments_generation_and_blocks_stale_owner(

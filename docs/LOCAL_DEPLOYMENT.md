@@ -1,6 +1,6 @@
 # Experiment Guardian 本地部署
 
-更新时间：2026-07-23  
+更新时间：2026-07-27
 适用模式：`DEPLOYMENT_MODE=local`
 
 本地模式复用完整领域规则，只替换人类认证、对象存储、队列和模型适配器。它不提供密码
@@ -86,6 +86,10 @@ AWS Client 或要求 AWS 凭据。项目 Owner 可从 Agent 页打开“模型�
 调用、token、延迟、失败、重试和配置费率估算；项目成员可从消息打开单个 Run 的有界调用
 元数据。两个视图都不会返回提示词、回答正文、工具输入或工具输出。
 
+百炼适配器将原生 Function Calling 的 auto 回合和严格 JSON 最终回合分离，避免部分 Qwen
+模型在 `json_object` 模式下把工具调用写进正文。HTTPX 使用 SOCKS 可选依赖，主机或容器显式
+配置 SOCKS 代理时不会因缺少传输依赖在请求前失败。
+
 ## 幂等初始化
 
 Compose 首次启动自动执行。需要手工重复时运行：
@@ -137,27 +141,33 @@ docker compose --env-file .env.local run --rm api \
 ## 本地基础设施验收
 
 ```bash
+# RC 预检：不调用真实模型，不产生模型费用。
+python scripts/verify_r16_local.py \
+  --base-url http://127.0.0.1:5173 --env-file .env.local
+
 # 不访问真实模型或对象存储的完整应用链：Plan -> Manifest -> Submission ->
 # DB Queue -> Mock Bailian -> Review -> Experiment/Memory。
 pytest tests/integration/test_local_pipeline.py tests/integration/test_database_queue.py
 
-RUN_MINIO_INTEGRATION=1 \
-MINIO_TEST_ENDPOINT=http://127.0.0.1:9000 \
-MINIO_TEST_BUCKET=experiment-guardian-test \
-MINIO_TEST_ACCESS_KEY=experiment-guardian \
-MINIO_TEST_SECRET_KEY=change-this-local-secret \
-pytest tests/integration/test_minio_storage.py
+RUN_MINIO_INTEGRATION=1 pytest tests/integration/test_minio_storage.py
+
+RUN_COCKROACH_INTEGRATION=1 \
+TEST_COCKROACH_URL='cockroachdb+psycopg://root@127.0.0.1:26257/defaultdb?sslmode=disable' \
+pytest tests/integration/test_agent_local_cockroach.py
 
 RUN_BAILIAN_INTEGRATION=1 pytest tests/integration/test_bailian_optional.py
 
-RUN_BAILIAN_AGENT_INTEGRATION=1 \
-pytest tests/integration/test_bailian_optional.py \
-  -k real_bailian_agent_supports_function_calling
+# 先设置 AGENT_ENABLED=true、BAILIAN_AGENT_MODEL 并启动 agent profile；该命令产生模型费用。
+python scripts/verify_r16_local.py \
+  --base-url http://127.0.0.1:5173 --env-file .env.local \
+  --live-bailian --report /tmp/experiment-guardian-r16-local.json
 ```
 
 默认测试用 HTTP mock 覆盖百炼协议和失败，不需要真实 Key；只有显式设置
 `RUN_BAILIAN_INTEGRATION=1` 或 `RUN_BAILIAN_AGENT_INTEGRATION=1` 才会访问真实百炼。可选
-测试会读取 `.env.local`，进程环境变量仍具有更高优先级。
+测试会读取 `.env.local`，进程环境变量仍具有更高优先级。MinIO 测试也会读取本地 S3 配置，
+`MINIO_TEST_*` 仍可显式覆盖。若修改过默认 CockroachDB 映射端口，应同步修改
+`TEST_COCKROACH_URL`；RC 脚本会自动从 env 文件读取 `COCKROACH_SQL_PORT`。
 
 ## 停止与数据
 

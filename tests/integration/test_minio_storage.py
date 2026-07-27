@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from dotenv import dotenv_values
 
 from experiment_guardian.infrastructure.storage import S3CompatibleObjectStorage
 
@@ -16,10 +17,17 @@ from experiment_guardian.infrastructure.storage import S3CompatibleObjectStorage
     reason="设置 RUN_MINIO_INTEGRATION=1 后才访问真实 MinIO",
 )
 def test_minio_presign_versioning_fixed_read_and_download() -> None:
+    local_env = dotenv_values(".env.local")
     endpoint = os.getenv("MINIO_TEST_ENDPOINT", "http://127.0.0.1:9000")
     bucket = os.getenv("MINIO_TEST_BUCKET", "experiment-guardian-test")
-    access_key = os.getenv("MINIO_TEST_ACCESS_KEY", "experiment-guardian")
-    secret_key = os.getenv("MINIO_TEST_SECRET_KEY", "change-this-local-secret")
+    access_key = os.getenv(
+        "MINIO_TEST_ACCESS_KEY",
+        local_env.get("S3_ACCESS_KEY") or "",
+    )
+    secret_key = os.getenv(
+        "MINIO_TEST_SECRET_KEY",
+        local_env.get("S3_SECRET_KEY") or "",
+    )
     storage = S3CompatibleObjectStorage(
         bucket=bucket,
         region="us-east-1",

@@ -6,7 +6,7 @@ Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的
 
 它不保证实验一定正确，不完整验证真实训练行为，也不把本地 Agent 声明描述成云端事实。
 
-## R14 MVP 能力
+## 当前 MVP 能力（R16-L）
 
 完整纵向链路：
 
@@ -50,6 +50,9 @@ Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Contex
 * R15e-c Agent provider parity：治理 Agent 可在云端选择百炼或 Bedrock ConverseStream；
   两者共用严格响应契约、工具目录、权限和状态机，不做静默 provider 回退。Owner 可查看
   项目级调用量、token、延迟、失败、重试及按调用时配置费率冻结的费用估算。
+* R16-L 本地候选版加固：提供无模型费用预检和显式真实百炼验收脚本、真实 CockroachDB
+  Agent 并发/租约/死信测试、MinIO 固定版本验收，以及百炼工具选择与严格 JSON 最终回合的
+  兼容边界；本轮没有增加工具或扩大正式写权限。
 
 MCP 只暴露七个工具：
 
@@ -135,7 +138,7 @@ docker compose --env-file .env.local logs local-init
 [`docs/POLICY_DUAL_REPRESENTATION.md`](docs/POLICY_DUAL_REPRESENTATION.md)。
 内部实验治理 Agent 的能力边界、工具目录、上下文压缩、确认协议和分期计划见
 [`docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md`](docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md)；
-当前完成 R15e-c Agent provider parity 与模型运行观测。报告仍由用户明确选择 Experiment；每条
+当前完成 R16-L 本地百炼 release-candidate 加固。报告仍由用户明确选择 Experiment；每条
 finding 使用确定性模板形成独立候选记忆，embedding 由可恢复 Worker 异步生成。报告和正式
 Experiment Memory 均不受索引失败影响；所有提案仍需独立 Web 确认。Bedrock Agent 强制使用
 Structured Outputs JSON Schema，不接受仅靠提示词约束 JSON 的降级路径。
@@ -156,6 +159,17 @@ AGENT_OUTPUT_COST_PER_MILLION_TOKENS=
 
 ```bash
 docker compose --env-file .env.local --profile agent up -d --build
+```
+
+本地候选版验收默认不产生模型费用；`--live-bailian` 会创建一条只读 Agent 对话并产生百炼费用：
+
+```bash
+python scripts/verify_r16_local.py \
+  --base-url http://127.0.0.1:5173 --env-file .env.local
+
+python scripts/verify_r16_local.py \
+  --base-url http://127.0.0.1:5173 --env-file .env.local \
+  --live-bailian --report /tmp/experiment-guardian-r16-local.json
 ```
 
 ## 本地源码开发
@@ -199,6 +213,8 @@ experiment-guardian-api
 22 candidate Research Memory and recoverable embeddings
 23 Agent provider/model, latency and configured-rate cost observability
 ```
+
+R16-L 不新增数据库迁移，继续使用 revision 23。
 
 初始化现有团队和首个项目仍可使用可信本地 CLI/API：
 
@@ -324,6 +340,15 @@ python scripts/verify_r14_deployment.py --base-url https://guardian.example.com
 
 默认 pytest 不访问真实 CockroachDB、MinIO/S3、SQS、Bedrock 或百炼；相关测试通过
 `RUN_*_INTEGRATION` 环境开关显式执行。
+
+本地真实基础设施和模型验收：
+
+```bash
+RUN_COCKROACH_INTEGRATION=1 pytest tests/integration/test_agent_local_cockroach.py
+RUN_MINIO_INTEGRATION=1 pytest tests/integration/test_minio_storage.py
+RUN_BAILIAN_INTEGRATION=1 RUN_BAILIAN_AGENT_INTEGRATION=1 \
+  pytest tests/integration/test_bailian_optional.py
+```
 
 ## 目录
 
