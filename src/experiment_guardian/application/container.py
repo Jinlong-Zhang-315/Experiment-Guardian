@@ -6,6 +6,7 @@ from experiment_guardian.application.action_proposals import ActionProposalServi
 from experiment_guardian.application.agent import AgentConversationService
 from experiment_guardian.application.agent_observability import AgentObservabilityService
 from experiment_guardian.application.agent_tools import AgentToolRegistry
+from experiment_guardian.application.experiment_plans import ExperimentPlanService
 from experiment_guardian.application.experiments import (
     ExperimentQueryService,
     ExperimentReviewService,
@@ -204,6 +205,16 @@ def get_action_proposal_service() -> ActionProposalService:
 @lru_cache(maxsize=1)
 def get_agent_conversation_service() -> AgentConversationService:
     return AgentConversationService(
+        get_session_factory(),
+        get_project_repository(),
+        get_agent_repository(),
+        get_settings(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_experiment_plan_service() -> ExperimentPlanService:
+    return ExperimentPlanService(
         get_session_factory(),
         get_project_repository(),
         get_agent_repository(),

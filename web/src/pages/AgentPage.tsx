@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Archive, ArchiveRestore, Bot, BookOpenText, FilePenLine, Gauge, MessageSquarePlus, RotateCcw, Send, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Activity, Archive, ArchiveRestore, Bot, BookOpenText, ClipboardCheck, FilePenLine, Gauge, Info, MessageSquarePlus, RotateCcw, Send, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api, formatTime, idempotencyKey, streamServerEvents } from "../api";
 import { Badge, Empty, ErrorNotice } from "../components";
@@ -17,6 +17,7 @@ import { PolicyDraftWorkspace } from "./PolicyDraftWorkspace";
 import { ActionProposalWorkspace } from "./ActionProposalWorkspace";
 import { ResearchReportWorkspace } from "./ResearchReportWorkspace";
 import { AgentObservabilityWorkspace, AgentRunDetailsDialog } from "./AgentObservabilityWorkspace";
+import { ExperimentPlanWorkspace } from "./ExperimentPlanWorkspace";
 
 const ACTIVE_RUNS = new Set(["PENDING", "RUNNING", "RETRYABLE_FAILURE"]);
 
@@ -85,6 +86,7 @@ export function AgentPage() {
   const [draftWorkspace, setDraftWorkspace] = useState<{ open: boolean; draftId?: string }>({ open: false });
   const [proposalWorkspace, setProposalWorkspace] = useState<{ open: boolean; proposalId?: string }>({ open: false });
   const [reportWorkspace, setReportWorkspace] = useState<{ open: boolean; reportId?: string }>({ open: false });
+  const [planWorkspace, setPlanWorkspace] = useState<{ open: boolean; planId?: string }>({ open: false });
   const [observabilityOpen, setObservabilityOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState("");
   const lastEventId = useRef(0);
@@ -235,6 +237,11 @@ export function AgentPage() {
   if (threads.error) return <ErrorNotice error={threads.error} />;
   if (!threads.data) return <div className="page-loading">正在加载 Agent 会话</div>;
   const terminalFailure = activeRun && (runStatus === "FAILED" || runStatus === "DEAD_LETTER");
+  const externalContext = thread.data?.external_task_context;
+  const externalPolicy = externalContext?.policy as {
+    context?: { version?: number };
+    active_intent?: { version?: number };
+  } | undefined;
   return <main className="page agent-page">
     <header className="page-header"><div><span className="eyebrow">治理 Agent</span><h1>项目实验助手</h1><p>回答仅基于当前身份可见的正式记录</p></div>
       <div className="agent-header-actions">
@@ -242,6 +249,7 @@ export function AgentPage() {
         <button className="button" onClick={() => setDraftWorkspace({ open: true })}><FilePenLine />治理草稿</button>
         <button className="button" onClick={() => setProposalWorkspace({ open: true })}><ShieldCheck />发布提案</button>
         <button className="button" onClick={() => setReportWorkspace({ open: true })}><BookOpenText />研究报告</button>
+        <button className="button" onClick={() => setPlanWorkspace({ open: true })}><ClipboardCheck />实验计划</button>
         <button className="button" onClick={() => setShowArchived((value) => !value)}>{showArchived ? <ArchiveRestore /> : <Archive />}{showArchived ? "当前会话" : "已归档"}</button>
         <button className="button primary" onClick={() => createThread.mutate()} disabled={createThread.isPending}><MessageSquarePlus />新对话</button>
       </div>
@@ -250,14 +258,15 @@ export function AgentPage() {
     {!threads.data.items.length ? <Empty>{showArchived ? "没有已归档会话" : "创建一个会话后开始查询项目正式记录"}</Empty> :
       <div className="agent-workspace">
         <aside className="agent-thread-list">{threads.data.items.map((item) => <button className={selectedId === item.thread_id ? "active" : ""} key={item.thread_id} onClick={() => setSelectedId(item.thread_id)}>
-          <Bot /><span><strong>{item.title}</strong><small>{formatTime(item.updated_at)}</small></span>
+          <Bot /><span><strong>{item.title}</strong><small>{item.origin === "EXTERNAL_MCP" ? "MCP 任务 · " : ""}{formatTime(item.updated_at)}</small></span>
         </button>)}</aside>
         <section className="agent-conversation">
           <div className="agent-conversation-toolbar">
-            <div><strong>{thread.data?.thread.title ?? "会话"}</strong>{runStatus && <Badge value={runStatus} />}</div>
+            <div><strong>{thread.data?.thread.title ?? "会话"}</strong>{thread.data?.thread.origin === "EXTERNAL_MCP" && <Badge value="MCP 任务" />}{runStatus && <Badge value={runStatus} />}</div>
             {thread.data && <button className="icon-button" title={showArchived ? "恢复会话" : "归档会话"} aria-label={showArchived ? "恢复会话" : "归档会话"} disabled={Boolean(activeRun && ACTIVE_RUNS.has(runStatus))} onClick={() => updateThread.mutate({ id: thread.data!.thread.thread_id, archived: !showArchived })}>{showArchived ? <ArchiveRestore /> : <Archive />}</button>}
           </div>
           <div className="agent-message-list">
+            {externalContext && <div className={externalContext.context_freshness === "STALE" ? "agent-summary-warning" : "agent-task-context"}>{externalContext.context_freshness === "STALE" ? <TriangleAlert /> : <Info />}<span>任务启动于 Context v{externalPolicy?.context?.version ?? "?"} / Intent v{externalPolicy?.active_intent?.version ?? "无"}。{externalContext.warning ?? "当前正式版本未变化。"}</span></div>}
             {thread.data?.context_summary?.degraded && <div className="agent-summary-warning"><TriangleAlert /> <span>{thread.data.context_summary.warning}</span></div>}
             {thread.isPending ? <div className="page-loading">正在加载消息</div> : thread.data?.messages.map((message) => <Message key={message.message_id} value={message} onOpenDraft={(draftId) => setDraftWorkspace({ open: true, draftId })} onOpenProposal={(proposalId) => setProposalWorkspace({ open: true, proposalId })} onOpenReport={(reportId) => setReportWorkspace({ open: true, reportId })} onOpenRun={setSelectedRunId} />)}
             {(streamedAnswer || activity) && ACTIVE_RUNS.has(runStatus) && <article className="agent-message assistant streaming"><header><strong>治理 Agent</strong><Badge value={runStatus || "RUNNING"} /></header>{streamedAnswer ? <AnswerContent content={streamedAnswer} /> : <p>{activity}</p>}</article>}
@@ -271,6 +280,7 @@ export function AgentPage() {
     {draftWorkspace.open && <PolicyDraftWorkspace projectId={projectId} initialDraftId={draftWorkspace.draftId} onClose={() => setDraftWorkspace({ open: false })} />}
     {proposalWorkspace.open && <ActionProposalWorkspace projectId={projectId} initialProposalId={proposalWorkspace.proposalId} onClose={() => setProposalWorkspace({ open: false })} />}
     {reportWorkspace.open && <ResearchReportWorkspace projectId={projectId} initialReportId={reportWorkspace.reportId} onClose={() => setReportWorkspace({ open: false })} />}
+    {planWorkspace.open && <ExperimentPlanWorkspace projectId={projectId} initialPlanId={planWorkspace.planId} onClose={() => setPlanWorkspace({ open: false })} />}
     {observabilityOpen && <AgentObservabilityWorkspace projectId={projectId} onClose={() => setObservabilityOpen(false)} />}
     {selectedRunId && <AgentRunDetailsDialog projectId={projectId} runId={selectedRunId} onClose={() => setSelectedRunId("")} />}
   </main>;

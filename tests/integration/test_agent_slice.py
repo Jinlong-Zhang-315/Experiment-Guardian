@@ -22,11 +22,13 @@ from experiment_guardian.application.agent_runtime import (
 )
 from experiment_guardian.application.agent_tools import AgentToolRegistry
 from experiment_guardian.application.errors import (
+    AuthenticationError,
     AuthorizationError,
     ConflictError,
     InputValidationError,
     ServiceUnavailableError,
 )
+from experiment_guardian.application.experiment_plans import ExperimentPlanService
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.ports import AgentChatModel
 from experiment_guardian.application.research_reports import ResearchReportService
@@ -44,16 +46,30 @@ from experiment_guardian.domain.agent import (
     AgentToolRequest,
     AgentToolResult,
     AgentToolSpec,
+    ExternalAgentQuestionRequest,
+    ExternalAgentTaskStartRequest,
 )
 from experiment_guardian.domain.agent_research import research_report_source_hash
+from experiment_guardian.domain.contracts import ConfigurationDocument
 from experiment_guardian.domain.enums import (
     AgentContextSummaryStatus,
     AgentEvidenceKind,
     AgentModelCallPurpose,
+    AgentRunAuthMethod,
     AgentRunStatus,
+    AgentThreadOrigin,
+    ExperimentPlanDecisionType,
+    ExperimentPlanStatus,
     TeamRole,
+    TokenAudience,
+)
+from experiment_guardian.domain.experiment_plan import (
+    ExperimentPlanDecisionRequest,
+    ExperimentPlanEvidence,
+    ExperimentPlanSubmitRequest,
 )
 from experiment_guardian.infrastructure.models import (
+    AccessToken,
     AgentCitation,
     AgentContextSummary,
     AgentMessage,
@@ -62,6 +78,13 @@ from experiment_guardian.infrastructure.models import (
     AgentRun,
     AgentRunEvent,
     AuditLog,
+    ExperimentPlan,
+    ExperimentPlanDecision,
+    ExperimentPlanReview,
+    ExperimentPlanRevision,
+    McpOAuthClient,
+    McpOAuthGrant,
+    ProjectContext,
     TeamMember,
     User,
     WebSession,
@@ -191,6 +214,100 @@ class SeparateFinalTurnAgentModel(AgentChatModel):
             ],
             "citations": ["ev_1_1"],
             "follow_up_required": False,
+        }
+        yield AgentModelEvent(event_type="text_delta", text=json.dumps(answer))
+        yield AgentModelEvent(event_type="completed", finish_reason="stop")
+
+
+class ScriptedExperimentPlanModel(AgentChatModel):
+    provider = "bailian"
+    model_id = "qwen-agent"
+    structured_final_requires_tool_choice_none = False
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def stream_turn(
+        self,
+        *,
+        messages: Sequence[AgentChatMessage],
+        tools: Sequence[AgentToolSpec],
+        tool_choice: str,
+        max_output_tokens: int,
+        response_format: AgentResponseFormat | None = None,
+    ) -> Iterator[AgentModelEvent]:
+        del tools, tool_choice, max_output_tokens, response_format
+        self.calls += 1
+        tool_messages = [item for item in messages if item.role == "tool"]
+        if not tool_messages:
+            yield AgentModelEvent(
+                event_type="tool_call",
+                tool_call=AgentToolRequest(
+                    call_id=f"call-plan-status-{self.calls}",
+                    name="project_status_get_v1",
+                    arguments={},
+                ),
+            )
+            yield AgentModelEvent(event_type="completed", finish_reason="tool_calls")
+            return
+        raw_plan_input = next(
+            item.content for item in messages if "automatic_revision_round" in item.content
+        )
+        automatic_round = int(
+            json.loads(raw_plan_input.split("\n", 1)[1])["automatic_revision_round"]
+        )
+        recommendation = "REVISE" if automatic_round == 0 else "READY"
+        review = {
+            "schema_version": 1,
+            "recommendation": recommendation,
+            "review_markdown": "计划与当前正式主线一致。",
+            "findings": [
+                {
+                    "kind": "LOW_COST_VALIDATION",
+                    "severity": "MEDIUM",
+                    "statement": "先执行低成本冒烟验证。",
+                    "rationale": "降低完整训练前的失败成本。",
+                    "auto_fixable": automatic_round == 0,
+                    "citation_ids": ["ev_1_1"],
+                }
+            ],
+            "candidate_invariants": (
+                []
+                if automatic_round == 0
+                else [
+                    {
+                        "statement": "保持正式协议不变。",
+                        "rationale": "确保结果可比。",
+                        "verification_method": "运行前执行正式 Plan Check。",
+                        "representation": "STRUCTURED_PARAMETER",
+                        "parameter_path": "dataset.protocol",
+                        "expected_value": "40/20",
+                        "citation_ids": ["ev_1_1"],
+                    }
+                ]
+            ),
+            "free_exploration": ["融合模块内部实现"],
+            "user_decisions": [],
+            "revised_plan_markdown": (
+                "## 实验目标\n验证融合系数。\n\n## 低成本验证\n先运行单批次冒烟测试。"
+                if automatic_round == 0
+                else None
+            ),
+            "citations": ["ev_1_1"],
+        }
+        answer = {
+            "answer_markdown": "实验计划审核已完成。",
+            "sections": [
+                {
+                    "evidence_kind": "CONFIRMED_FACT",
+                    "title": "正式策略",
+                    "content": "审核使用当前 Context 和 Intent。",
+                    "citation_ids": ["ev_1_1"],
+                }
+            ],
+            "citations": ["ev_1_1"],
+            "follow_up_required": False,
+            "experiment_plan_review": review,
         }
         yield AgentModelEvent(event_type="text_delta", text=json.dumps(answer))
         yield AgentModelEvent(event_type="completed", finish_reason="stop")
@@ -579,6 +696,594 @@ def test_agent_run_is_idempotent_and_persists_verified_answer(
             "answer.delta",
             "run.completed",
         ]
+
+
+def test_external_mcp_task_reuses_agent_runtime_and_is_visible_from_web(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    service, web_identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    now = datetime.now(UTC)
+    token_id = uuid4()
+    scopes = frozenset({"project:read", "experiment:query"})
+    external_tool_names = {
+        item.name
+        for item in AgentToolRegistry(
+            plan_check_session_factory, SqlAlchemyProjectRepository()
+        ).specs_for_version("r17a-external-v1")
+    }
+    assert external_tool_names == {
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1",
+    }
+    assert not any(
+        name.startswith(("policy_draft_", "action_proposal_")) for name in external_tool_names
+    )
+    with plan_check_session_factory() as session, session.begin():
+        session.add(
+            AccessToken(
+                id=token_id,
+                user_id=web_identity.user_id,  # type: ignore[attr-defined]
+                team_id=web_identity.team_id,  # type: ignore[attr-defined]
+                project_id=project_id,
+                audience=TokenAudience.MCP,
+                name="external-agent",
+                token_prefix="eg_external",
+                token_hash="1" * 64,
+                scopes=sorted(scopes),
+                expires_at=now + timedelta(hours=1),
+                created_by=web_identity.user_id,  # type: ignore[attr-defined]
+            )
+        )
+    mcp_identity = RequestIdentity(
+        user_id=web_identity.user_id,  # type: ignore[attr-defined]
+        team_id=web_identity.team_id,  # type: ignore[attr-defined]
+        token_id=token_id,
+        project_id=project_id,
+        scopes=scopes,
+        authentication_method="MCP_TOKEN",
+        credential_expires_at=now + timedelta(hours=1),
+    )
+    key = uuid4()
+    request = ExternalAgentTaskStartRequest(
+        title="外部消融任务",
+        task_description="分析当前正式目标，并指出本次辅助模块消融需要保持的条件。",
+    )
+    started = service.start_external_task(
+        project_id=project_id,
+        identity=mcp_identity,
+        idempotency_key=key,
+        request=request,
+    )
+    replay = service.start_external_task(
+        project_id=project_id,
+        identity=mcp_identity,
+        idempotency_key=key,
+        request=request,
+    )
+    assert replay.task_id == started.task_id
+    assert replay.run.run_id == started.run.run_id
+    assert started.initial_context.policy.context.version == 1
+    assert started.initial_context.authoritative_scope == "FORMAL_POLICY_ONLY"
+    with pytest.raises(ConflictError, match="运行中的外部 Agent"):
+        service.start_external_task(
+            project_id=project_id,
+            identity=mcp_identity,
+            idempotency_key=uuid4(),
+            request=ExternalAgentTaskStartRequest(task_description="并发创建另一个任务"),
+        )
+
+    repository = SqlAlchemyAgentRepository()
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+            ScriptedAgentModel(),
+            settings,
+        ),
+        settings,
+        worker_id="external-agent-worker",
+    )
+    assert processor.process_once()
+
+    polled = service.get_external_task(
+        task_id=started.task_id,
+        identity=mcp_identity,
+        after_sequence=0,
+        limit=50,
+    )
+    assert polled.task.origin is AgentThreadOrigin.EXTERNAL_MCP
+    assert polled.context_freshness == "CURRENT"
+    assert polled.latest_run is not None
+    assert polled.latest_run.status is AgentRunStatus.SUCCEEDED
+    assert polled.messages[-1].citations[0].entity_type == "POLICY_BUNDLE"
+
+    web_view = service.get_thread(
+        project_id=project_id,
+        thread_id=started.task_id,
+        identity=web_identity,  # type: ignore[arg-type]
+    )
+    assert web_view.thread.origin is AgentThreadOrigin.EXTERNAL_MCP
+    assert web_view.external_task_context is not None
+    assert web_view.external_task_context.context_freshness == "CURRENT"
+
+    web_question = service.create_message(
+        project_id=project_id,
+        thread_id=started.task_id,
+        identity=web_identity,  # type: ignore[arg-type]
+        idempotency_key=uuid4(),
+        request=AgentMessageCreateRequest(content="从 Web 继续解释当前实验边界。"),
+    )
+    with plan_check_session_factory() as session:
+        web_run = session.get(AgentRun, web_question.run_id)
+        assert web_run is not None
+        assert web_run.auth_method is AgentRunAuthMethod.WEB_SESSION
+        assert web_run.auth_session_id == web_identity.token_id  # type: ignore[union-attr]
+        assert web_run.prompt_version == "r17a-external-v1"
+        assert web_run.tool_catalog_version == "r17a-external-v1"
+    web_processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+            ScriptedAgentModel(),
+            settings,
+        ),
+        settings,
+        worker_id="external-web-continuation-worker",
+    )
+    assert web_processor.process_once()
+
+    question = service.ask_external_task(
+        task_id=started.task_id,
+        identity=mcp_identity,
+        idempotency_key=uuid4(),
+        request=ExternalAgentQuestionRequest(question="当前 baseline 是什么？"),
+    )
+    with plan_check_session_factory() as session:
+        run = session.get(AgentRun, question.run_id)
+        assert run is not None
+        assert run.auth_method is AgentRunAuthMethod.MCP_TOKEN
+        assert run.auth_access_token_id == token_id
+        assert run.auth_session_id is None
+        assert run.prompt_version == "r17a-external-v1"
+
+    with plan_check_session_factory() as session, session.begin():
+        context = session.scalar(
+            select(ProjectContext).where(ProjectContext.project_id == project_id)
+        )
+        assert context is not None
+        context.goal = context.goal + "（测试策略变化）"
+    stale = service.get_external_task(
+        task_id=started.task_id,
+        identity=mcp_identity,
+        after_sequence=polled.next_sequence,
+        limit=50,
+    )
+    assert stale.context_freshness == "STALE"
+    assert stale.warning is not None
+    assert stale.initial_context.policy.context_payload.goal != context.goal
+
+    with pytest.raises(ConflictError, match="不同的外部 Agent 任务"):
+        service.start_external_task(
+            project_id=project_id,
+            identity=mcp_identity,
+            idempotency_key=key,
+            request=ExternalAgentTaskStartRequest(task_description="不同任务"),
+        )
+
+
+def test_experiment_plan_auto_revision_and_human_approval_are_versioned(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    conversation, web_identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    now = datetime.now(UTC)
+    token_id = uuid4()
+    scopes = frozenset({"project:read", "experiment:query", "experiment:check"})
+    with plan_check_session_factory() as session, session.begin():
+        session.add(
+            AccessToken(
+                id=token_id,
+                user_id=web_identity.user_id,  # type: ignore[attr-defined]
+                team_id=web_identity.team_id,  # type: ignore[attr-defined]
+                project_id=project_id,
+                audience=TokenAudience.MCP,
+                name="experiment-plan-agent",
+                token_prefix="eg_plan",
+                token_hash="9" * 64,
+                scopes=sorted(scopes),
+                expires_at=now + timedelta(hours=1),
+                created_by=web_identity.user_id,  # type: ignore[attr-defined]
+            )
+        )
+    mcp_identity = RequestIdentity(
+        user_id=web_identity.user_id,  # type: ignore[attr-defined]
+        team_id=web_identity.team_id,  # type: ignore[attr-defined]
+        token_id=token_id,
+        project_id=project_id,
+        scopes=scopes,
+        authentication_method="MCP_TOKEN",
+        credential_expires_at=now + timedelta(hours=1),
+    )
+    started = conversation.start_external_task(
+        project_id=project_id,
+        identity=mcp_identity,
+        idempotency_key=uuid4(),
+        request=ExternalAgentTaskStartRequest(
+            title="融合消融",
+            task_description="先读取正式策略，然后形成单变量融合实验计划。",
+        ),
+    )
+    repository = SqlAlchemyAgentRepository()
+    initial_processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+            ScriptedAgentModel(),
+            settings,
+        ),
+        settings,
+        worker_id="plan-initial-worker",
+    )
+    assert initial_processor.process_once()
+
+    plans = ExperimentPlanService(
+        plan_check_session_factory,
+        SqlAlchemyProjectRepository(),
+        repository,
+        settings,
+    )
+    submitted = plans.submit_external(
+        task_id=started.task_id,
+        identity=mcp_identity,
+        idempotency_key=uuid4(),
+        request=ExperimentPlanSubmitRequest(
+            title="融合系数单变量消融",
+            plan_markdown="## 目标\n仅调整融合系数，保持协议和主干模型不变。",
+            evidence=ExperimentPlanEvidence(
+                configuration=ConfigurationDocument(
+                    format="yaml",
+                    content=(
+                        "dataset:\n  protocol: 40/20\nmodel:\n"
+                        "  backbone: shift-gcn\n  fusion: 0.3\n"
+                    ),
+                ),
+                run_command="python train.py --config fusion.yaml",
+                git_commit="abc1234",
+            ),
+        ),
+    )
+    plan_model = ScriptedExperimentPlanModel()
+    plan_processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+            plan_model,
+            settings,
+            plans,
+        ),
+        settings,
+        worker_id="plan-review-worker",
+    )
+    assert plan_processor.process_once()
+    assert plan_processor.process_once()
+
+    reviewed = plans.get_external(plan_id=submitted.plan_id, identity=mcp_identity)
+    assert reviewed.summary.status is ExperimentPlanStatus.READY_FOR_APPROVAL
+    assert reviewed.summary.current_revision == 2
+    assert reviewed.current.author_type.value == "INTERNAL_AGENT"
+    assert reviewed.current.automatic_revision_round == 1
+    assert reviewed.review is not None
+    assert reviewed.review.semantic_review.recommendation.value == "READY"
+    assert reviewed.review.hard_check.status == "PASS"
+    assert len(reviewed.review.candidate_invariants) == 1
+    candidate_id = str(reviewed.review.candidate_invariants[0]["candidate_id"])
+
+    approved = plans.decide(
+        project_id=project_id,
+        plan_id=submitted.plan_id,
+        identity=web_identity,  # type: ignore[arg-type]
+        idempotency_key=uuid4(),
+        request=ExperimentPlanDecisionRequest(
+            expected_revision=2,
+            review_hash=reviewed.review.review_hash,
+            approval_digest=reviewed.review.approval_digest,
+            decision=ExperimentPlanDecisionType.APPROVED,
+            reason="已核对单变量范围、正式协议和低成本验证。",
+            confirmed_candidate_ids=[candidate_id],
+        ),
+    )
+    assert approved.summary.status is ExperimentPlanStatus.APPROVED
+    assert approved.decision is not None
+    assert approved.decision["approved_snapshot"]["governance_notice"].startswith(
+        "该决定只冻结计划级授权"
+    )
+
+    with plan_check_session_factory() as session:
+        assert (
+            len(
+                session.scalars(
+                    select(ExperimentPlanRevision).where(
+                        ExperimentPlanRevision.plan_id == submitted.plan_id
+                    )
+                ).all()
+            )
+            == 2
+        )
+        assert (
+            len(
+                session.scalars(
+                    select(ExperimentPlanReview)
+                    .join(ExperimentPlanRevision)
+                    .where(ExperimentPlanRevision.plan_id == submitted.plan_id)
+                ).all()
+            )
+            == 2
+        )
+        assert session.scalar(
+            select(ExperimentPlanDecision).where(
+                ExperimentPlanDecision.plan_id == submitted.plan_id
+            )
+        )
+
+
+def test_experiment_plan_policy_drift_stops_before_model_call(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    conversation, web_identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    now = datetime.now(UTC)
+    token_id = uuid4()
+    scopes = frozenset({"project:read", "experiment:query", "experiment:check"})
+    with plan_check_session_factory() as session, session.begin():
+        session.add(
+            AccessToken(
+                id=token_id,
+                user_id=web_identity.user_id,  # type: ignore[attr-defined]
+                team_id=web_identity.team_id,  # type: ignore[attr-defined]
+                project_id=project_id,
+                audience=TokenAudience.MCP,
+                name="stale-plan-agent",
+                token_prefix="eg_stale",
+                token_hash="8" * 64,
+                scopes=sorted(scopes),
+                expires_at=now + timedelta(hours=1),
+                created_by=web_identity.user_id,  # type: ignore[attr-defined]
+            )
+        )
+    mcp_identity = RequestIdentity(
+        user_id=web_identity.user_id,  # type: ignore[attr-defined]
+        team_id=web_identity.team_id,  # type: ignore[attr-defined]
+        token_id=token_id,
+        project_id=project_id,
+        scopes=scopes,
+        authentication_method="MCP_TOKEN",
+        credential_expires_at=now + timedelta(hours=1),
+    )
+    started = conversation.start_external_task(
+        project_id=project_id,
+        identity=mcp_identity,
+        idempotency_key=uuid4(),
+        request=ExternalAgentTaskStartRequest(task_description="准备实验计划"),
+    )
+    repository = SqlAlchemyAgentRepository()
+    assert AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+            ScriptedAgentModel(),
+            settings,
+        ),
+        settings,
+        worker_id="stale-initial-worker",
+    ).process_once()
+    plans = ExperimentPlanService(
+        plan_check_session_factory,
+        SqlAlchemyProjectRepository(),
+        repository,
+        settings,
+    )
+    submitted = plans.submit_external(
+        task_id=started.task_id,
+        identity=mcp_identity,
+        idempotency_key=uuid4(),
+        request=ExperimentPlanSubmitRequest(
+            title="待过期计划",
+            plan_markdown="验证策略漂移保护。",
+        ),
+    )
+    with plan_check_session_factory() as session, session.begin():
+        context = session.scalar(
+            select(ProjectContext).where(ProjectContext.project_id == project_id)
+        )
+        assert context is not None
+        context.goal = context.goal + "（正式版本内容漂移）"
+
+    plan_model = ScriptedExperimentPlanModel()
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+            plan_model,
+            settings,
+            plans,
+        ),
+        settings,
+        worker_id="stale-plan-worker",
+    )
+    assert processor.process_once()
+    assert plan_model.calls == 0
+    with plan_check_session_factory() as session:
+        plan = session.get(ExperimentPlan, submitted.plan_id)
+        run = session.get(AgentRun, submitted.run_id)
+        assert plan is not None and plan.status is ExperimentPlanStatus.STALE
+        assert run is not None and run.status is AgentRunStatus.FAILED
+        assert run.error is not None
+        assert run.error["code"] == "EXPERIMENT_PLAN_POLICY_STALE"
+
+
+def test_external_agent_worker_rejects_revoked_token(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    service, web_identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    now = datetime.now(UTC)
+    token_id = uuid4()
+    with plan_check_session_factory() as session, session.begin():
+        session.add(
+            AccessToken(
+                id=token_id,
+                user_id=web_identity.user_id,  # type: ignore[attr-defined]
+                team_id=web_identity.team_id,  # type: ignore[attr-defined]
+                project_id=project_id,
+                audience=TokenAudience.MCP,
+                name="revoked-agent",
+                token_prefix="eg_revoked",
+                token_hash="2" * 64,
+                scopes=["experiment:query", "project:read"],
+                expires_at=now + timedelta(hours=1),
+                created_by=web_identity.user_id,  # type: ignore[attr-defined]
+            )
+        )
+    identity = RequestIdentity(
+        user_id=web_identity.user_id,  # type: ignore[attr-defined]
+        team_id=web_identity.team_id,  # type: ignore[attr-defined]
+        token_id=token_id,
+        project_id=project_id,
+        scopes=frozenset({"project:read", "experiment:query"}),
+        authentication_method="MCP_TOKEN",
+        credential_expires_at=now + timedelta(hours=1),
+    )
+    started = service.start_external_task(
+        project_id=project_id,
+        identity=identity,
+        idempotency_key=uuid4(),
+        request=ExternalAgentTaskStartRequest(task_description="读取当前正式项目状态"),
+    )
+    with plan_check_session_factory() as session, session.begin():
+        token = session.get(AccessToken, token_id)
+        assert token is not None
+        token.revoked_at = datetime.now(UTC)
+
+    repository = SqlAlchemyAgentRepository()
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+            ScriptedAgentModel(),
+            settings,
+        ),
+        settings,
+        worker_id="revoked-agent-worker",
+    )
+    assert processor.process_once()
+    with plan_check_session_factory() as session:
+        run = session.get(AgentRun, started.run.run_id)
+        assert run is not None
+        assert run.status is AgentRunStatus.FAILED
+        assert run.error is not None
+        assert "MCP Token 已失效" in str(run.error["message"])
+
+
+def test_external_oauth_run_uses_live_grant_and_client_permissions(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    service, web_identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    now = datetime.now(UTC)
+    grant_id = uuid4()
+    client_id = uuid4()
+    scopes = ["experiment:query", "project:read"]
+    with plan_check_session_factory() as session, session.begin():
+        session.add(
+            McpOAuthClient(
+                id=client_id,
+                cognito_client_id="external-coding-agent",
+                name="External Coding Agent",
+                team_id=web_identity.team_id,  # type: ignore[attr-defined]
+                project_id=project_id,
+                allowed_scopes=scopes,
+                created_by=web_identity.user_id,  # type: ignore[attr-defined]
+            )
+        )
+        session.add(
+            McpOAuthGrant(
+                id=grant_id,
+                mcp_oauth_client_id=client_id,
+                user_id=web_identity.user_id,  # type: ignore[attr-defined]
+                granted_scopes=scopes,
+                last_used_at=now,
+            )
+        )
+    identity = RequestIdentity(
+        user_id=web_identity.user_id,  # type: ignore[attr-defined]
+        team_id=web_identity.team_id,  # type: ignore[attr-defined]
+        token_id=grant_id,
+        project_id=project_id,
+        scopes=frozenset(scopes),
+        authentication_method="MCP_OAUTH",
+        client_id="external-coding-agent",
+        credential_expires_at=now + timedelta(minutes=15),
+    )
+    started = service.start_external_task(
+        project_id=project_id,
+        identity=identity,
+        idempotency_key=uuid4(),
+        request=ExternalAgentTaskStartRequest(task_description="读取当前实验主线"),
+    )
+    resolver = AgentRunIdentityResolver(settings)
+    with plan_check_session_factory() as session:
+        run = session.get(AgentRun, started.run.run_id)
+        assert run is not None
+        assert run.auth_method is AgentRunAuthMethod.MCP_OAUTH
+        resolved = resolver.resolve(session, run)
+        assert resolved.authentication_method == "MCP_OAUTH"
+        assert "experiment:read" in resolved.scopes
+        assert "project:write" not in resolved.scopes
+
+    with plan_check_session_factory() as session, session.begin():
+        grant = session.get(McpOAuthGrant, grant_id)
+        assert grant is not None
+        grant.revoked_at = datetime.now(UTC)
+    with plan_check_session_factory() as session:
+        run = session.get(AgentRun, started.run.run_id)
+        assert run is not None
+        with pytest.raises(AuthenticationError, match="OAuth 授权已失效"):
+            resolver.resolve(session, run)
 
 
 def test_agent_provider_can_require_a_separate_structured_final_turn(
@@ -992,19 +1697,22 @@ def test_research_report_is_persisted_atomically_and_shared_as_analysis(
         scopes=frozenset({"experiment:read"}),
         authentication_method="WEB_SESSION",
     )
-    assert report_service.list_reports(
-        project_id=project_id,
-        identity=researcher,
-        cursor=None,
-        limit=20,
-    ).items[0].report_id == report.report_id
+    assert (
+        report_service.list_reports(
+            project_id=project_id,
+            identity=researcher,
+            cursor=None,
+            limit=20,
+        )
+        .items[0]
+        .report_id
+        == report.report_id
+    )
     with plan_check_session_factory() as session:
         assert session.scalar(select(AgentResearchReport)) is not None
         assert (
             session.scalar(
-                select(AuditLog).where(
-                    AuditLog.action == "agent.research_report.created"
-                )
+                select(AuditLog).where(AuditLog.action == "agent.research_report.created")
             )
             is not None
         )

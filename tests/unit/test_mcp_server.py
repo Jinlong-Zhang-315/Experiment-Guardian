@@ -19,7 +19,7 @@ mcp = server.mcp
 
 
 @pytest.mark.asyncio
-async def test_mcp_exposes_only_the_seven_p0_tools() -> None:
+async def test_mcp_exposes_formal_and_external_collaboration_tools() -> None:
     tools = await mcp.list_tools()
     names = {tool.name for tool in tools}
 
@@ -31,6 +31,12 @@ async def test_mcp_exposes_only_the_seven_p0_tools() -> None:
         "submission_finalize",
         "submission_get_status",
         "experiments_query",
+        "external_agent_task_start",
+        "external_agent_ask",
+        "external_agent_task_get",
+        "external_agent_plan_submit",
+        "external_agent_plan_revise",
+        "external_agent_plan_get",
     }
 
     for tool in tools:
@@ -39,6 +45,129 @@ async def test_mcp_exposes_only_the_seven_p0_tools() -> None:
         assert "requester_id" not in properties
         if tool.name == "submission_finalize":
             assert set(properties) == {"submission_id", "idempotency_key"}
+
+
+def test_external_agent_tools_use_server_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = uuid4()
+    identity = RequestIdentity(
+        user_id=uuid4(),
+        team_id=uuid4(),
+        token_id=uuid4(),
+        project_id=project_id,
+        scopes=frozenset({"project:read", "experiment:query"}),
+        authentication_method="MCP_TOKEN",
+    )
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeConversationService:
+        def start_external_task(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(("start", kwargs))
+            return SimpleNamespace(model_dump=lambda **_: {"task_id": "task"})
+
+        def ask_external_task(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(("ask", kwargs))
+            return SimpleNamespace(model_dump=lambda **_: {"status": "PENDING"})
+
+        def get_external_task(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(("get", kwargs))
+            return SimpleNamespace(model_dump=lambda **_: {"messages": []})
+
+    monkeypatch.setattr(
+        server,
+        "get_identity_provider",
+        lambda: SimpleNamespace(current_identity=lambda: identity),
+    )
+    monkeypatch.setattr(
+        server,
+        "get_agent_conversation_service",
+        lambda: FakeConversationService(),
+    )
+    task_key = uuid4()
+    question_key = uuid4()
+    task_id = uuid4()
+
+    assert server.external_agent_task_start(
+        str(project_id), "分析当前实验方向", str(task_key), "当前任务"
+    ) == {"task_id": "task"}
+    assert server.external_agent_ask(str(task_id), "当前 baseline 是什么？", str(question_key)) == {
+        "status": "PENDING"
+    }
+    assert server.external_agent_task_get(str(task_id), after_sequence=-5, limit=100) == {
+        "messages": []
+    }
+
+    assert [item[0] for item in calls] == ["start", "ask", "get"]
+    assert all(item[1]["identity"] is identity for item in calls)
+    assert calls[0][1]["project_id"] == project_id
+    assert calls[1][1]["task_id"] == task_id
+    assert calls[2][1]["after_sequence"] == 0
+    assert calls[2][1]["limit"] == 50
+
+
+def test_external_agent_plan_tools_use_server_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = uuid4()
+    task_id = uuid4()
+    plan_id = uuid4()
+    identity = RequestIdentity(
+        user_id=uuid4(),
+        team_id=uuid4(),
+        token_id=uuid4(),
+        project_id=project_id,
+        scopes=frozenset({"project:read", "experiment:check"}),
+        authentication_method="MCP_TOKEN",
+    )
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeExperimentPlanService:
+        def submit_external(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(("submit", kwargs))
+            return SimpleNamespace(model_dump=lambda **_: {"status": "REVIEW_QUEUED"})
+
+        def revise_external(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(("revise", kwargs))
+            return SimpleNamespace(model_dump=lambda **_: {"revision": 2})
+
+        def get_external(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(("get", kwargs))
+            return SimpleNamespace(model_dump=lambda **_: {"plan_id": str(plan_id)})
+
+    monkeypatch.setattr(
+        server,
+        "get_identity_provider",
+        lambda: SimpleNamespace(current_identity=lambda: identity),
+    )
+    monkeypatch.setattr(
+        server,
+        "get_experiment_plan_service",
+        lambda: FakeExperimentPlanService(),
+    )
+    submit_key = uuid4()
+    revise_key = uuid4()
+
+    assert server.external_agent_plan_submit(
+        str(task_id),
+        "消融计划",
+        "仅调整融合系数并保持正式协议。",
+        str(submit_key),
+        {"run_command": "python train.py"},
+    ) == {"status": "REVIEW_QUEUED"}
+    assert server.external_agent_plan_revise(
+        str(plan_id),
+        1,
+        "消融计划 v2",
+        "补充低成本验证。",
+        str(revise_key),
+    ) == {"revision": 2}
+    assert server.external_agent_plan_get(str(plan_id)) == {"plan_id": str(plan_id)}
+
+    assert [item[0] for item in calls] == ["submit", "revise", "get"]
+    assert all(item[1]["identity"] is identity for item in calls)
+    assert calls[0][1]["task_id"] == task_id
+    assert calls[1][1]["plan_id"] == plan_id
 
 
 def test_experiment_check_plan_uses_server_authenticated_identity(

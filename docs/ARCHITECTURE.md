@@ -1,11 +1,11 @@
 # Experiment Guardian 当前框架图
 
-更新时间：2026-07-27
-当前实现：R16-L 本地百炼 release candidate hardening
+更新时间：2026-07-28
+当前实现：R17b 版本化自然语言实验计划、有限自动修订与人工决定
 
-下一计划：先收集本地 RC 使用反馈并只修复阻断缺陷；真实云端验收独立排期。R15 总体边界见
-`INTERNAL_GOVERNANCE_AGENT_PLAN.md`。
-数据库 head：`20260727_23`
+下一计划：R17c 计划、运行前和结果提交三阶段关键不变量核对。总体边界见
+`EXTERNAL_CODING_AGENT_PLAN.md`。
+数据库 head：`20260728_25`
 
 除明确标记“计划”的章节外，本文描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与
 自动化验证，`[EXTERNAL]` 表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
@@ -61,13 +61,17 @@
           |                                         v
           |                              +----------------------+
           +----------------------------->| FastMCP Server       |
-                                         | [DONE 7 tools]       |
+                                         | [DONE 13 tools]      |
                                          | JWT + client/grant   |
                                          | + membership checks  |
                                          +----------+-----------+
                                                     |
                                                     v
-                                         GuardianApplication
+                              +-------------+----------------+
+                              |                              |
+                              v                              v
+                   GuardianApplication       AgentConversation/Plan services
+                   7 formal tools            6 collaboration tools
 ```
 
 ## AWS 部署图
@@ -170,7 +174,7 @@ src/experiment_guardian/
 |   +-- agent.py                Thread/Message/Run/SSE/retry API
 |                               + Policy Draft and Action Proposal API
 |
-+-- mcp_server/server.py        七个 MCP 工具 + HTTP health
++-- mcp_server/server.py        七个正式治理 + 三个外部协作工具 + HTTP health
 |
 +-- application/
 |   +-- web_auth.py             Cognito/local_owner、Session、CSRF、撤销
@@ -217,10 +221,10 @@ scripts/verify_r16_local.py      本地 RC 与可选真实百炼只读验收
 依赖方向保持：接口层 -> 应用层 -> 领域层；基础设施实现应用端口。前端不重新计算风险、
 审批资格或角色权限。
 
-## R16-L Agent 当前框架图
+## R17b Agent 当前框架图
 
 ```text
-Web 治理 Agent 页
+Web 治理 Agent 页 <------------------ MCP 创建的同用户任务可见并可续聊
    |
    | existing WebSession + project binding
    v
@@ -273,6 +277,43 @@ Agent API
    |               +--> FORMAL EXECUTE [NOT REGISTERED]
    +--> validated AgentAnswer + evidence/citations + AuditLog [DONE]
    +--> immutable AgentResearchReport + frozen source/hash [DONE]
+
+External Coding Agent
+   |
+   | stdio MCP Token / remote OAuth
+   v
+external_agent_task_start / external_agent_ask / external_agent_task_get [DONE]
+external_agent_plan_submit / external_agent_plan_revise / external_agent_plan_get [DONE]
+   |
+   +--> AgentThread origin=EXTERNAL_MCP
+   |       +--> initial formal ProjectContextBundle snapshot + source hash
+   |       +--> idempotent task start; one active external Run per user/project
+   |
+   +--> AgentRun credential binding
+   |       +--> MCP_TOKEN -> access_tokens, live revoke/expiry/project checks
+   |       +--> MCP_OAUTH -> grant + client, live revoke/expiry/project checks
+   |       +--> scope snapshot intersected with current permission
+   |
+   +--> r17a-external-v1 read-only catalog
+           +--> project / formal experiment / comparison / statistics
+           +--> candidate report and research-memory reads
+           +--> no draft, proposal, approval, manifest or formal write tool
+   |
+   +--> ExperimentPlanService
+           +--> immutable ExperimentPlanRevision
+           |      +--> full plan/evidence + formal policy snapshot/hash
+           |      +--> deterministic YAML/JSON + LOCKED hard check
+           +--> AgentRun kind=EXPERIMENT_PLAN_REVIEW
+           |      +--> r17b prompt + existing read-only catalog
+           |      +--> at most 2 text-only automatic revisions
+           |      +--> policy drift checked before model call
+           +--> ExperimentPlanReview
+           |      +--> citations/findings/candidate invariants
+           |      +--> review hash + approval digest
+           +--> ExperimentPlanDecision
+                  +--> Web Session + recent auth + live RBAC
+                  +--> exact revision/candidate choices/approved snapshot
+                  +--> does not replace formal Plan Check or create Manifest
 
 Owner Web Session
    |
@@ -345,6 +386,10 @@ User(cognito_sub)
                                              +--< AgentRunEvent
                                              +--< AgentCitation
                                              +--0..1 AgentContextSummary attempt
+                                      +--0..1 ExperimentPlan
+                                             +--< ExperimentPlanRevision(append-only)
+                                                    +--0..1 ExperimentPlanReview
+                                                    +--0..1 ExperimentPlanDecision
                                       +--< AgentResearchReport
                                              +--< AgentResearchMemory(CANDIDATE)
                                                     +--< AgentResearchMemoryEmbedding
@@ -393,6 +438,15 @@ Owner/Researcher Web Agent message
 -> Web draft workbench edits full Bundle with optimistic revision and displays deterministic diff/impact
 -> Web report workbench reads project-shared candidate reports and source-change warnings
 -> no execute tool exists; proposal confirmation is a separate recent-authenticated Web transaction
+
+External Coding Agent plan
+-> MCP submits full natural-language plan + optional evidence in an existing external task
+-> service freezes current Context/Intent/Constraints and runs deterministic hard checks
+-> Agent Worker checks policy freshness, then produces a cited semantic review
+-> only fully auto-fixable text issues may append another revision, at most two rounds
+-> Web user reviews exact revision, candidate invariants, hashes and impact receipt
+-> independent recent-authenticated decision freezes the plan-level authorization
+-> formal experiment_check_plan remains mandatory before Run Manifest creation
 ```
 
 ## 不在框架内

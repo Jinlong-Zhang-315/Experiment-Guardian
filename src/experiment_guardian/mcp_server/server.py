@@ -1,7 +1,7 @@
 """面向本地 Coding Agent 的产品 MCP Server。
 
 MCP 层只处理参数校验和协议转换，禁止在工具函数中直接拼 SQL、访问 S3 或调用 Bedrock。
-七个工具全部委托给应用门面，因此 REST 和 MCP 可以共享权限、幂等与审计逻辑。
+正式治理工具委托给应用门面，外部协作工具复用现有治理 Agent 会话服务；MCP 层不访问数据库。
 """
 
 from typing import Any
@@ -13,11 +13,17 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from experiment_guardian.application.container import (
+    get_agent_conversation_service,
+    get_experiment_plan_service,
     get_guardian_use_cases,
     get_identity_provider,
     get_mcp_token_verifier,
 )
 from experiment_guardian.core.config import get_settings
+from experiment_guardian.domain.agent import (
+    ExternalAgentQuestionRequest,
+    ExternalAgentTaskStartRequest,
+)
 from experiment_guardian.domain.contracts import (
     ConfigurationDocument,
     ExperimentCheckPlanCommand,
@@ -27,6 +33,11 @@ from experiment_guardian.domain.contracts import (
     SubmissionPrepareCommand,
 )
 from experiment_guardian.domain.enums import ConfigFormat, ExperimentStatus, SubmittedRunStatus
+from experiment_guardian.domain.experiment_plan import (
+    ExperimentPlanEvidence,
+    ExperimentPlanRevisionRequest,
+    ExperimentPlanSubmitRequest,
+)
 from experiment_guardian.infrastructure.mcp_oauth import oauth_scope_map
 
 settings = get_settings()
@@ -58,6 +69,8 @@ def _build_mcp() -> FastMCP:
             "实验草稿。系统提高一致性、可追溯性和风险可见性，不保证实验行为或结果正确。"
             "LOCAL_ATTESTED 字段仅代表本地 Agent 声明。project_get_context 返回的"
             "human_readable 仅用于理解，执行与治理必须使用同一响应中的结构化字段。"
+            "外部实验计划和内部 Agent 审核都是候选分析；人类计划批准不替代正式 Plan Check，"
+            "也不能绕过 LOCKED 约束。"
         ),
         host=settings.mcp_host,
         port=settings.mcp_port,
@@ -216,6 +229,126 @@ def experiments_query(
     )
     result = get_guardian_use_cases().experiments_query(command, identity)
     return [item.model_dump(mode="json") for item in result]
+
+
+@mcp.tool()
+def external_agent_task_start(
+    project_id: str,
+    task_description: str,
+    idempotency_key: str,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """提交外部 Coding Agent 任务；立即返回正式策略快照并异步生成带引用指导。"""
+
+    identity = get_identity_provider().current_identity()
+    result = get_agent_conversation_service().start_external_task(
+        project_id=UUID(project_id),
+        identity=identity,
+        idempotency_key=UUID(idempotency_key),
+        request=ExternalAgentTaskStartRequest(
+            task_description=task_description,
+            title=title,
+        ),
+    )
+    return result.model_dump(mode="json")
+
+
+@mcp.tool()
+def external_agent_ask(
+    task_id: str,
+    question: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """在自己的外部任务中追问；返回异步 Run 回执，正式事实必须等待带引用回答。"""
+
+    identity = get_identity_provider().current_identity()
+    result = get_agent_conversation_service().ask_external_task(
+        task_id=UUID(task_id),
+        identity=identity,
+        idempotency_key=UUID(idempotency_key),
+        request=ExternalAgentQuestionRequest(question=question),
+    )
+    return result.model_dump(mode="json")
+
+
+@mcp.tool()
+def external_agent_task_get(
+    task_id: str,
+    after_sequence: int = 0,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """轮询外部任务、增量消息、引用、Run 状态以及初始策略快照是否过期。"""
+
+    identity = get_identity_provider().current_identity()
+    result = get_agent_conversation_service().get_external_task(
+        task_id=UUID(task_id),
+        identity=identity,
+        after_sequence=max(0, after_sequence),
+        limit=max(1, min(limit, 50)),
+    )
+    return result.model_dump(mode="json")
+
+
+@mcp.tool()
+def external_agent_plan_submit(
+    task_id: str,
+    title: str,
+    plan_markdown: str,
+    idempotency_key: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """提交版本化自然语言实验计划；返回异步审核回执，不代表计划已批准。"""
+
+    identity = get_identity_provider().current_identity()
+    result = get_experiment_plan_service().submit_external(
+        task_id=UUID(task_id),
+        identity=identity,
+        idempotency_key=UUID(idempotency_key),
+        request=ExperimentPlanSubmitRequest(
+            title=title,
+            plan_markdown=plan_markdown,
+            evidence=ExperimentPlanEvidence.model_validate(evidence or {}),
+        ),
+    )
+    return result.model_dump(mode="json")
+
+
+@mcp.tool()
+def external_agent_plan_revise(
+    plan_id: str,
+    expected_revision: int,
+    title: str,
+    plan_markdown: str,
+    idempotency_key: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """为未终结计划追加完整 revision 并重新审核；历史版本不会被覆盖。"""
+
+    identity = get_identity_provider().current_identity()
+    result = get_experiment_plan_service().revise_external(
+        plan_id=UUID(plan_id),
+        identity=identity,
+        idempotency_key=UUID(idempotency_key),
+        request=ExperimentPlanRevisionRequest(
+            expected_revision=expected_revision,
+            title=title,
+            plan_markdown=plan_markdown,
+            evidence=ExperimentPlanEvidence.model_validate(evidence or {}),
+        ),
+    )
+    return result.model_dump(mode="json")
+
+
+@mcp.tool()
+def external_agent_plan_get(plan_id: str) -> dict[str, Any]:
+    """读取自己的计划、审核引用、版本新鲜度和人类决定；正式规则仍以结构化策略为准。"""
+
+    identity = get_identity_provider().current_identity()
+    result = get_experiment_plan_service().get_external(
+        plan_id=UUID(plan_id),
+        identity=identity,
+    )
+    return result.model_dump(mode="json")
 
 
 def run() -> None:

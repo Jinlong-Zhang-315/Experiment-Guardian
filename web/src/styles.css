@@ -180,6 +180,8 @@ textarea { resize: vertical; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo
 .agent-section.hypothesis { border-left-color: var(--red); background: var(--red-soft); }
 .agent-summary-warning { min-height: 38px; padding: 7px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d7bd87; background: #fff8e8; color: #6e5014; font-size: 12px; }
 .agent-summary-warning svg { width: 16px; height: 16px; flex: 0 0 auto; }
+.agent-task-context { min-height: 38px; padding: 7px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); background: #f2f7f4; color: var(--muted); font-size: 12px; }
+.agent-task-context svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--green); }
 .agent-bullet { position: relative; padding-left: 17px; }
 .agent-bullet::before { content: "•"; position: absolute; left: 3px; color: var(--green); }
 .agent-space { display: block; height: 4px; }
@@ -371,6 +373,19 @@ textarea { resize: vertical; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo
 .research-warning { margin: 14px 0; padding: 10px 12px; display: flex; gap: 9px; align-items: flex-start; color: var(--red); background: var(--red-soft); border-left: 3px solid var(--red); }
 .research-warning svg { width: 18px; flex: 0 0 auto; }
 .research-report-body { display: grid; gap: 18px; padding-top: 18px; }
+.plan-review { display: grid; gap: 14px; }
+.plan-review > h3 { margin: 8px 0 0; font-size: 15px; }
+.plan-candidate { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: #f7f8f7; }
+.plan-candidate header { display: flex; align-items: center; gap: 8px; }
+.plan-candidate p, .plan-candidate small { margin: 0; }
+.plan-candidate .segmented { justify-self: start; }
+.plan-candidate .segmented button { display: inline-flex; align-items: center; gap: 5px; }
+.plan-candidate .segmented svg { width: 14px; height: 14px; }
+.plan-decision-form { display: grid; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); background: #f7f8f7; }
+.plan-decision-form h3, .plan-decision-form p { margin: 0; }
+.plan-decision-form label { display: grid; gap: 5px; }
+.plan-decision-form > div { display: flex; justify-content: flex-end; gap: 8px; }
+.draft-history article { display: grid; gap: 4px; padding: 10px; border-bottom: 1px solid var(--line); }
 .research-summary, .research-limitations { padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .research-summary h3, .research-limitations h3 { margin: 0 0 8px; font-size: 16px; letter-spacing: 0; }
 .research-summary p, .research-limitations p { margin: 0 0 7px; line-height: 1.65; }

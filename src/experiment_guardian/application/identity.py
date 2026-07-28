@@ -5,6 +5,7 @@ MCP Token 或服务端 Session 构造该对象，再由应用服务继续执行�
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -24,6 +25,7 @@ class RequestIdentity:
     recent_authentication: bool = True
     subject: str | None = None
     client_id: str | None = None
+    credential_expires_at: datetime | None = None
 
 
 class IdentityProvider(Protocol):

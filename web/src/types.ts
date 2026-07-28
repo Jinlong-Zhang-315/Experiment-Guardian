@@ -128,12 +128,14 @@ export interface Experiment {
 export interface Page<T> { items: T[]; next_cursor?: string }
 
 export type AgentThreadStatus = "ACTIVE" | "ARCHIVED";
+export type AgentThreadOrigin = "WEB" | "EXTERNAL_MCP";
 export type AgentRunStatus = "PENDING" | "RUNNING" | "RETRYABLE_FAILURE" | "SUCCEEDED" | "FAILED" | "DEAD_LETTER";
 
 export interface AgentThread {
   thread_id: string;
   project_id: string;
   title: string;
+  origin: AgentThreadOrigin;
   status: AgentThreadStatus;
   created_at: string;
   updated_at: string;
@@ -303,6 +305,19 @@ export interface AgentThreadView {
   thread: AgentThread;
   messages: AgentMessage[];
   context_summary?: AgentContextSummary;
+  external_task_context?: {
+    captured_at: string;
+    source_hash: string;
+    authoritative_scope: "FORMAL_POLICY_ONLY";
+    policy: Record<string, unknown>;
+    governance_notice: string;
+    context_freshness?: "CURRENT" | "STALE";
+    current_context_id?: string;
+    current_context_version?: number;
+    current_intent_id?: string;
+    current_intent_version?: number;
+    warning?: string;
+  };
 }
 
 export interface AgentRunReceipt {
@@ -378,6 +393,123 @@ export interface AgentModelObservability {
   groups: AgentObservabilityGroup[];
   costs: Array<{ currency: string; estimated_cost: string }>;
   failure_categories: Record<string, number>;
+}
+
+export type ExperimentPlanStatus =
+  "REVIEW_QUEUED" | "REVIEWING" | "READY_FOR_APPROVAL" | "NEEDS_USER_INPUT" |
+  "REVIEW_FAILED" | "STALE" | "APPROVED" | "CONDITIONALLY_APPROVED" |
+  "REJECTED" | "CHANGES_REQUESTED";
+
+export interface ExperimentPlanEvidence {
+  configuration?: { format: "yaml" | "json"; content: string };
+  config_sha256?: string;
+  config_summary: Record<string, unknown>;
+  run_command?: string;
+  git_commit?: string;
+  baseline_reference?: string;
+  related_experiment_ids: string[];
+}
+
+export interface ExperimentPlanRevision {
+  revision_id: string;
+  plan_id: string;
+  revision: number;
+  author_type: "EXTERNAL_AGENT" | "INTERNAL_AGENT" | "WEB_USER";
+  author_id?: string;
+  parent_revision_id?: string;
+  source_run_id?: string;
+  automatic_revision_round: number;
+  title: string;
+  plan_markdown: string;
+  evidence: ExperimentPlanEvidence;
+  context_id: string;
+  context_version: number;
+  intent_id?: string;
+  intent_version?: number;
+  policy_snapshot: Record<string, unknown>;
+  policy_hash: string;
+  content_hash: string;
+  evidence_hash: string;
+  created_at: string;
+}
+
+export interface ExperimentPlanSummary {
+  plan_id: string;
+  project_id: string;
+  task_id: string;
+  created_by: string;
+  title: string;
+  status: ExperimentPlanStatus;
+  current_revision: number;
+  freshness: "CURRENT" | "STALE";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExperimentPlanFinding {
+  kind: string;
+  severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  statement: string;
+  rationale: string;
+  auto_fixable: boolean;
+  citation_ids: string[];
+}
+
+export interface ExperimentPlanCandidateInvariant {
+  candidate_id: string;
+  statement: string;
+  rationale: string;
+  verification_method: string;
+  representation: "STRUCTURED_PARAMETER" | "NATURAL_LANGUAGE";
+  parameter_path?: string;
+  expected_value?: unknown;
+  citation_ids: string[];
+}
+
+export interface ExperimentPlanReview {
+  review_id: string;
+  revision_id: string;
+  source_run_id: string;
+  hard_check: {
+    status: "PASS" | "NEEDS_ATTENTION" | "BLOCKED";
+    issues: Array<{
+      code: string;
+      severity: string;
+      message: string;
+      parameter_path?: string;
+      blocking: boolean;
+      current_value?: unknown;
+      expected_value?: unknown;
+    }>;
+    parsed_configuration?: Record<string, unknown>;
+    configuration_hash?: string;
+  };
+  semantic_review: {
+    recommendation: "READY" | "REVISE" | "NEEDS_USER_INPUT" | "BLOCKED";
+    review_markdown: string;
+    findings: ExperimentPlanFinding[];
+    free_exploration: string[];
+    user_decisions: string[];
+    revised_plan_markdown?: string;
+    citations: string[];
+  };
+  candidate_invariants: ExperimentPlanCandidateInvariant[];
+  approval_receipt: Record<string, unknown>;
+  review_hash: string;
+  approval_digest: string;
+  provider: string;
+  model_id: string;
+  prompt_version: string;
+  created_at: string;
+}
+
+export interface ExperimentPlanView {
+  summary: ExperimentPlanSummary;
+  current: ExperimentPlanRevision;
+  review?: ExperimentPlanReview;
+  decision?: Record<string, unknown> & { decision: string; reason: string };
+  revisions: ExperimentPlanRevision[];
+  allowed_actions: string[];
 }
 
 export type AgentEvidenceKind =

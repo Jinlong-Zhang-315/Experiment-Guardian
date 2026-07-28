@@ -219,6 +219,17 @@ class AgentThreadStatus(StrEnum):
     ARCHIVED = "ARCHIVED"
 
 
+class AgentThreadOrigin(StrEnum):
+    WEB = "WEB"
+    EXTERNAL_MCP = "EXTERNAL_MCP"
+
+
+class AgentRunAuthMethod(StrEnum):
+    WEB_SESSION = "WEB_SESSION"
+    MCP_TOKEN = "MCP_TOKEN"
+    MCP_OAUTH = "MCP_OAUTH"
+
+
 class AgentMessageRole(StrEnum):
     USER = "USER"
     ASSISTANT = "ASSISTANT"
@@ -233,6 +244,11 @@ class AgentRunStatus(StrEnum):
     DEAD_LETTER = "DEAD_LETTER"
 
 
+class AgentRunKind(StrEnum):
+    CONVERSATION = "CONVERSATION"
+    EXPERIMENT_PLAN_REVIEW = "EXPERIMENT_PLAN_REVIEW"
+
+
 class AgentCallStatus(StrEnum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
@@ -243,6 +259,39 @@ class AgentCallStatus(StrEnum):
 class AgentModelCallPurpose(StrEnum):
     AGENT_TURN = "AGENT_TURN"
     CONTEXT_SUMMARY = "CONTEXT_SUMMARY"
+
+
+class ExperimentPlanStatus(StrEnum):
+    REVIEW_QUEUED = "REVIEW_QUEUED"
+    REVIEWING = "REVIEWING"
+    READY_FOR_APPROVAL = "READY_FOR_APPROVAL"
+    NEEDS_USER_INPUT = "NEEDS_USER_INPUT"
+    REVIEW_FAILED = "REVIEW_FAILED"
+    STALE = "STALE"
+    APPROVED = "APPROVED"
+    CONDITIONALLY_APPROVED = "CONDITIONALLY_APPROVED"
+    REJECTED = "REJECTED"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
+
+
+class ExperimentPlanRevisionAuthor(StrEnum):
+    EXTERNAL_AGENT = "EXTERNAL_AGENT"
+    INTERNAL_AGENT = "INTERNAL_AGENT"
+    WEB_USER = "WEB_USER"
+
+
+class ExperimentPlanReviewRecommendation(StrEnum):
+    READY = "READY"
+    REVISE = "REVISE"
+    NEEDS_USER_INPUT = "NEEDS_USER_INPUT"
+    BLOCKED = "BLOCKED"
+
+
+class ExperimentPlanDecisionType(StrEnum):
+    APPROVED = "APPROVED"
+    CONDITIONALLY_APPROVED = "CONDITIONALLY_APPROVED"
+    REJECTED = "REJECTED"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
 
 
 class AgentContextSummaryStatus(StrEnum):

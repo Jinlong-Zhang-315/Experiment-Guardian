@@ -16,6 +16,7 @@ from experiment_guardian.application.container import (
     get_action_proposal_service,
     get_agent_conversation_service,
     get_agent_observability_service,
+    get_experiment_plan_service,
     get_policy_draft_service,
     get_research_memory_service,
     get_research_report_service,
@@ -40,6 +41,14 @@ from experiment_guardian.domain.agent import (
 )
 from experiment_guardian.domain.agent_research import ResearchReportPage, ResearchReportView
 from experiment_guardian.domain.enums import PolicyDraftStatus
+from experiment_guardian.domain.experiment_plan import (
+    ExperimentPlanDecisionRequest,
+    ExperimentPlanPage,
+    ExperimentPlanReceipt,
+    ExperimentPlanRevisionRequest,
+    ExperimentPlanRevisionView,
+    ExperimentPlanView,
+)
 from experiment_guardian.domain.policy_draft import (
     PolicyDraftAbandonRequest,
     PolicyDraftPage,
@@ -55,6 +64,109 @@ from experiment_guardian.domain.research_memory import (
 )
 
 router = APIRouter(prefix="/projects/{project_id}/agent", tags=["governance-agent"])
+
+
+@router.get("/experiment-plans", response_model=ExperimentPlanPage)
+async def list_experiment_plans(
+    project_id: UUID,
+    identity: ApiIdentity,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ExperimentPlanPage:
+    return get_experiment_plan_service().list_plans(
+        project_id=project_id,
+        identity=identity,
+        limit=limit,
+    )
+
+
+@router.get("/experiment-plans/{plan_id}", response_model=ExperimentPlanView)
+async def get_experiment_plan(
+    project_id: UUID,
+    plan_id: UUID,
+    identity: ApiIdentity,
+) -> ExperimentPlanView:
+    return get_experiment_plan_service().get(
+        project_id=project_id,
+        plan_id=plan_id,
+        identity=identity,
+    )
+
+
+@router.get(
+    "/experiment-plans/{plan_id}/revisions/{revision}",
+    response_model=ExperimentPlanRevisionView,
+)
+async def get_experiment_plan_revision(
+    project_id: UUID,
+    plan_id: UUID,
+    revision: int,
+    identity: ApiIdentity,
+) -> ExperimentPlanRevisionView:
+    return get_experiment_plan_service().get_revision(
+        project_id=project_id,
+        plan_id=plan_id,
+        revision_number=revision,
+        identity=identity,
+    )
+
+
+@router.post(
+    "/experiment-plans/{plan_id}/revisions",
+    response_model=ExperimentPlanReceipt,
+    status_code=status.HTTP_201_CREATED,
+)
+async def revise_experiment_plan(
+    project_id: UUID,
+    plan_id: UUID,
+    request: ExperimentPlanRevisionRequest,
+    identity: CsrfIdentity,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> ExperimentPlanReceipt:
+    return get_experiment_plan_service().revise_web(
+        project_id=project_id,
+        plan_id=plan_id,
+        identity=identity,
+        idempotency_key=idempotency_key,
+        request=request,
+    )
+
+
+@router.post(
+    "/experiment-plans/{plan_id}/review/retry",
+    response_model=ExperimentPlanReceipt,
+)
+async def retry_experiment_plan_review(
+    project_id: UUID,
+    plan_id: UUID,
+    identity: CsrfIdentity,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> ExperimentPlanReceipt:
+    return get_experiment_plan_service().retry_review(
+        project_id=project_id,
+        plan_id=plan_id,
+        identity=identity,
+        idempotency_key=idempotency_key,
+    )
+
+
+@router.post(
+    "/experiment-plans/{plan_id}/decisions",
+    response_model=ExperimentPlanView,
+)
+async def decide_experiment_plan(
+    project_id: UUID,
+    plan_id: UUID,
+    request: ExperimentPlanDecisionRequest,
+    identity: CsrfIdentity,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> ExperimentPlanView:
+    return get_experiment_plan_service().decide(
+        project_id=project_id,
+        plan_id=plan_id,
+        identity=identity,
+        idempotency_key=idempotency_key,
+        request=request,
+    )
 
 
 @router.get("/model-observability", response_model=AgentModelObservabilityView)

@@ -15,7 +15,7 @@ from experiment_guardian.domain.agent_research import (
     AgentResearchReportPayload,
     ResearchReportReference,
 )
-from experiment_guardian.domain.contracts import ContractModel
+from experiment_guardian.domain.contracts import ContractModel, ProjectContextBundle
 from experiment_guardian.domain.enums import (
     AgentCallStatus,
     AgentContextSummaryStatus,
@@ -23,8 +23,10 @@ from experiment_guardian.domain.enums import (
     AgentMessageRole,
     AgentModelCallPurpose,
     AgentRunStatus,
+    AgentThreadOrigin,
     AgentThreadStatus,
 )
+from experiment_guardian.domain.experiment_plan import ExperimentPlanReviewPayload
 from experiment_guardian.domain.research_memory import ResearchMemoryReference
 
 MAX_AGENT_MESSAGE_BYTES = 8 * 1024
@@ -55,6 +57,7 @@ class AgentThreadSummary(ContractModel):
     thread_id: UUID
     project_id: UUID
     title: str
+    origin: AgentThreadOrigin = AgentThreadOrigin.WEB
     status: AgentThreadStatus
     created_at: datetime
     updated_at: datetime
@@ -105,6 +108,7 @@ class AgentThreadView(ContractModel):
     thread: AgentThreadSummary
     messages: list[AgentMessageView]
     context_summary: AgentContextSummaryView | None = None
+    external_task_context: "ExternalAgentTaskContextView | None" = None
 
 
 class AgentRunReceipt(ContractModel):
@@ -127,6 +131,76 @@ class AgentRunView(AgentRunReceipt):
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+class ExternalAgentTaskStartRequest(ContractModel):
+    task_description: str = Field(min_length=1, max_length=MAX_AGENT_MESSAGE_BYTES)
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @model_validator(mode="after")
+    def validate_utf8_size(self) -> "ExternalAgentTaskStartRequest":
+        self.task_description = self.task_description.strip()
+        if not self.task_description:
+            raise ValueError("外部 Agent 任务说明不能为空")
+        if len(self.task_description.encode("utf-8")) > MAX_AGENT_MESSAGE_BYTES:
+            raise ValueError("外部 Agent 任务说明不能超过 8 KiB")
+        if self.title is not None:
+            self.title = self.title.strip()
+        return self
+
+
+class ExternalAgentQuestionRequest(ContractModel):
+    question: str = Field(min_length=1, max_length=MAX_AGENT_MESSAGE_BYTES)
+
+    @model_validator(mode="after")
+    def validate_utf8_size(self) -> "ExternalAgentQuestionRequest":
+        self.question = self.question.strip()
+        if not self.question:
+            raise ValueError("外部 Agent 问题不能为空")
+        if len(self.question.encode("utf-8")) > MAX_AGENT_MESSAGE_BYTES:
+            raise ValueError("外部 Agent 问题不能超过 8 KiB")
+        return self
+
+
+class ExternalAgentTaskContextView(ContractModel):
+    captured_at: datetime
+    source_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authoritative_scope: Literal["FORMAL_POLICY_ONLY"] = "FORMAL_POLICY_ONLY"
+    policy: ProjectContextBundle
+    governance_notice: str
+    context_freshness: Literal["CURRENT", "STALE"] | None = None
+    current_context_id: UUID | None = None
+    current_context_version: int | None = Field(default=None, gt=0)
+    current_intent_id: UUID | None = None
+    current_intent_version: int | None = Field(default=None, gt=0)
+    warning: str | None = None
+
+
+class ExternalAgentTaskStartResult(ContractModel):
+    schema_version: Literal[1] = 1
+    task_id: UUID
+    thread_id: UUID
+    task_status: AgentThreadStatus
+    origin: Literal[AgentThreadOrigin.EXTERNAL_MCP] = AgentThreadOrigin.EXTERNAL_MCP
+    initial_context: ExternalAgentTaskContextView
+    context_freshness: Literal["CURRENT"] = "CURRENT"
+    run: AgentRunReceipt
+    poll_after_seconds: float = Field(gt=0, le=30)
+
+
+class ExternalAgentTaskPollResult(ContractModel):
+    schema_version: Literal[1] = 1
+    task: AgentThreadSummary
+    initial_context: ExternalAgentTaskContextView
+    context_freshness: Literal["CURRENT", "STALE"]
+    current_context_id: UUID
+    current_context_version: int = Field(gt=0)
+    current_intent_id: UUID | None = None
+    current_intent_version: int | None = Field(default=None, gt=0)
+    warning: str | None = None
+    messages: list[AgentMessageView]
+    latest_run: AgentRunView | None = None
+    next_sequence: int = Field(ge=0)
 
 
 class AgentModelCallView(ContractModel):
@@ -242,6 +316,7 @@ class AgentAnswer(ContractModel):
     citations: list[str] = Field(default_factory=list, max_length=100)
     follow_up_required: bool = False
     research_report: AgentResearchReportPayload | None = None
+    experiment_plan_review: ExperimentPlanReviewPayload | None = None
 
 
 class AgentDraftSummaryReference(ContractModel):

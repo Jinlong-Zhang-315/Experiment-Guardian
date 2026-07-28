@@ -33,6 +33,8 @@
 | 2026-07-23 | R14 Local | `working tree` | 单机可替换基础设施与安全修复 |
 | 2026-07-23 | R14f | `working tree` | 正式策略双表示 |
 | 2026-07-23 | R15 Plan | `working tree` | 内部实验治理 Agent 分期设计 |
+| 2026-07-28 | R17a | `working tree` | 外部 Coding Agent 协作入口与带引用问答 |
+| 2026-07-28 | R17b | `working tree` | 版本化自然语言实验计划、有限自动修订与人工决定 |
 | 2026-07-23 | R15a | `working tree` | 只读 Agent 对话纵向切片 |
 | 2026-07-23 | R15b | `working tree` | 实验分析与对话压缩 |
 | 2026-07-24 | R15c | `working tree` | 治理草稿与影响分析 |
@@ -1849,6 +1851,121 @@ Agent Run、ModelCall、ToolCall、Citation、Event、lease、generation 和审�
   也没有改变 Context、Intent、Constraint、Plan、Submission 或 Experiment。
 * 本机运行配置已恢复为本轮开始时的 `AGENT_ENABLED=false`；需要真实 Agent 时必须显式配置模型
   并启动 Compose `agent` profile。
+
+## 2026-07-28 / R17a：外部 Coding Agent 协作入口与带引用问答
+
+版本：`working tree`。
+
+### 更新内容
+
+* revision `20260728_24` 为 Agent Thread 增加来源、任务启动幂等键、正式策略快照和来源哈希；
+  Agent Run 可分别关联 Web Session、MCP AccessToken 或 MCP OAuth Grant。
+* 新增 `external_agent_task_start`、`external_agent_ask`、`external_agent_task_get`。首个工具在
+  Agent 模型完成前即返回版本化 `ProjectContextBundle`，后两个工具支持追问和增量轮询。
+* 新增 `r17a-external-v1` Prompt/工具目录，只开放项目、正式实验、确定性比较统计、候选研究
+  报告和记忆读取；没有草稿、提案、审批或正式写工具。
+* MCP Thread 继续复用现有消息、Run、Lease、generation、重试、死信、Citation、rolling
+  summary 和观测链。Web 增加 MCP 来源、初始版本和 `CURRENT/STALE` 提示，并允许同一用户续聊。
+
+### 修复与安全边界
+
+* 原 Agent Run 只能把 `token_id` 当作 `web_sessions.id`。现改为显式凭据类型和外键，Worker
+  每次尝试前重新检查撤销、过期、项目绑定、OAuth Client/Grant 和 Membership。
+* Run 有效权限取创建时 scope 快照与当前有效权限交集；`experiment:query` 只映射为内部只读
+  `experiment:read`，不会产生 Plan、Submission 或项目写权限。
+* 初始上下文哈希排除派生的 `human_readable` 元数据，只覆盖正式结构化 Context、Intent 和
+  Constraints；正式版本变化时显示过期，不覆盖历史快照。
+* 同一用户和项目只允许一个活动外部 Run；所有写入口保留幂等冲突检测，审计不保存原始 Token。
+
+### 验证结果
+
+* 新增 MCP 工具身份边界、Token/OAuth Run 恢复、撤销失败、只读目录、幂等、并发限制、上下文
+  过期和 Web 可见性测试；原治理 Agent 集成切片保持通过。
+* 默认 Python 全量共收集 331 项：312 项通过、19 项按外部服务开关跳过；SQLite 全迁移升降级
+  包含 revision 24 并通过。
+* Ruff 全仓和 mypy 81 个源码文件通过；Web ESLint、Vitest 13 项和 production build 通过。
+* 真实 CockroachDB Agent 队列测试通过；revision 24 的新增列、外键、约束 Schema Jobs 均成功。
+  原全链路测试在多轮历史 migration 往返的后续 revision 21 降级阶段耗时异常，本轮中断并清理
+  临时数据库，不把它记录为完整通过。
+* 新增 `scripts/verify_r17a_external_agent.py` 作为真实 stdio MCP + 百炼验收入口；当前本机
+  `AGENT_ENABLED=false`，因此本轮没有产生真实百炼调用费用。
+
+### 已知遗留项
+
+* 远程 OAuth 使用本地 Client/Grant/JWT 测试，不声称真实 Cognito 已重新部署验收；真实 stdio
+  MCP + 百炼需在显式启用 Agent 后运行新验收脚本。
+* 外部 Agent 只能获得治理信息和建议。系统不能阻止它绕过 MCP 在本机直接执行命令。
+* 自然语言计划、两轮自动修订、用户计划审批和三阶段关键不变量核对尚未实现，依次留给
+  R17b、R17c。
+
+## 2026-07-28 / R17b：版本化自然语言实验计划、有限自动修订与人工决定
+
+版本：`working tree`。
+
+### 更新内容
+
+* 新增 revision `20260728_25` 和四张追加式业务表：`experiment_plans`、
+  `experiment_plan_revisions`、`experiment_plan_reviews`、`experiment_plan_decisions`。
+  Agent Run 增加 `CONVERSATION/EXPERIMENT_PLAN_REVIEW` 类型和审核目标 revision。
+* 新增计划领域契约和 `ExperimentPlanService`。每个 revision 保存完整正文、证据、Context/Intent
+  版本、完整正式策略快照、policy/content/evidence hash；修订不会覆盖历史。
+* 可选配置证据复用既有严格 YAML/JSON 解析、重复键拒绝、Core Schema、无碰撞路径和类型严格
+  比较。正式 LOCKED 冲突产生确定性 `BLOCKED`，APPROVAL_REQUIRED 明确保留后续正式审批。
+* 新增 `r17b-plan-review-v1` Prompt 和 Run 类型。内部 Agent 只使用 R17a 已冻结的只读工具目录，
+  输出主线、重复、已知失败、公平性、风险、低成本验证、自由探索范围和候选关键不变量。
+* 自动修订只有在所有问题均可自动修正且没有用户研究决定时触发，最多两轮，并且只替换计划
+  正文；配置、命令、Git、哈希、baseline 和关联实验等证据原样继承。
+* MCP 新增 `external_agent_plan_submit`、`external_agent_plan_revise`、
+  `external_agent_plan_get`。身份来自 MCP Token/OAuth 上下文，写操作要求项目绑定和
+  `project:read + experiment:query + experiment:check`，不接受 actor 参数。
+* Web API 增加计划列表、详情、历史 revision、Web 修订、失败重试和人类决定。Web Agent 页增加
+  实验计划工作区，默认展示审核、硬检查、高风险项、候选不变量和自由探索，保留正文、历史和
+  原始 JSON 视图。
+* 人类决定绑定精确 revision、review hash、approval digest 和全部候选不变量选择，并保存
+  approved snapshot 和 decision hash。Owner 可处理项目全部计划，Researcher 只能处理自己
+  创建的计划；决定继续要求 Web Session、CSRF、实时 RBAC、近期认证和幂等键。
+
+### 修复的问题
+
+* 正式策略在计划排队后发生变化时，Worker 现在会在任何模型调用前终止 Run、持久化 `STALE`
+  和审计记录。重试或决定时发现漂移也在独立事务保存 `STALE`，不会因抛出冲突而回滚状态。
+* Agent 不得降低服务端硬检查：确定性 `BLOCKED` 必须保持 `BLOCKED`；计划批准也不能替代正式
+  Plan Check、绕过 LOCKED 或创建 Run Manifest。
+* Agent `REVISE` 输出必须包含完整正文和至少一个明确可自动修复 finding，避免空 finding 触发
+  Python `all([])` 的真值而进行无依据修订。
+* Web 拒绝或要求修改时不再携带候选不变量决定；批准按钮在全部候选逐项处理前保持禁用。
+
+### 数据库迁移
+
+* 旧 Agent Run 以数据库默认值回填为 `CONVERSATION`，目标 plan revision 为空；新计划审核 Run
+  必须同时具有 `EXPERIMENT_PLAN_REVIEW` 类型和目标 revision ID。
+* revision 25 降级会先删除决定和审核，再移除 Run 新列，最后删除 revision 和 plan 表。计划表
+  是本轮新增数据，部署产生正式计划后不应把降级当成无损回滚。
+* 真实 CockroachDB 空库完成 `base -> 25`，随后完成 `25 -> 24 -> 25`；最终确认四张表、Run 两列
+  和 Alembic head `20260728_25` 均存在。临时验收数据库已删除。
+
+### 验证结果
+
+* Python 默认全量 339 项完成到 100%，其中 19 项按真实云/MinIO/Cockroach 环境开关跳过；
+  R17b 新增领域测试覆盖配置 hash、类型严格 LOCKED、YAML 隐式标量和自动修订契约。
+* 持久化集成测试覆盖 MCP 外部任务、计划提交、一次自动修订、第二轮 READY 审核、候选不变量
+  确认、recent-auth 人类批准、revision/review/decision 数量，以及策略漂移时零模型调用。
+* MCP 注册和服务端身份测试覆盖全部 13 个工具及新计划 submit/revise/get 参数边界。
+* Ruff 全仓通过，mypy 检查 83 个源码文件通过。
+* Web ESLint、14 项 Vitest 和 production build 通过；新增交互测试验证候选不变量全部处理后才可
+  批准，并核对发送的 revision、review hash 和 candidate IDs。
+* Playwright 桌面/移动回归已尝试，但宿主机 Chromium 缺少 `libatk-1.0.so.0`；自动安装系统依赖
+  需要当前环境未提供的 sudo 密码，因此本轮不能把浏览器 E2E 记录为通过。容器化 Web、API
+  health 和静态入口已实际重建并验证。
+
+### 已知遗留项
+
+* 本轮默认测试使用 scripted provider，没有产生真实百炼费用；真实百炼对计划审核 Prompt 的
+  质量、延迟和 token 成本应在显式 live gate 下另行验收。
+* R17b 的计划批准是计划级人类授权，不是训练正确性保证。计划、正式 Plan Check/Manifest 和
+  Submission 三阶段关键不变量核对、运行进度与产物回传留给 R17c。
+* 本轮不增加自动训练、代码修改、任意 SQL、委托审批、候选不变量自动发布为正式 Constraint，
+  也不改变现有 Plan Check、Manifest、Submission 或 Experiment 状态机。
 
 ## 新日志模板
 

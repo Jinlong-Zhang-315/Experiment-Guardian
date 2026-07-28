@@ -6,7 +6,7 @@ Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的
 
 它不保证实验一定正确，不完整验证真实训练行为，也不把本地 Agent 声明描述成云端事实。
 
-## 当前 MVP 能力（R16-L）
+## 当前 MVP 能力（R17b）
 
 完整纵向链路：
 
@@ -53,8 +53,15 @@ Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Contex
 * R16-L 本地候选版加固：提供无模型费用预检和显式真实百炼验收脚本、真实 CockroachDB
   Agent 并发/租约/死信测试、MinIO 固定版本验收，以及百炼工具选择与严格 JSON 最终回合的
   兼容边界；本轮没有增加工具或扩大正式写权限。
+* R17a 外部 Coding Agent 协作入口：stdio MCP Token 或远程 OAuth 客户端可提交任务，立即获得
+  版本化正式策略快照，并通过现有治理 Agent Worker 异步获得带引用的任务指导和后续问答。
+  MCP 任务会显示在同一用户的 Web Agent 页面；外部专用工具目录严格只读。
+* R17b 自然语言实验计划：外部 Agent 可在任务内提交完整计划和有限结构化证据；服务端冻结
+  Context/Intent/Constraint 快照，执行确定性 LOCKED 检查，并由内部 Agent 生成带引用审核。
+  内部 Agent 最多自动追加两轮仅修改正文的 revision，候选关键不变量和最终决定必须由用户
+  在 Web 明确确认。计划批准不替代正式 Plan Check，也不能绕过 LOCKED。
 
-MCP 只暴露七个工具：
+MCP 暴露七个正式治理工具和六个外部协作工具：
 
 ```text
 project_get_context
@@ -64,6 +71,12 @@ submission_prepare
 submission_finalize
 submission_get_status
 experiments_query
+external_agent_task_start
+external_agent_ask
+external_agent_task_get
+external_agent_plan_submit
+external_agent_plan_revise
+external_agent_plan_get
 ```
 
 `project_get_context` 同时返回 `human_readable` 和完整结构化 Context/Intent/Constraints。
@@ -138,7 +151,9 @@ docker compose --env-file .env.local logs local-init
 [`docs/POLICY_DUAL_REPRESENTATION.md`](docs/POLICY_DUAL_REPRESENTATION.md)。
 内部实验治理 Agent 的能力边界、工具目录、上下文压缩、确认协议和分期计划见
 [`docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md`](docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md)；
-当前完成 R16-L 本地百炼 release-candidate 加固。报告仍由用户明确选择 Experiment；每条
+外部 Coding Agent 的 R17a-R17d 路线见
+[`docs/EXTERNAL_CODING_AGENT_PLAN.md`](docs/EXTERNAL_CODING_AGENT_PLAN.md)。
+当前完成 R17b 自然语言实验计划协商与审批。报告仍由用户明确选择 Experiment；每条
 finding 使用确定性模板形成独立候选记忆，embedding 由可恢复 Worker 异步生成。报告和正式
 Experiment Memory 均不受索引失败影响；所有提案仍需独立 Web 确认。Bedrock Agent 强制使用
 Structured Outputs JSON Schema，不接受仅靠提示词约束 JSON 的降级路径。
@@ -187,7 +202,7 @@ experiment-guardian-api
 
 默认 API：`http://127.0.0.1:8000`，OpenAPI：`/docs`。
 
-当前 Alembic head 为 `20260727_23`：
+当前 Alembic head 为 `20260728_25`：
 
 ```text
 01 foundation/context
@@ -212,9 +227,16 @@ experiment-guardian-api
 21 immutable Agent research reports
 22 candidate Research Memory and recoverable embeddings
 23 Agent provider/model, latency and configured-rate cost observability
+24 external MCP Agent tasks and durable Web/Token/OAuth Run identity bindings
+25 versioned experiment plans, Agent reviews and immutable human decisions
 ```
 
-R16-L 不新增数据库迁移，继续使用 revision 23。
+revision 24 将旧 Agent Thread/Run 回填为 Web 来源，并为外部 MCP 任务保存初始正式策略快照、
+幂等键和可撤销凭据引用；不会保存原始 Token。
+
+revision 25 新增计划、revision、审核和人类决定四张表，并为 Agent Run 增加
+`CONVERSATION/EXPERIMENT_PLAN_REVIEW` 类型和计划 revision 目标。旧 Run 回填为
+`CONVERSATION`；降级会删除新增计划数据，因此仅用于回滚尚未承载正式计划的部署。
 
 初始化现有团队和首个项目仍可使用可信本地 CLI/API：
 
@@ -235,6 +257,13 @@ stdio MCP：
 experiment-guardian-admin issue-mcp-token \
   --owner-email owner@example.com --project-id "$PROJECT_ID"
 MCP_ACCESS_TOKEN="$MCP_ACCESS_TOKEN" experiment-guardian-mcp
+```
+
+启用 Agent Worker 后，可通过真实 stdio MCP 验收外部任务启动、正式策略快照、带引用回答和追问：
+
+```bash
+MCP_ACCESS_TOKEN="$MCP_ACCESS_TOKEN" python scripts/verify_r17a_external_agent.py \
+  --project-id "$PROJECT_ID"
 ```
 
 Worker 按配置集中装配 S3/SQS/Bedrock 或 MinIO/数据库队列/百炼：
@@ -358,9 +387,10 @@ src/experiment_guardian/
 ├── application/     用例、事务、Web auth/management、分析和查询
 ├── infrastructure/  CockroachDB、Cognito/MCP OAuth、S3/MinIO、SQS/DB Queue、Bedrock/百炼
 ├── api/             FastAPI 协议边界
-├── mcp_server/      七个 MCP 工具与 OAuth Resource Server
+├── mcp_server/      七个正式治理工具、三个外部协作工具与 OAuth Resource Server
 ├── workflows/       LangGraph 编排，数据库游标负责恢复
-└── worker.py        Outbox 调度、SQS/数据库队列消费和模型处理 Worker
+├── worker.py        Outbox 调度、SQS/数据库队列消费和模型处理 Worker
+└── agent_worker.py  内部与外部治理 Agent 的独立可恢复 Worker
 
 web/                 React/Vite 四页工作台
 infra/terraform/     AWS/Cognito 部署定义

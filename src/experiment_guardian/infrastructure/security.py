@@ -71,6 +71,7 @@ class SqlAlchemyTokenService:
                     authentication_method=(
                         "MCP_TOKEN" if audience is TokenAudience.MCP else "API_TOKEN"
                     ),
+                    credential_expires_at=_as_utc(token.expires_at),
                 )
         except DBAPIError as exc:
             raise ServiceUnavailableError("Token 验证服务暂时不可用") from exc

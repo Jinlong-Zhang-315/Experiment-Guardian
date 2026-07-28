@@ -41,6 +41,8 @@ OWNER_WEB_SCOPES = frozenset(
         "submission:review",
         "experiment:read",
         "experiment:query",
+        "experiment-plan:write",
+        "experiment-plan:approve",
         "artifact:read",
     }
 )
@@ -52,6 +54,8 @@ RESEARCHER_WEB_SCOPES = frozenset(
         "submission:review",
         "experiment:read",
         "experiment:query",
+        "experiment-plan:write",
+        "experiment-plan:approve",
         "artifact:read",
     }
 )

@@ -64,6 +64,41 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     engine = create_engine(database_url)
     inspector = inspect(engine)
     assert set(inspector.get_table_names()) == MIGRATED_TABLES | {"alembic_version"}
+    assert {
+        "origin",
+        "start_idempotency_key",
+        "start_request_hash",
+        "task_context_snapshot",
+        "task_context_hash",
+    } <= {item["name"] for item in inspector.get_columns("agent_threads")}
+    assert {
+        "auth_method",
+        "auth_access_token_id",
+        "auth_oauth_grant_id",
+        "auth_scopes_snapshot",
+        "auth_expires_at",
+        "run_kind",
+        "target_experiment_plan_revision_id",
+    } <= {item["name"] for item in inspector.get_columns("agent_runs")}
+    assert {
+        "experiment_plans",
+        "experiment_plan_revisions",
+        "experiment_plan_reviews",
+        "experiment_plan_decisions",
+    } <= set(inspector.get_table_names())
+    assert {
+        "policy_snapshot",
+        "policy_hash",
+        "content_hash",
+        "evidence_hash",
+        "automatic_revision_round",
+    } <= {item["name"] for item in inspector.get_columns("experiment_plan_revisions")}
+    assert "uq_experiment_plan_reviews_revision" in {
+        item["name"] for item in inspector.get_unique_constraints("experiment_plan_reviews")
+    }
+    assert "uq_experiment_plan_decisions_revision" in {
+        item["name"] for item in inspector.get_unique_constraints("experiment_plan_decisions")
+    }
     columns_at_head = {item["name"] for item in inspector.get_columns("plan_checks")}
     assert {
         "input_document_hash",
@@ -214,6 +249,24 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         item["name"] for item in inspector.get_unique_constraints("outbox_events")
     }
     engine.dispose()
+
+    run_alembic("downgrade", "20260728_24")
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    assert not (
+        {
+            "experiment_plans",
+            "experiment_plan_revisions",
+            "experiment_plan_reviews",
+            "experiment_plan_decisions",
+        }
+        & set(inspector.get_table_names())
+    )
+    assert {"run_kind", "target_experiment_plan_revision_id"}.isdisjoint(
+        {item["name"] for item in inspector.get_columns("agent_runs")}
+    )
+    engine.dispose()
+    run_alembic("upgrade", "head")
 
     run_alembic("downgrade", "20260724_17")
     engine = create_engine(database_url)

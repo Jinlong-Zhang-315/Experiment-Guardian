@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
-更新时间：2026-07-27
-当前完成轮次：R16-L 本地百炼 release candidate hardening
-下一步：本地 RC 使用反馈与缺陷收敛；云端验收保持独立后续工作
+更新时间：2026-07-28
+当前完成轮次：R17b 自然语言实验计划、有限自动修订与用户审批
+下一步：R17c 三阶段关键不变量核对
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -37,6 +37,8 @@
 | R15e-b | 独立 Research Memory 与召回 | 完成 | finding 级候选记忆、结构过滤、过期与降级 |
 | R15e-c | Agent provider parity 与观测 | 完成 | Bedrock 严格输出、统一调用观测、同套评测 |
 | R16-L | 本地百炼候选版加固 | 完成 | RC 预检、真实百炼、CRDB 并发恢复、MinIO 与 Web 回归 |
+| R17a | 外部 Coding Agent 协作入口 | 完成 | MCP 任务、正式快照、异步引用问答、Web 续聊、多凭据恢复 |
+| R17b | 版本化自然语言实验计划 | 完成 | 硬检查、带引用审核、最多两轮自动修订、不可变人工决定 |
 
 ## R15：内部实验治理 Agent 路线
 
@@ -355,11 +357,42 @@
 * 本轮没有迁移、Prompt 版本、工具目录、正式状态机、权限或确认事务变更；数据库 head 仍为
   `20260727_23`。
 
+## R17a：外部 Coding Agent 协作入口
+
+交付：
+
+* revision `20260728_24` 为 Agent Thread 增加 `WEB/EXTERNAL_MCP` 来源、任务创建幂等键和初始
+  正式策略快照；Run 可分别绑定 Web Session、数据库 MCP Token 或本地 OAuth Grant。
+* 新增 `external_agent_task_start`、`external_agent_ask`、`external_agent_task_get`。任务启动先
+  返回确定性 `ProjectContextBundle`，百炼回答由现有 Agent Worker 异步处理。
+* `r17a-external-v1` 只开放项目、正式实验、比较统计、研究报告和候选研究记忆读取工具；没有
+  Policy Draft、Action Proposal、审批、Manifest、Submission 或 Experiment 写工具。
+* Worker 在每次尝试前重新检查 Token/Grant、OAuth Client、过期时间、项目绑定和 Membership；
+  有效权限是创建时快照与当前权限的交集。
+* MCP 任务归属真实用户，现有 Web Agent 页面显示来源、初始 Context/Intent 版本和过期警告，
+  并允许用户继续对话；Web 续聊仍沿用外部只读 Prompt 和工具目录。
+
+## R17b：版本化自然语言实验计划
+
+交付：
+
+* revision `20260728_25` 新增 `experiment_plans`、追加式 revisions、每 revision 一份成功审核和
+  一份不可变人类决定；Agent Run 明确区分普通对话与计划审核。
+* 外部 MCP 新增计划 submit/revise/get。写操作要求项目绑定 MCP 身份和
+  `project:read + experiment:query + experiment:check`，不接受客户端传入 actor。
+* 每个 revision 冻结完整正式策略快照/hash；严格解析可选配置证据，正式 LOCKED 冲突不能被
+  LLM 或计划审批降低。策略漂移会在模型调用前终止审核，读取端也动态显示 `STALE`。
+* `r17b-plan-review-v1` 只使用 R17a 既有只读目录。内部 Agent 最多追加两轮正文修订，不得改变
+  配置、命令、Git、哈希或其他证据；存在用户决定或不可自动修复问题时停止。
+* Web Agent 页增加实验计划工作区，展示高风险项、计划正文、证据、全部 revision 和原始 JSON。
+  批准前逐项处理候选关键不变量，决定绑定 revision、review hash 和 approval digest。
+* Owner 可决定项目内计划，Researcher 只能决定自己创建的计划；决定要求 CSRF、实时权限与
+  recent-auth。计划批准仍不创建 Manifest，也不替代正式 Plan Check。
+
 ## 下一步唯一目标
 
-先以 R16-L 作为本地候选版收集真实使用反馈，只修复阻断闭环、安全或数据一致性的缺陷。
-Bedrock、Cognito、SQS 和 AWS 部署的真实云验收单独排期，不阻塞当前仅测试本地百炼线路的范围。
-不增加 Agent 工具、候选记忆晋升、自动实验分组、任意 SQL、训练/改代码或自动审批。
+R17c 只实现计划批准快照、运行前 Plan Check/Manifest 与结果 Submission 三阶段关键不变量核对。
+本轮不扩展到训练执行、代码修改、进度流、委托审批、任意 SQL 或新的治理状态机。
 
 ## 每轮更新规则
 

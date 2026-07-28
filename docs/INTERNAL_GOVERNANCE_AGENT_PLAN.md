@@ -1,8 +1,8 @@
 # 内部实验治理 Agent 开发计划
 
-更新时间：2026-07-27
-计划轮次：R15a-R16-L
-当前状态：R16-L 本地百炼 release candidate hardening 已完成；云端真实验收独立排期
+更新时间：2026-07-28
+计划轮次：R15a-R17b
+当前状态：R17b 已复用内部治理 Agent 实现版本化计划审核、有限自动修订和人工决定
 
 ## 1. 目标与定位
 
@@ -19,6 +19,14 @@ Agent 的职责是提高查询、分析、解释和草稿准备效率，不成�
 * 模型只能提出工具调用。工具执行器必须重新验证参数、项目边界、实时成员关系和权限。
 * 高影响操作必须先形成不可变操作提案，随后由人类通过独立 Web 确认请求执行。
 * 模型生成的分析、假设、阶段总结和长期记忆默认都是 `CANDIDATE_EVIDENCE`。
+
+R17a 允许外部 Coding Agent 通过 MCP 创建专用只读 Thread。它使用同一个 Runtime、Worker、
+Citation 和 rolling summary，但 Run 绑定并实时复核 MCP Token 或 OAuth Grant，不能伪造 Web
+Session。外部目录不包含既有草稿和提案写工具。
+
+R17b 在该 Thread 内增加独立实验计划对象。计划正文和证据按 revision 追加保存，内部 Agent
+只能使用专用只读目录生成审核或最多两轮正文修订；候选关键不变量和最终计划决定由人类在
+独立 Web 请求中确认。该决定不替代正式 Plan Check，也不授予模型执行或审批权限。
 
 ## 2. 当前仓库审计
 
@@ -652,3 +660,28 @@ R16-L 只验收 `local_owner + MinIO + CockroachDB Database Queue + Bailian`：
 
 下一轮先处理本地 RC 的真实使用缺陷。Bedrock、Cognito、SQS 与 AWS 的 live acceptance 不在
 本地候选版完成声明内，也不应为了补齐云线路而扩展 Agent 权限或工具数量。
+
+## 20. R17a-R17b 外部任务与实验计划结果
+
+R17a 已让 stdio MCP Token 和预注册 OAuth 客户端创建 `EXTERNAL_MCP` Thread，并在模型运行前
+返回正式策略快照。Run 绑定真实 Token/Grant，Worker 每次尝试都复核撤销、过期、Client、项目
+和 Membership；外部专用目录保持只读。
+
+R17b 在同一 Thread 上增加版本化 `ExperimentPlan`：
+
+* 外部 Agent 提交完整计划正文和可选结构化证据，不能指定 actor、项目或审核身份。
+* 每个 revision 冻结 Context/Intent/Constraint 完整快照与哈希，历史不覆盖；配置证据复用
+  重复键拒绝、YAML Core Schema、无碰撞路径和严格类型比较。
+* `AgentRunKind.EXPERIMENT_PLAN_REVIEW` 使用 `r17b-plan-review-v1` Prompt，但只复用 R17a 的
+  只读工具目录。`BLOCKED` 硬结论不能被模型降低。
+* 自动修订最多两轮，只能替换自然语言正文；证据和正式策略快照原样继承。需要用户决定、存在
+  不可自动修复项或达到上限时停止自动循环。
+* 成功审核保存 provider/model/prompt/schema、硬检查、语义发现、引用、候选不变量、review hash
+  和 approval digest。失败尝试留在 Run/Event/ModelCall 中，不伪造成功审核。
+* 人类决定必须绑定当前 revision 和审核摘要，逐项处理候选不变量，并经过 Web Session、CSRF、
+  recent-auth、实时 RBAC 和幂等检查。决定不发布 Constraint、不创建 Manifest。
+* 正式策略在排队后发生漂移时，Worker 在模型调用前把计划标为 `STALE` 并终止 Run；读取、重试
+  和决定也重新计算新鲜度，不会让旧审核静默继续生效。
+
+R17c 只接入计划批准快照、现有 Plan Check/Manifest 和 Submission 的三阶段不变量核对；不把
+内部 Agent 升级为代码执行器、训练执行器或自动审批主体。

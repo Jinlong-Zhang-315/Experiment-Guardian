@@ -40,6 +40,10 @@ AGENT_TABLES = frozenset(
         "agent_research_reports",
         "agent_research_memories",
         "agent_research_memory_embeddings",
+        "experiment_plans",
+        "experiment_plan_revisions",
+        "experiment_plan_reviews",
+        "experiment_plan_decisions",
     }
 )
 MIGRATED_TABLES = (

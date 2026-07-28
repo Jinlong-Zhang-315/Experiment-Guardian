@@ -34,7 +34,10 @@ from experiment_guardian.domain.enums import (
     AgentContextSummaryStatus,
     AgentMessageRole,
     AgentModelCallPurpose,
+    AgentRunAuthMethod,
+    AgentRunKind,
     AgentRunStatus,
+    AgentThreadOrigin,
     AgentThreadStatus,
     ApprovalDecision,
     ApprovalStatus,
@@ -45,6 +48,9 @@ from experiment_guardian.domain.enums import (
     ContextStatus,
     EvidenceType,
     ExperimentMode,
+    ExperimentPlanDecisionType,
+    ExperimentPlanRevisionAuthor,
+    ExperimentPlanStatus,
     ExperimentStatus,
     IdempotencyOperationStatus,
     IntentStatus,
@@ -907,11 +913,40 @@ class AgentThread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "status",
             "updated_at",
         ),
+        UniqueConstraint(
+            "project_id",
+            "created_by",
+            "origin",
+            "start_idempotency_key",
+            name="uq_agent_threads_external_start_idempotency",
+        ),
+        CheckConstraint(
+            "(origin = 'WEB' AND start_idempotency_key IS NULL "
+            "AND start_request_hash IS NULL AND task_context_snapshot IS NULL "
+            "AND task_context_hash IS NULL) OR "
+            "(origin = 'EXTERNAL_MCP' AND start_idempotency_key IS NOT NULL "
+            "AND start_request_hash IS NOT NULL AND task_context_snapshot IS NOT NULL "
+            "AND task_context_hash IS NOT NULL)",
+            name="agent_thread_origin_payload_consistent",
+        ),
+        CheckConstraint(
+            "start_request_hash IS NULL OR length(start_request_hash) = 64",
+            name="agent_thread_start_request_hash_length",
+        ),
+        CheckConstraint(
+            "task_context_hash IS NULL OR length(task_context_hash) = 64",
+            name="agent_thread_task_context_hash_length",
+        ),
     )
 
     team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    origin: Mapped[AgentThreadOrigin] = mapped_column(
+        enum_column(AgentThreadOrigin, "agent_thread_origin", length=16),
+        default=AgentThreadOrigin.WEB,
+        nullable=False,
+    )
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     status: Mapped[AgentThreadStatus] = mapped_column(
         enum_column(AgentThreadStatus, "agent_thread_status", length=16), nullable=False
@@ -921,6 +956,10 @@ class AgentThread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # 指向最近一次 READY 摘要。为避免与摘要表形成循环建表依赖，不添加数据库外键；
     # 应用层只会在同一事务中写入已成功持久化的摘要 ID。
     current_summary_id: Mapped[UUID | None] = mapped_column()
+    start_idempotency_key: Mapped[UUID | None] = mapped_column()
+    start_request_hash: Mapped[str | None] = mapped_column(String(64))
+    task_context_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    task_context_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class AgentMessage(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -969,13 +1008,40 @@ class AgentRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
         CheckConstraint("max_attempts >= 1", name="max_attempts_positive"),
         CheckConstraint("generation >= 0", name="generation_nonnegative"),
+        CheckConstraint(
+            "(run_kind = 'CONVERSATION' AND target_experiment_plan_revision_id IS NULL) OR "
+            "(run_kind = 'EXPERIMENT_PLAN_REVIEW' "
+            "AND target_experiment_plan_revision_id IS NOT NULL)",
+            name="agent_run_kind_target_consistent",
+        ),
+        CheckConstraint(
+            "(auth_method = 'WEB_SESSION' AND auth_session_id IS NOT NULL "
+            "AND auth_access_token_id IS NULL AND auth_oauth_grant_id IS NULL) OR "
+            "(auth_method = 'MCP_TOKEN' AND auth_session_id IS NULL "
+            "AND auth_access_token_id IS NOT NULL AND auth_oauth_grant_id IS NULL) OR "
+            "(auth_method = 'MCP_OAUTH' AND auth_session_id IS NULL "
+            "AND auth_access_token_id IS NULL AND auth_oauth_grant_id IS NOT NULL "
+            "AND auth_expires_at IS NOT NULL)",
+            name="agent_run_auth_binding_consistent",
+        ),
     )
 
     thread_id: Mapped[UUID] = mapped_column(ForeignKey("agent_threads.id"), nullable=False)
     team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
-    auth_session_id: Mapped[UUID] = mapped_column(ForeignKey("web_sessions.id"), nullable=False)
+    auth_method: Mapped[AgentRunAuthMethod] = mapped_column(
+        enum_column(AgentRunAuthMethod, "agent_run_auth_method", length=16),
+        default=AgentRunAuthMethod.WEB_SESSION,
+        nullable=False,
+    )
+    auth_session_id: Mapped[UUID | None] = mapped_column(ForeignKey("web_sessions.id"))
+    auth_access_token_id: Mapped[UUID | None] = mapped_column(ForeignKey("access_tokens.id"))
+    auth_oauth_grant_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("mcp_oauth_grants.id")
+    )
+    auth_scopes_snapshot: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    auth_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     trigger_message_id: Mapped[UUID] = mapped_column(
         ForeignKey("agent_messages.id"), nullable=False
     )
@@ -984,6 +1050,13 @@ class AgentRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     status: Mapped[AgentRunStatus] = mapped_column(
         enum_column(AgentRunStatus, "agent_run_status", length=32), nullable=False
     )
+    run_kind: Mapped[AgentRunKind] = mapped_column(
+        enum_column(AgentRunKind, "agent_run_kind", length=32),
+        default=AgentRunKind.CONVERSATION,
+        nullable=False,
+    )
+    # 计划 revision 反向关联 Review/Run，避免与 revision.source_run_id 形成循环外键。
+    target_experiment_plan_revision_id: Mapped[UUID | None] = mapped_column()
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     model_id: Mapped[str] = mapped_column(String(500), nullable=False)
     prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -1002,6 +1075,140 @@ class AgentRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExperimentPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """一个外部任务中的稳定实验计划容器。"""
+
+    __tablename__ = "experiment_plans"
+    __table_args__ = (
+        UniqueConstraint("source_thread_id", name="uq_experiment_plans_source_thread"),
+        Index("ix_experiment_plans_project_status_updated", "project_id", "status", "updated_at"),
+        Index("ix_experiment_plans_creator_updated", "created_by", "updated_at"),
+        CheckConstraint("current_revision >= 1", name="experiment_plan_revision_positive"),
+    )
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    source_thread_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_threads.id"), nullable=False
+    )
+    status: Mapped[ExperimentPlanStatus] = mapped_column(
+        enum_column(ExperimentPlanStatus, "experiment_plan_status", length=32),
+        nullable=False,
+    )
+    current_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ExperimentPlanRevision(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """完整、追加式的自然语言计划版本。"""
+
+    __tablename__ = "experiment_plan_revisions"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "revision", name="uq_experiment_plan_revision"),
+        Index("ix_experiment_plan_revisions_plan_created", "plan_id", "created_at"),
+        CheckConstraint("revision >= 1", name="experiment_plan_revision_number_positive"),
+        CheckConstraint(
+            "automatic_revision_round >= 0 AND automatic_revision_round <= 2",
+            name="experiment_plan_auto_round_range",
+        ),
+        CheckConstraint("length(policy_hash) = 64", name="experiment_plan_policy_hash_length"),
+        CheckConstraint("length(content_hash) = 64", name="experiment_plan_content_hash_length"),
+        CheckConstraint("length(evidence_hash) = 64", name="experiment_plan_evidence_hash_length"),
+    )
+
+    plan_id: Mapped[UUID] = mapped_column(ForeignKey("experiment_plans.id"), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    author_type: Mapped[ExperimentPlanRevisionAuthor] = mapped_column(
+        enum_column(
+            ExperimentPlanRevisionAuthor,
+            "experiment_plan_revision_author",
+            length=32,
+        ),
+        nullable=False,
+    )
+    author_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    parent_revision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("experiment_plan_revisions.id")
+    )
+    source_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_runs.id"))
+    automatic_revision_round: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    plan_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    context_id: Mapped[UUID] = mapped_column(ForeignKey("project_contexts.id"), nullable=False)
+    context_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_id: Mapped[UUID | None] = mapped_column(ForeignKey("experiment_intents.id"))
+    intent_version: Mapped[int | None] = mapped_column(Integer)
+    policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class ExperimentPlanReview(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """某个 revision 的成功审核结果；失败尝试保留在 Agent Run 中。"""
+
+    __tablename__ = "experiment_plan_reviews"
+    __table_args__ = (
+        UniqueConstraint("revision_id", name="uq_experiment_plan_reviews_revision"),
+        UniqueConstraint("source_run_id", name="uq_experiment_plan_reviews_source_run"),
+        CheckConstraint("length(review_hash) = 64", name="experiment_plan_review_hash_length"),
+        CheckConstraint(
+            "length(approval_digest) = 64",
+            name="experiment_plan_approval_digest_length",
+        ),
+    )
+
+    revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_plan_revisions.id"), nullable=False
+    )
+    source_run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    final_message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_messages.id"), nullable=False
+    )
+    hard_check: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    semantic_review: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    candidate_invariants: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    approval_receipt: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    review_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    approval_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ExperimentPlanDecision(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """人类对精确计划 revision 和候选不变量作出的不可变决定。"""
+
+    __tablename__ = "experiment_plan_decisions"
+    __table_args__ = (
+        UniqueConstraint("revision_id", name="uq_experiment_plan_decisions_revision"),
+        CheckConstraint("length(review_hash) = 64", name="experiment_plan_decision_review_hash"),
+        CheckConstraint("length(decision_hash) = 64", name="experiment_plan_decision_hash"),
+    )
+
+    plan_id: Mapped[UUID] = mapped_column(ForeignKey("experiment_plans.id"), nullable=False)
+    revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_plan_revisions.id"), nullable=False
+    )
+    decided_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    decided_session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("web_sessions.id"), nullable=False
+    )
+    decision: Mapped[ExperimentPlanDecisionType] = mapped_column(
+        enum_column(ExperimentPlanDecisionType, "experiment_plan_decision", length=32),
+        nullable=False,
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    conditions: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    confirmed_candidate_invariants: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    rejected_candidate_invariants: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    approved_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    review_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class AgentModelCall(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

@@ -16,6 +16,7 @@ from experiment_guardian.application.agent_tools import AgentToolRegistry
 from experiment_guardian.application.container import (
     build_agent_chat_model,
     get_agent_tool_registry,
+    get_experiment_plan_service,
     get_query_embedding_generator,
 )
 from experiment_guardian.application.research_memories import (
@@ -67,6 +68,7 @@ def build_agent_worker(settings: Settings | None = None) -> GovernanceAgentWorke
         tools,
         model,
         current,
+        get_experiment_plan_service(),
     )
     worker_id = f"{socket.gethostname()}:{os.getpid()}:agent"
     processor = AgentRunProcessor(

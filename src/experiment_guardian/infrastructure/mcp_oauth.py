@@ -190,6 +190,8 @@ class OAuthMcpIdentityProvider:
         claims = access_token.claims if access_token else None
         if access_token is None or not isinstance(claims, dict):
             raise AuthenticationError("远程 MCP 请求缺少已验证的 OAuth 身份")
+        if access_token.expires_at is None:
+            raise AuthenticationError("远程 MCP OAuth 身份缺少过期时间")
         try:
             return RequestIdentity(
                 user_id=UUID(str(claims["user_id"])),
@@ -200,6 +202,7 @@ class OAuthMcpIdentityProvider:
                 authentication_method="MCP_OAUTH",
                 subject=access_token.subject,
                 client_id=access_token.client_id,
+                credential_expires_at=datetime.fromtimestamp(access_token.expires_at, tz=UTC),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise AuthenticationError("远程 MCP OAuth 身份声明不完整") from exc
