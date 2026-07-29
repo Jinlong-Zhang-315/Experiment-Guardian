@@ -75,8 +75,8 @@ from experiment_guardian.infrastructure.repositories import (
 
 PROMPT_VERSION = "r15e-b-v1"
 TOOL_CATALOG_VERSION = "r15e-b-v1"
-EXTERNAL_PROMPT_VERSION = "r17a-external-v1"
-EXTERNAL_TOOL_CATALOG_VERSION = "r17a-external-v1"
+EXTERNAL_PROMPT_VERSION = "r17a-external-v2"
+EXTERNAL_TOOL_CATALOG_VERSION = "r17a-external-v2"
 TERMINAL_RUN_STATUSES = {
     AgentRunStatus.SUCCEEDED,
     AgentRunStatus.FAILED,

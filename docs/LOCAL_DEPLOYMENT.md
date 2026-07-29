@@ -60,11 +60,17 @@ Owner Membership 后创建正常的 HttpOnly Session Cookie 和 CSRF Cookie。
 AGENT_ENABLED=true
 AGENT_PROVIDER=bailian
 BAILIAN_AGENT_MODEL=<支持流式 Function Calling 的百炼模型>
+AGENT_MAX_MODEL_CALLS=5
+AGENT_MAX_WALL_SECONDS=300
 AGENT_COST_CURRENCY=CNY
 # 以下两个可选费率必须同时配置，只用于模型运行估算，不代表百炼账单。
 AGENT_INPUT_COST_PER_MILLION_TOKENS=
 AGENT_OUTPUT_COST_PER_MILLION_TOKENS=
 ```
+
+`AGENT_MAX_WALL_SECONDS` 是单次 Run 的硬上限，不是模型请求超时。真实 `qwen3.7-plus` 的多回合
+工具调用可能超过 90 秒，本地版推荐 300 秒；Worker 仍通过租约心跳和 generation 防止失效
+执行者回写。
 
 使用 Compose 的 `agent` profile 启动专用 Worker：
 
@@ -113,6 +119,10 @@ experiment-guardian-admin bootstrap-local \
 
 ## 完整业务验收
 
+`v1.0.0` 发布时不要复用日常项目。真实百炼、外部任务、计划审批和正式实验写入的强制门见
+[`R17D_RELEASE.md`](R17D_RELEASE.md)。Compose 服务可用 `EG_ENV_FILE=.env.r17d` 读取独立的
+运行时环境文件；未设置时仍使用 `.env.local`。
+
 1. `docker compose ... ps -a` 确认 `migration`、`minio-init`、`local-init` 为退出码 0，API、
    Worker、Web、CockroachDB、MinIO healthy/running。
 2. 浏览器访问 Web 并登录；设置页默认确认版本绑定的人类可读说明，并在“结构化 JSON
@@ -152,7 +162,7 @@ pytest tests/integration/test_local_pipeline.py tests/integration/test_database_
 RUN_MINIO_INTEGRATION=1 pytest tests/integration/test_minio_storage.py
 
 RUN_COCKROACH_INTEGRATION=1 \
-TEST_COCKROACH_URL='cockroachdb+psycopg://root@127.0.0.1:26257/defaultdb?sslmode=disable' \
+DATABASE_URL='cockroachdb+psycopg://root@127.0.0.1:26257/defaultdb?sslmode=disable' \
 pytest tests/integration/test_agent_local_cockroach.py
 
 RUN_BAILIAN_INTEGRATION=1 pytest tests/integration/test_bailian_optional.py
@@ -167,7 +177,7 @@ python scripts/verify_r16_local.py \
 `RUN_BAILIAN_INTEGRATION=1` 或 `RUN_BAILIAN_AGENT_INTEGRATION=1` 才会访问真实百炼。可选
 测试会读取 `.env.local`，进程环境变量仍具有更高优先级。MinIO 测试也会读取本地 S3 配置，
 `MINIO_TEST_*` 仍可显式覆盖。若修改过默认 CockroachDB 映射端口，应同步修改
-`TEST_COCKROACH_URL`；RC 脚本会自动从 env 文件读取 `COCKROACH_SQL_PORT`。
+`DATABASE_URL`；RC 脚本会自动从 env 文件读取 `COCKROACH_SQL_PORT`。
 
 ## 停止与数据
 

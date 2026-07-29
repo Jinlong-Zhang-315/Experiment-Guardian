@@ -6,16 +6,17 @@ Experiment Guardian 是提高实验一致性、可追溯性和风险可见性的
 
 它不保证实验一定正确，不完整验证真实训练行为，也不把本地 Agent 声明描述成云端事实。
 
-## 当前 MVP 能力（R17b）
+## 当前 MVP 能力（v1.0.0 / R17d 本地版）
 
 完整纵向链路：
 
 ```text
 Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Context / Intent / Constraint 版本
 -> Researcher 通过 OAuth MCP 读取相同上下文
+-> 外部 Agent 提交自然语言计划，内部 Agent 审核，用户确认少量关键不变量
 -> YAML/JSON Plan Check 返回 PASS / NEEDS_APPROVAL / BLOCKED
 -> Owner 对审批型变化作最终决定
--> 生成冻结历史版本和证据的 Run Manifest
+-> 生成冻结批准计划、关键不变量、历史版本和证据的 Run Manifest
 -> 用户自行运行实验
 -> Agent 上传配置、结果、日志和说明到 Versioned S3
 -> 云端校验、查重、风险、摘要、embedding 和确定性审核回执
@@ -60,6 +61,14 @@ Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Contex
   Context/Intent/Constraint 快照，执行确定性 LOCKED 检查，并由内部 Agent 生成带引用审核。
   内部 Agent 最多自动追加两轮仅修改正文的 revision，候选关键不变量和最终决定必须由用户
   在 Web 明确确认。计划批准不替代正式 Plan Check，也不能绕过 LOCKED。
+* R17c 三阶段不变量保护：增强 Plan Check 可绑定已批准的计划决定；结构化不变量由云端严格
+  比较，自然语言条件保留 `LOCAL_ATTESTED` 边界。计划绑定的 schema v2 Manifest 冻结批准
+  revision、decision hash 和运行前结论；Submission 再次核对最终配置、Git、命令及声明，
+  未授权偏离或关键证据缺失形成 `CRITICAL + blocking` 风险，不能确认成正式 Experiment。
+* R17d 本地发布门：专用验收项目通过 Web、真实 stdio MCP、MinIO、CockroachDB Worker 和
+  真实百炼执行完整链路，同时验证 LOCKED 负例、Host 白名单、关键写入幂等、正式策略不变和
+  Agent 调用预算；真实门已用 9 次 Agent 模型调用通过。外部新 Run 使用只暴露可调用只读工具
+  的 `r17a-external-v2` 目录，恢复、并发、死信和双视口页面回归保留为独立自动化门。
 
 MCP 暴露七个正式治理工具和六个外部协作工具：
 
@@ -153,7 +162,7 @@ docker compose --env-file .env.local logs local-init
 [`docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md`](docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md)；
 外部 Coding Agent 的 R17a-R17d 路线见
 [`docs/EXTERNAL_CODING_AGENT_PLAN.md`](docs/EXTERNAL_CODING_AGENT_PLAN.md)。
-当前完成 R17b 自然语言实验计划协商与审批。报告仍由用户明确选择 Experiment；每条
+当前完成 R17d 本地版发布加固。报告仍由用户明确选择 Experiment；每条
 finding 使用确定性模板形成独立候选记忆，embedding 由可恢复 Worker 异步生成。报告和正式
 Experiment Memory 均不受索引失败影响；所有提案仍需独立 Web 确认。Bedrock Agent 强制使用
 Structured Outputs JSON Schema，不接受仅靠提示词约束 JSON 的降级路径。
@@ -187,6 +196,9 @@ python scripts/verify_r16_local.py \
   --live-bailian --report /tmp/experiment-guardian-r16-local.json
 ```
 
+`v1.0.0` 的强制发布门会产生正式验收记录和真实百炼费用，完整准备、执行、回滚步骤见
+[`docs/R17D_RELEASE.md`](docs/R17D_RELEASE.md)。不得用 Mock 百炼代替该发布门。
+
 ## 本地源码开发
 
 项目要求 Python 3.12：
@@ -202,7 +214,7 @@ experiment-guardian-api
 
 默认 API：`http://127.0.0.1:8000`，OpenAPI：`/docs`。
 
-当前 Alembic head 为 `20260728_25`：
+当前 Alembic head 为 `20260728_26`：
 
 ```text
 01 foundation/context
@@ -229,6 +241,7 @@ experiment-guardian-api
 23 Agent provider/model, latency and configured-rate cost observability
 24 external MCP Agent tasks and durable Web/Token/OAuth Run identity bindings
 25 versioned experiment plans, Agent reviews and immutable human decisions
+26 approved-plan invariant checkpoints and schema v2 Run Manifests
 ```
 
 revision 24 将旧 Agent Thread/Run 回填为 Web 来源，并为外部 MCP 任务保存初始正式策略快照、
@@ -237,6 +250,10 @@ revision 24 将旧 Agent Thread/Run 回填为 Web 来源，并为外部 MCP 任�
 revision 25 新增计划、revision、审核和人类决定四张表，并为 Agent Run 增加
 `CONVERSATION/EXPERIMENT_PLAN_REVIEW` 类型和计划 revision 目标。旧 Run 回填为
 `CONVERSATION`；降级会删除新增计划数据，因此仅用于回滚尚未承载正式计划的部署。
+
+revision 26 为 Plan Check 增加可选的计划决定、批准快照和不变量检查，并允许新的计划绑定
+Manifest 使用 schema v2。旧 Plan Check 和 schema v1 Manifest 不回填、不重建。存在 v2
+Manifest 时降级会明确失败，避免修改或丢失不可变证据链。
 
 初始化现有团队和首个项目仍可使用可信本地 CLI/API：
 

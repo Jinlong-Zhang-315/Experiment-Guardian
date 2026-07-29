@@ -38,6 +38,24 @@ test.beforeEach(async ({ page }) => {
       return route.fulfill({ json: { items: [settings.project] } });
     }
     if (path.endsWith("/settings")) return route.fulfill({ json: settings });
+    if (path.endsWith("/plan-checks")) return route.fulfill({ json: { items: [{
+      plan_check_id: "pc-r17d", requester_id: "owner-1", context_version: 3, intent_version: 5,
+      check_result: "PASS", approval_status: "NOT_REQUIRED", risk_level: "LOW",
+      planned_changes: [{ parameter_path: "model.fusion", old_value: 0.2, new_value: 0.3 }],
+      report: {}, git_commit: "a1b2c3d4", command: "python train.py --config fusion.yaml",
+      experiment_plan_decision_id: "decision-r17d",
+      invariant_check: { overall_status: "CONSISTENT", stage: "PRE_RUN", checks: [] },
+      created_at: "2026-07-28T10:00:00Z", allowed_actions: [],
+    }] } });
+    if (path.endsWith("/submissions")) return route.fulfill({ json: { items: [{
+      submission_id: "submission-r17d", run_manifest_id: "manifest-r17d", submitted_by: "owner-1",
+      source_agent: "experiment-guardian-r17d/1.0.0", status: "NEEDS_REVIEW",
+      workflow_status: "COMPLETED", processing_step: "NEEDS_REVIEW",
+      invariant_check: { overall_status: "CONSISTENT", stage: "RESULT_SUBMISSION", checks: [] },
+      review_receipt: { review_eligibility: "RESEARCHER_ALLOWED", highest_risk: "MEDIUM" },
+      risks: [], artifacts: [], created_at: "2026-07-28T10:00:00Z",
+      updated_at: "2026-07-28T10:01:00Z", allowed_actions: ["APPROVE", "REJECT"],
+    }] } });
     if (path.endsWith("/agent/model-observability")) return route.fulfill({ json: {
       project_id: "p1", window_from: "2026-07-20T00:00:00Z", window_to: "2026-07-27T00:00:00Z",
       current_provider: "bailian", current_model_id: "qwen-agent", pricing_configured: true,
@@ -67,6 +85,14 @@ test("workspace and research reports remain readable without horizontal overflow
   ]) {
     await page.getByRole("link", { name: navigation }).click();
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+    if (navigation === "计划审批") {
+      await expect(page.getByRole("heading", { name: "批准计划与关键不变量" })).toBeVisible();
+      await expect(page.getByText("CONSISTENT", { exact: true })).toBeVisible();
+    }
+    if (navigation === "实验审核") {
+      await expect(page.getByRole("heading", { name: "最终关键不变量核对" })).toBeVisible();
+      await expect(page.getByText("CONSISTENT", { exact: true })).toBeVisible();
+    }
     await expectNoPageOverflow(page);
   }
 

@@ -65,7 +65,7 @@ services:
   migration:
     build: *backend-build
     command: ["python", "-m", "alembic", "upgrade", "head"]
-    env_file: .env.local
+    env_file: ${EG_ENV_FILE:-.env.local}
     depends_on:
       database-init:
         condition: service_completed_successfully
@@ -90,7 +90,7 @@ services:
       - bootstrap-local
       - --project-config
       - examples/project-initialize.json
-    env_file: .env.local
+    env_file: ${EG_ENV_FILE:-.env.local}
     depends_on:
       migration:
         condition: service_completed_successfully
@@ -105,7 +105,7 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
-    env_file: .env.local
+    env_file: ${EG_ENV_FILE:-.env.local}
     depends_on:
       local-init:
         condition: service_completed_successfully
@@ -127,7 +127,7 @@ services:
   worker:
     build: *backend-build
     command: ["experiment-guardian-worker"]
-    env_file: .env.local
+    env_file: ${EG_ENV_FILE:-.env.local}
     depends_on:
       local-init:
         condition: service_completed_successfully
@@ -139,7 +139,7 @@ services:
     profiles: ["agent"]
     build: *backend-build
     command: ["experiment-guardian-agent-worker"]
-    env_file: .env.local
+    env_file: ${EG_ENV_FILE:-.env.local}
     depends_on:
       local-init:
         condition: service_completed_successfully

@@ -69,7 +69,7 @@ from experiment_guardian.infrastructure.repositories import (
 )
 
 PLAN_REVIEW_PROMPT_VERSION = "r17b-plan-review-v1"
-PLAN_REVIEW_TOOL_CATALOG_VERSION = "r17b-plan-review-v1"
+PLAN_REVIEW_TOOL_CATALOG_VERSION = "r17b-plan-review-v2"
 PLAN_SUBMIT_OPERATION = "experiment_plan.submit"
 PLAN_REVISE_OPERATION = "experiment_plan.revise"
 PLAN_RETRY_OPERATION = "experiment_plan.retry_review"
@@ -629,6 +629,7 @@ class ExperimentPlanService:
                     confirmed = [candidates[item] for item in request.confirmed_candidate_ids]
                     rejected = [candidates[item] for item in request.rejected_candidate_ids]
                     approved_snapshot = {
+                        "checkpoint_schema_version": 1,
                         "plan": self._revision_view(revision).model_dump(mode="json"),
                         "review_hash": review.review_hash,
                         "approval_digest": review.approval_digest,

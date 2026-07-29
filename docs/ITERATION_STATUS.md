@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
-更新时间：2026-07-28
-当前完成轮次：R17b 自然语言实验计划、有限自动修订与用户审批
-下一步：R17c 三阶段关键不变量核对
+更新时间：2026-07-29
+当前完成轮次：R17d v1.0.0 本地版发布加固
+下一步：进入缺陷维护；不预设新的功能阶段
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -39,6 +39,8 @@
 | R16-L | 本地百炼候选版加固 | 完成 | RC 预检、真实百炼、CRDB 并发恢复、MinIO 与 Web 回归 |
 | R17a | 外部 Coding Agent 协作入口 | 完成 | MCP 任务、正式快照、异步引用问答、Web 续聊、多凭据恢复 |
 | R17b | 版本化自然语言实验计划 | 完成 | 硬检查、带引用审核、最多两轮自动修订、不可变人工决定 |
+| R17c | 三阶段关键不变量核对 | 完成 | 批准快照、增强 Plan Check、v2 Manifest、最终证据阻断 |
+| R17d | 本地端到端与首版发布 | 完成 | 公共接口闭环、真实百炼门、恢复安全回归、v1.0.0 |
 
 ## R15：内部实验治理 Agent 路线
 
@@ -389,10 +391,37 @@
 * Owner 可决定项目内计划，Researcher 只能决定自己创建的计划；决定要求 CSRF、实时权限与
   recent-auth。计划批准仍不创建 Manifest，也不替代正式 Plan Check。
 
-## 下一步唯一目标
+## R17c：三阶段关键不变量核对
 
-R17c 只实现计划批准快照、运行前 Plan Check/Manifest 与结果 Submission 三阶段关键不变量核对。
-本轮不扩展到训练执行、代码修改、进度流、委托审批、任意 SQL 或新的治理状态机。
+交付：
+
+* `experiment_check_plan` 可选绑定已批准计划决定，并重查项目归属、用户权限、精确 revision、
+  Context/Intent 版本和 policy hash；经典调用不受影响。
+* 结构化确认不变量严格比较；自然语言条件的满足声明保持 `LOCAL_ATTESTED`。违反关键边界为
+  `BLOCKED`，缺失或无法判断为 `NEEDS_APPROVAL`，LLM 不能改变结果。
+* schema v2 Manifest 将批准计划、decision/review/policy hash 和运行前检查加入不可变哈希；
+  schema v1 历史记录继续可读。
+* Submission 在既有分析状态机内复核最终固定版本配置和本地 Git/命令/checkpoint/不变量声明；
+  关键偏离和缺失证据生成 `CRITICAL + blocking` 风险。
+* Plan 和 Submission Web 页面显示阶段结论、来源和值；审核回执追溯到计划决定和 revision。
+
+## R17d：v1.0.0 本地版发布加固
+
+交付：
+
+* `verify_r17d_local.py` 只允许专用验收项目，通过现有 Web/MCP/Worker 公共接口跑完整本地链。
+* 真实百炼 Agent、摘要和 embedding 是发布强制门；每 Run 最多 5 次、整条链最多 20 次调用。
+* 正向链携带完整最终运行证据，负向链修改 LOCKED protocol 并必须得到 `BLOCKED`。
+* Host 白名单、CSRF、人工决定、固定 Artifact 版本、幂等重放和正式策略不变均纳入验收。
+* DB Queue/Agent Worker 恢复并发测试与桌面/移动 Playwright 回归纳入发布清单。
+* 包、API 与 Web 版本同步为 `1.0.0`；R17d 无数据库迁移，不自动 commit/tag。
+* 真实发布门以 `qwen3.7-plus`、`text-embedding-v4`、MinIO 和 CockroachDB 跑通，9 次 Agent
+  模型调用完成正式 Experiment；去敏 PASS 报告保存到 `artifacts/r17d-acceptance-report.json`。
+* 百炼 Agent 关闭 thinking，并为外部只读 Run 使用裁剪 Schema。新 Run 使用
+  `r17a-external-v2` 和 `r17b-plan-review-v2` 安全目录；v1 仅保留历史还原。
+
+后续默认进入缺陷维护。只有真实使用暴露明确缺口时再建立下一阶段；不继续预排自动训练、代码
+修改、委托审批、任意 SQL、新模型工具或新的治理状态机。
 
 ## 每轮更新规则
 

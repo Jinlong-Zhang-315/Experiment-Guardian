@@ -248,7 +248,31 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     assert "uq_outbox_events_job_generation" in {
         item["name"] for item in inspector.get_unique_constraints("outbox_events")
     }
+    assert {
+        "experiment_plan_decision_id",
+        "experiment_plan_snapshot",
+        "invariant_check",
+    } <= {item["name"] for item in inspector.get_columns("plan_checks")}
+    assert any(
+        str(item["name"]).endswith("run_manifest_schema_version_supported")
+        for item in inspector.get_check_constraints("run_manifests")
+    )
     engine.dispose()
+
+    run_alembic("downgrade", "20260728_25")
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    assert {
+        "experiment_plan_decision_id",
+        "experiment_plan_snapshot",
+        "invariant_check",
+    }.isdisjoint({item["name"] for item in inspector.get_columns("plan_checks")})
+    assert any(
+        str(item["name"]).endswith("run_manifest_schema_version_one")
+        for item in inspector.get_check_constraints("run_manifests")
+    )
+    engine.dispose()
+    run_alembic("upgrade", "head")
 
     run_alembic("downgrade", "20260728_24")
     engine = create_engine(database_url)

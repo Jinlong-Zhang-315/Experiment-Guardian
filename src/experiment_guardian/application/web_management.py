@@ -705,6 +705,13 @@ class WebManagementService:
             report=report,
             git_commit=row.git_commit,
             command=row.command,
+            experiment_plan_decision_id=row.experiment_plan_decision_id,
+            experiment_plan_trace=(
+                row.experiment_plan_snapshot.get("trace")
+                if isinstance(row.experiment_plan_snapshot, dict)
+                else None
+            ),
+            invariant_check=row.invariant_check,
             created_at=row.created_at,
             allowed_actions=actions,
         )
@@ -745,6 +752,11 @@ class WebManagementService:
             processing_error=row.processing_error,
             generated_summary=row.generated_summary,
             review_receipt=row.review_receipt,
+            invariant_check=(
+                row.analysis_snapshot.get("invariant_validation")
+                if isinstance(row.analysis_snapshot, dict)
+                else None
+            ),
             risks=[
                 {
                     "risk_id": str(item.id),

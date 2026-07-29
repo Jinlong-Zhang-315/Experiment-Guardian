@@ -1,10 +1,11 @@
 """R15a 治理 Agent 的持久化、租约和证据闭环测试。"""
 
+import hashlib
 import json
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import SecretStr
@@ -32,7 +33,10 @@ from experiment_guardian.application.experiment_plans import ExperimentPlanServi
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.ports import AgentChatModel
 from experiment_guardian.application.research_reports import ResearchReportService
-from experiment_guardian.application.services import ProjectAdministrationService
+from experiment_guardian.application.services import (
+    GuardianApplication,
+    ProjectAdministrationService,
+)
 from experiment_guardian.application.web_auth import OWNER_WEB_SCOPES
 from experiment_guardian.core.config import Settings
 from experiment_guardian.domain.agent import (
@@ -50,7 +54,7 @@ from experiment_guardian.domain.agent import (
     ExternalAgentTaskStartRequest,
 )
 from experiment_guardian.domain.agent_research import research_report_source_hash
-from experiment_guardian.domain.contracts import ConfigurationDocument
+from experiment_guardian.domain.contracts import ConfigurationDocument, SubmissionFinalizeCommand
 from experiment_guardian.domain.enums import (
     AgentContextSummaryStatus,
     AgentEvidenceKind,
@@ -85,15 +89,25 @@ from experiment_guardian.infrastructure.models import (
     McpOAuthClient,
     McpOAuthGrant,
     ProjectContext,
+    SubmissionRisk,
     TeamMember,
     User,
     WebSession,
 )
 from experiment_guardian.infrastructure.repositories import (
     SqlAlchemyAgentRepository,
+    SqlAlchemyPlanCheckRepository,
     SqlAlchemyProjectRepository,
 )
 from tests.integration.test_foundation_slice import initial_request, seed_owner
+from tests.integration.test_governance_slice import manifest_identity
+from tests.integration.test_plan_check_slice import command as plan_check_command
+from tests.integration.test_submission_prepare_slice import (
+    FakeStorage,
+    build_submission_service,
+    prepare_command,
+    submission_identity,
+)
 
 
 class ScriptedAgentModel(AgentChatModel):
@@ -215,6 +229,87 @@ class SeparateFinalTurnAgentModel(AgentChatModel):
             "citations": ["ev_1_1"],
             "follow_up_required": False,
         }
+        yield AgentModelEvent(event_type="text_delta", text=json.dumps(answer))
+        yield AgentModelEvent(event_type="completed", finish_reason="stop")
+
+
+class EvidenceKindRepairAgentModel(AgentChatModel):
+    """模拟 Provider 首次混淆事实与分析，并在严格提示后修复。"""
+
+    provider = "bailian"
+    model_id = "qwen-agent"
+    structured_final_requires_tool_choice_none = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def stream_turn(
+        self,
+        *,
+        messages: Sequence[AgentChatMessage],
+        tools: Sequence[AgentToolSpec],
+        tool_choice: str,
+        max_output_tokens: int,
+        response_format: AgentResponseFormat | None = None,
+    ) -> Iterator[AgentModelEvent]:
+        del tools, max_output_tokens
+        self.calls += 1
+        if self.calls == 1:
+            yield AgentModelEvent(
+                event_type="tool_call",
+                tool_call=AgentToolRequest(
+                    call_id="call-status",
+                    name="project_status_get_v1",
+                    arguments={},
+                ),
+            )
+            yield AgentModelEvent(event_type="completed", finish_reason="tool_calls")
+            return
+        if self.calls == 2:
+            yield AgentModelEvent(event_type="text_delta", text="非结构化中间草稿")
+            yield AgentModelEvent(event_type="completed", finish_reason="stop")
+            return
+        assert tool_choice == "none"
+        assert response_format is not None
+        if self.calls == 3:
+            answer = {
+                "answer_markdown": "当前项目状态已读取。",
+                "sections": [
+                    {
+                        "evidence_kind": "ANALYSIS",
+                        "title": "错误分类",
+                        "content": "把正式记录错误标成分析。",
+                        "citation_ids": ["ev_1_1"],
+                    }
+                ],
+                "citations": ["ev_1_1"],
+                "follow_up_required": False,
+            }
+        else:
+            assert self.calls == 4
+            repair_instruction = messages[-1].content
+            assert "ANALYSIS 段只能引用 ANALYSIS" in repair_instruction
+            assert "分析结论只能引用 ANALYSIS 证据" in repair_instruction
+            assert '"ev_1_1":"CONFIRMED_FACT"' in repair_instruction
+            answer = {
+                "answer_markdown": "当前项目正式目标已读取；进一步判断仍待验证。",
+                "sections": [
+                    {
+                        "evidence_kind": "CONFIRMED_FACT",
+                        "title": "项目目标",
+                        "content": "以当前正式 Context 为准。",
+                        "citation_ids": ["ev_1_1"],
+                    },
+                    {
+                        "evidence_kind": "HYPOTHESIS",
+                        "title": "待验证判断",
+                        "content": "是否需要调整下一轮实验仍需进一步证据。",
+                        "citation_ids": ["ev_1_1"],
+                    },
+                ],
+                "citations": ["ev_1_1"],
+                "follow_up_required": False,
+            }
         yield AgentModelEvent(event_type="text_delta", text=json.dumps(answer))
         yield AgentModelEvent(event_type="completed", finish_reason="stop")
 
@@ -710,7 +805,7 @@ def test_external_mcp_task_reuses_agent_runtime_and_is_visible_from_web(
         item.name
         for item in AgentToolRegistry(
             plan_check_session_factory, SqlAlchemyProjectRepository()
-        ).specs_for_version("r17a-external-v1")
+        ).specs_for_version("r17a-external-v2")
     }
     assert external_tool_names == {
         "project_status_get_v1",
@@ -718,10 +813,24 @@ def test_external_mcp_task_reuses_agent_runtime_and_is_visible_from_web(
         "experiment_get_v1",
         "experiments_compare_v1",
         "experiment_group_stats_v1",
+    }
+    legacy_external_tool_names = {
+        item.name
+        for item in AgentToolRegistry(
+            plan_check_session_factory, SqlAlchemyProjectRepository()
+        ).specs_for_version("r17a-external-v1")
+    }
+    assert legacy_external_tool_names == external_tool_names | {
         "research_reports_list_v1",
         "research_report_get_v1",
         "research_memories_search_v1",
     }
+    assert {
+        item.name
+        for item in AgentToolRegistry(
+            plan_check_session_factory, SqlAlchemyProjectRepository()
+        ).specs_for_version("r17b-plan-review-v2")
+    } == external_tool_names
     assert not any(
         name.startswith(("policy_draft_", "action_proposal_")) for name in external_tool_names
     )
@@ -829,8 +938,8 @@ def test_external_mcp_task_reuses_agent_runtime_and_is_visible_from_web(
         assert web_run is not None
         assert web_run.auth_method is AgentRunAuthMethod.WEB_SESSION
         assert web_run.auth_session_id == web_identity.token_id  # type: ignore[union-attr]
-        assert web_run.prompt_version == "r17a-external-v1"
-        assert web_run.tool_catalog_version == "r17a-external-v1"
+        assert web_run.prompt_version == "r17a-external-v2"
+        assert web_run.tool_catalog_version == "r17a-external-v2"
     web_processor = AgentRunProcessor(
         plan_check_session_factory,
         repository,
@@ -859,7 +968,7 @@ def test_external_mcp_task_reuses_agent_runtime_and_is_visible_from_web(
         assert run.auth_method is AgentRunAuthMethod.MCP_TOKEN
         assert run.auth_access_token_id == token_id
         assert run.auth_session_id is None
-        assert run.prompt_version == "r17a-external-v1"
+        assert run.prompt_version == "r17a-external-v2"
 
     with plan_check_session_factory() as session, session.begin():
         context = session.scalar(
@@ -1020,6 +1129,151 @@ def test_experiment_plan_auto_revision_and_human_approval_are_versioned(
     assert approved.decision["approved_snapshot"]["governance_notice"].startswith(
         "该决定只冻结计划级授权"
     )
+
+    guardian = GuardianApplication(
+        plan_check_session_factory,
+        SqlAlchemyProjectRepository(),
+        SqlAlchemyPlanCheckRepository(),
+    )
+    pre_run = plan_check_command(
+        project_id=project_id,
+        intent_id=initialized.context_bundle.active_intent.intent_id,  # type: ignore[union-attr]
+    )
+    approved_command = "python train.py --config fusion.yaml"
+    approved_commit = "abc1234"
+    pre_run = pre_run.model_copy(
+        update={
+            "command": approved_command,
+            "git_commit": approved_commit,
+            "experiment_plan_decision_id": UUID(approved.decision["decision_id"]),
+            "local_attestation": pre_run.local_attestation.model_copy(
+                update={
+                    "run_command": pre_run.local_attestation.run_command.model_copy(
+                        update={"value": approved_command}
+                    ),
+                    "git_commit": pre_run.local_attestation.git_commit.model_copy(
+                        update={"value": approved_commit}
+                    ),
+                }
+            ),
+        }
+    )
+    checked = guardian.experiment_check_plan(pre_run, mcp_identity)
+    assert checked.check_result.value == "PASS"
+    assert checked.invariant_check is not None
+    assert checked.invariant_check["overall_status"] == "CONSISTENT"
+    manifest = guardian.run_manifest_create(
+        plan_check_id=checked.plan_check_id,
+        identity=manifest_identity(mcp_identity, project_id),
+        idempotency_key=uuid4(),
+    )
+    assert manifest.schema_version == 2
+    assert manifest.experiment_plan_trace is not None
+    assert manifest.experiment_plan_trace["decision_id"] == approved.decision["decision_id"]
+
+    storage = FakeStorage()
+    submission_service = build_submission_service(plan_check_session_factory, storage)
+    prepared = submission_service.submission_prepare(
+        prepare_command(project_id=project_id, manifest_id=manifest.manifest_id),
+        submission_identity(mcp_identity, project_id),
+    )
+    storage.accept_declared_uploads()
+    finalized = submission_service.submission_finalize(
+        SubmissionFinalizeCommand(
+            submission_id=prepared.submission_id,
+            idempotency_key=uuid4(),
+        ),
+        RequestIdentity(
+            user_id=mcp_identity.user_id,
+            team_id=mcp_identity.team_id,
+            token_id=uuid4(),
+            project_id=project_id,
+            scopes=frozenset({"submission:finalize"}),
+        ),
+    )
+    assert finalized.analysis is not None
+    assert finalized.analysis.highest_risk is not None
+    assert finalized.analysis.highest_risk.value == "CRITICAL"
+    with plan_check_session_factory() as session:
+        invariant_risks = session.scalars(
+            select(SubmissionRisk).where(
+                SubmissionRisk.submission_id == prepared.submission_id,
+                SubmissionRisk.risk_type == "APPROVED_PLAN_INVARIANT_VIOLATED",
+            )
+        ).all()
+        assert invariant_risks
+        assert all(item.blocking for item in invariant_risks)
+
+    # 同一个 v2 Manifest 重新形成一条不可变 Submission，并补齐与上传 CONFIG、Manifest
+    # 完全一致的最终运行证据。它仍可产生查重提醒，但不得再产生计划不变量阻断风险。
+    final_collected_at = datetime.now(UTC)
+    final_evidence = {
+        "git_commit": {
+            "value": approved_commit,
+            "evidence_type": "LOCAL_ATTESTED",
+            "source": "integration test agent",
+            "collected_at": final_collected_at,
+            "collection_tool": "git-rev-parse",
+        },
+        "run_command": {
+            "value": approved_command,
+            "evidence_type": "LOCAL_ATTESTED",
+            "source": "integration test agent",
+            "collected_at": final_collected_at,
+            "collection_tool": "test-runner",
+        },
+        "config_sha256": {
+            "value": hashlib.sha256(
+                pre_run.configuration.content.encode("utf-8")
+            ).hexdigest(),
+            "evidence_type": "LOCAL_ATTESTED",
+            "source": "integration test agent",
+            "collected_at": final_collected_at,
+            "collection_tool": "sha256sum",
+        },
+        "checkpoint": {
+            "value": "checkpoints/baseline.pt",
+            "evidence_type": "LOCAL_ATTESTED",
+            "source": "integration test agent",
+            "collected_at": final_collected_at,
+            "collection_tool": "test-runner",
+        },
+    }
+    prepared_with_evidence = submission_service.submission_prepare(
+        prepare_command(project_id=project_id, manifest_id=manifest.manifest_id).model_copy(
+            update={
+                "idempotency_key": uuid4(),
+                "final_run_evidence": final_evidence,
+            }
+        ),
+        submission_identity(mcp_identity, project_id),
+    )
+    storage.accept_declared_uploads()
+    finalized_with_evidence = submission_service.submission_finalize(
+        SubmissionFinalizeCommand(
+            submission_id=prepared_with_evidence.submission_id,
+            idempotency_key=uuid4(),
+        ),
+        RequestIdentity(
+            user_id=mcp_identity.user_id,
+            team_id=mcp_identity.team_id,
+            token_id=uuid4(),
+            project_id=project_id,
+            scopes=frozenset({"submission:finalize"}),
+        ),
+    )
+    assert finalized_with_evidence.analysis is not None
+    assert finalized_with_evidence.analysis.highest_risk is None or (
+        finalized_with_evidence.analysis.highest_risk.value != "CRITICAL"
+    )
+    with plan_check_session_factory() as session:
+        matching_risks = session.scalars(
+            select(SubmissionRisk).where(
+                SubmissionRisk.submission_id == prepared_with_evidence.submission_id,
+                SubmissionRisk.risk_type == "APPROVED_PLAN_INVARIANT_VIOLATED",
+            )
+        ).all()
+        assert matching_risks == []
 
     with plan_check_session_factory() as session:
         assert (
@@ -1325,6 +1579,56 @@ def test_agent_provider_can_require_a_separate_structured_final_turn(
     assert run.status is AgentRunStatus.SUCCEEDED
     assert model.calls == 3
     assert len(run.model_calls) == 3
+
+
+def test_agent_repairs_evidence_kind_mismatch_without_weakening_validation(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    service, identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    thread = service.create_thread(
+        project_id=project_id,
+        identity=identity,
+        request=AgentThreadCreateRequest(),
+    )
+    receipt = service.create_message(
+        project_id=project_id,
+        thread_id=thread.thread_id,
+        identity=identity,
+        idempotency_key=uuid4(),
+        request=AgentMessageCreateRequest(content="读取当前状态并说明仍待验证的判断"),
+    )
+    repository = SqlAlchemyAgentRepository()
+    model = EvidenceKindRepairAgentModel()
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+            model,
+            settings,
+        ),
+        settings,
+        worker_id="evidence-repair-worker",
+    )
+
+    assert processor.process_once()
+    run = service.get_run(project_id=project_id, run_id=receipt.run_id, identity=identity)
+    view = service.get_thread(
+        project_id=project_id,
+        thread_id=thread.thread_id,
+        identity=identity,
+    )
+    assert run.status is AgentRunStatus.SUCCEEDED
+    assert model.calls == 4
+    assert len(run.model_calls) == 4
+    assert [section.evidence_kind for section in view.messages[-1].sections] == [
+        AgentEvidenceKind.CONFIRMED_FACT,
+        AgentEvidenceKind.HYPOTHESIS,
+    ]
 
 
 def test_expired_agent_lease_increments_generation_and_blocks_stale_owner(

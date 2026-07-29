@@ -478,6 +478,12 @@ class ExperimentReviewService:
             or receipt.trace.plan_check_id != manifest.plan_check_id
             or receipt.trace.run_manifest_id != manifest.id
             or receipt.trace.manifest_hash != manifest.manifest_hash
+            or not cls._receipt_invariant_trace_matches(
+                submission=submission,
+                receipt=receipt,
+                manifest=manifest,
+                plan=plan,
+            )
         ):
             issues.append("审核回执与 Manifest 追溯不一致")
 
@@ -509,6 +515,42 @@ class ExperimentReviewService:
         except ValidationError:
             issues.append("Submission 摘要或结果快照无效")
         return issues
+
+    @staticmethod
+    def _receipt_invariant_trace_matches(
+        *,
+        submission: ExperimentSubmission,
+        receipt: SubmissionReceipt,
+        manifest: RunManifest,
+        plan: PlanCheck,
+    ) -> bool:
+        if manifest.schema_version == 1:
+            return (
+                receipt.trace.experiment_plan_decision_id is None
+                and receipt.trace.experiment_plan_revision_id is None
+                and receipt.trace.invariant_status is None
+            )
+        if not isinstance(manifest.evidence_snapshot, dict):
+            return False
+        snapshot = manifest.evidence_snapshot.get("experiment_plan")
+        trace = snapshot.get("trace") if isinstance(snapshot, dict) else None
+        analysis = submission.analysis_snapshot
+        invariant = analysis.get("invariant_validation") if isinstance(analysis, dict) else None
+        if not isinstance(trace, dict) or not isinstance(invariant, dict):
+            return False
+        try:
+            revision_id = UUID(str(trace.get("revision_id")))
+        except (TypeError, ValueError):
+            return False
+        return bool(
+            plan.experiment_plan_decision_id is not None
+            and trace.get("decision_id") == str(plan.experiment_plan_decision_id)
+            and receipt.trace.experiment_plan_decision_id
+            == plan.experiment_plan_decision_id
+            and receipt.trace.experiment_plan_revision_id
+            == revision_id
+            and receipt.trace.invariant_status == invariant.get("overall_status")
+        )
 
     @staticmethod
     def _load_receipt(submission: ExperimentSubmission) -> SubmissionReceipt:

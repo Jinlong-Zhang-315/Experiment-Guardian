@@ -454,6 +454,26 @@ class SubmissionReviewProcessor:
             _fact("run_command", manifest.command, EvidenceType.LOCAL_ATTESTED, manifest_time),
             _fact("environment", manifest.environment, EvidenceType.LOCAL_ATTESTED, manifest_time),
         ]
+        invariant_validation = snapshot.get("invariant_validation")
+        plan_trace = None
+        if isinstance(manifest.evidence_snapshot, dict):
+            plan_snapshot = manifest.evidence_snapshot.get("experiment_plan")
+            if isinstance(plan_snapshot, dict) and isinstance(plan_snapshot.get("trace"), dict):
+                plan_trace = plan_snapshot["trace"]
+        invariant_status = (
+            invariant_validation.get("overall_status")
+            if isinstance(invariant_validation, dict)
+            else None
+        )
+        if isinstance(invariant_status, str):
+            run_conditions.append(
+                _fact(
+                    "key_invariant_status",
+                    invariant_status,
+                    EvidenceType.CLOUD_VERIFIED,
+                    result_time,
+                )
+            )
         allowed_changes = self._allowed_changes(plan, approved)
         metrics = parsed_result.get("metrics")
         if not isinstance(metrics, dict):
@@ -521,6 +541,13 @@ class SubmissionReviewProcessor:
                 "plan_check_id": str(manifest.plan_check_id),
                 "run_manifest_id": str(manifest.id),
                 "manifest_hash": manifest.manifest_hash,
+                "experiment_plan_decision_id": (
+                    plan_trace.get("decision_id") if plan_trace else None
+                ),
+                "experiment_plan_revision_id": (
+                    plan_trace.get("revision_id") if plan_trace else None
+                ),
+                "invariant_status": invariant_status,
             },
             "run_conditions": [item.model_dump(mode="json") for item in run_conditions],
             "allowed_changes": [item.model_dump(mode="json") for item in allowed_changes],
@@ -541,6 +568,17 @@ class SubmissionReviewProcessor:
                 plan_check_id=manifest.plan_check_id,
                 run_manifest_id=manifest.id,
                 manifest_hash=manifest.manifest_hash,
+                experiment_plan_decision_id=(
+                    UUID(plan_trace["decision_id"])
+                    if plan_trace and isinstance(plan_trace.get("decision_id"), str)
+                    else None
+                ),
+                experiment_plan_revision_id=(
+                    UUID(plan_trace["revision_id"])
+                    if plan_trace and isinstance(plan_trace.get("revision_id"), str)
+                    else None
+                ),
+                invariant_status=invariant_status,
             ),
             run_conditions=run_conditions,
             allowed_changes=allowed_changes,

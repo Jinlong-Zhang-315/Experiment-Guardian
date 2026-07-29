@@ -1,8 +1,8 @@
 # 内部实验治理 Agent 开发计划
 
-更新时间：2026-07-28
-计划轮次：R15a-R17b
-当前状态：R17b 已复用内部治理 Agent 实现版本化计划审核、有限自动修订和人工决定
+更新时间：2026-07-29
+计划轮次：R15a-R17d
+当前状态：R17d 已将外部计划协作和内部治理 Agent 收口到 v1.0.0 本地发布门
 
 ## 1. 目标与定位
 
@@ -661,7 +661,7 @@ R16-L 只验收 `local_owner + MinIO + CockroachDB Database Queue + Bailian`：
 下一轮先处理本地 RC 的真实使用缺陷。Bedrock、Cognito、SQS 与 AWS 的 live acceptance 不在
 本地候选版完成声明内，也不应为了补齐云线路而扩展 Agent 权限或工具数量。
 
-## 20. R17a-R17b 外部任务与实验计划结果
+## 20. R17a-R17c 外部任务、实验计划与不变量结果
 
 R17a 已让 stdio MCP Token 和预注册 OAuth 客户端创建 `EXTERNAL_MCP` Thread，并在模型运行前
 返回正式策略快照。Run 绑定真实 Token/Grant，Worker 每次尝试都复核撤销、过期、Client、项目
@@ -683,5 +683,16 @@ R17b 在同一 Thread 上增加版本化 `ExperimentPlan`：
 * 正式策略在排队后发生漂移时，Worker 在模型调用前把计划标为 `STALE` 并终止 Run；读取、重试
   和决定也重新计算新鲜度，不会让旧审核静默继续生效。
 
-R17c 只接入计划批准快照、现有 Plan Check/Manifest 和 Submission 的三阶段不变量核对；不把
-内部 Agent 升级为代码执行器、训练执行器或自动审批主体。
+R17c 已将计划批准快照接入现有 Plan Check/Manifest 和 Submission：增强链路使用可选决定 ID，
+规范化正式约束、用户确认候选和条件批准条款；结构化字段由确定性规则检查，自然语言条件保留
+`LOCAL_ATTESTED` 边界。schema v2 Manifest 冻结运行前报告，Submission 再次核对最终固定版本
+配置和运行声明。关键偏离或缺失证据产生 blocking 风险。内部 Agent 没有因此获得代码执行、
+训练执行或自动审批能力。
+
+R17d 没有扩大 Agent 能力。它使用专用项目，通过真实百炼和现有公共接口验收 R17a-R17c 全链，
+并以模型调用预算、Citation、人工决定、LOCKED 负例、最终证据、正式策略不变和持久化审计作为
+发布条件。发布门细节见 `R17D_RELEASE.md`。
+
+发布验收将新外部任务升级到 `r17a-external-v2` Prompt/工具目录，移除 MCP 身份无法调用的
+Web-only 报告和记忆工具；计划审核使用 `r17b-plan-review-v2` 目录。旧 v1 版本保持可解析，
+不会被静默改写。百炼治理调用固定 `enable_thinking=false`，最终结构与证据类型仍由服务端校验。

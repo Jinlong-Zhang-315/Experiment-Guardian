@@ -110,6 +110,9 @@ def experiment_check_plan(
     command: str,
     git_commit: str,
     local_attestation: dict[str, Any],
+    experiment_plan_decision_id: str | None = None,
+    invariant_attestations: list[dict[str, Any]] | None = None,
+    deviation_explanation: str | None = None,
 ) -> dict[str, Any]:
     """检查配置与正式意图的一致性；该结果不等于真实训练行为已验证正确。"""
 
@@ -124,6 +127,11 @@ def experiment_check_plan(
         command=command,
         git_commit=git_commit,
         local_attestation=LocalAttestation.model_validate(local_attestation),
+        experiment_plan_decision_id=(
+            UUID(experiment_plan_decision_id) if experiment_plan_decision_id else None
+        ),
+        invariant_attestations=invariant_attestations or [],
+        deviation_explanation=deviation_explanation,
     )
     result = get_guardian_use_cases().experiment_check_plan(payload, identity)
     return result.model_dump(mode="json")
@@ -152,6 +160,7 @@ def submission_prepare(
     experiment_status: str,
     metrics_summary: dict[str, Any],
     files: list[dict[str, Any]],
+    final_run_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """创建实验草稿并为白名单文件返回 S3 预签名上传地址。"""
 
@@ -165,6 +174,7 @@ def submission_prepare(
         experiment_status=SubmittedRunStatus(experiment_status.upper()),
         metrics_summary=metrics_summary,
         files=files,
+        final_run_evidence=final_run_evidence,
     )
     result = get_guardian_use_cases().submission_prepare(command, identity)
     return result.model_dump(mode="json")

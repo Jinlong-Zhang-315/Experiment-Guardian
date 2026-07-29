@@ -49,6 +49,7 @@ from experiment_guardian.domain.contracts import (
     GeneratedSummary,
     PlanEvaluationInput,
     ProjectContextBundle,
+    RiskItem,
     RunManifestResult,
     StoredObjectMetadata,
     SubmissionFinalizeCommand,
@@ -69,6 +70,7 @@ from experiment_guardian.domain.enums import (
     ConstraintSource,
     ContextStatus,
     ExperimentMode,
+    ExperimentPlanDecisionType,
     IdempotencyOperationStatus,
     IntentStatus,
     ProtectionLevel,
@@ -82,6 +84,15 @@ from experiment_guardian.domain.enums import (
     WorkflowStatus,
     WorkflowStep,
 )
+from experiment_guardian.domain.experiment_plan import formal_policy_snapshot
+from experiment_guardian.domain.invariant_check import (
+    ApprovedInvariantSnapshot,
+    FinalRunEvidence,
+    InvariantAttestation,
+    InvariantCheckReport,
+    build_approved_invariant_snapshot,
+    evaluate_pre_run_invariants,
+)
 from experiment_guardian.domain.plan_check import (
     ConfigurationError,
     evaluate_plan,
@@ -93,6 +104,9 @@ from experiment_guardian.infrastructure.models import (
     Artifact,
     AuditLog,
     ExperimentIntent,
+    ExperimentPlan,
+    ExperimentPlanDecision,
+    ExperimentPlanRevision,
     ExperimentSubmission,
     IdempotencyRecord,
     PlanCheck,
@@ -253,7 +267,7 @@ class GuardianApplication:
         request_hash = _canonical_hash(command.model_dump(mode="json", exclude={"idempotency_key"}))
         try:
             with self._session_factory() as session, session.begin():
-                self._projects.require_project_member(
+                project = self._projects.require_project_member(
                     session,
                     project_id=command.project_id,
                     user_id=identity.user_id,
@@ -280,6 +294,17 @@ class GuardianApplication:
                 if intent.intent_id != command.experiment_intent_id:
                     raise ConflictError("请求的 Experiment Intent 不是当前 Active 版本")
 
+                experiment_plan_snapshot: ApprovedInvariantSnapshot | None = None
+                invariant_report: InvariantCheckReport | None = None
+                if command.experiment_plan_decision_id is not None:
+                    experiment_plan_snapshot = self._load_approved_plan_snapshot(
+                        session=session,
+                        command=command,
+                        identity=identity,
+                        bundle=bundle,
+                        project=project,
+                    )
+
                 pending_constraints = self._projects.load_pending_constraints(
                     session,
                     project_id=command.project_id,
@@ -301,6 +326,27 @@ class GuardianApplication:
                         run_command=command.command,
                     )
                 )
+                if experiment_plan_snapshot is not None:
+                    try:
+                        attestations = [
+                            InvariantAttestation.model_validate(item)
+                            for item in command.invariant_attestations
+                        ]
+                        checkpoint = self._applicable_evidence_value(
+                            command.local_attestation.checkpoint_path
+                        )
+                        invariant_report = evaluate_pre_run_invariants(
+                            snapshot=experiment_plan_snapshot,
+                            parsed_config=evaluation.parsed_config,
+                            git_commit=command.git_commit,
+                            run_command=command.command,
+                            checkpoint=checkpoint if isinstance(checkpoint, str) else None,
+                            attestations=attestations,
+                            deviation_explanation=command.deviation_explanation,
+                        )
+                    except ValueError as exc:
+                        raise InputValidationError(str(exc)) from exc
+                    evaluation = self._merge_invariant_evaluation(evaluation, invariant_report)
                 risk_level = max(
                     (item.severity for item in evaluation.risks),
                     key=RISK_PRIORITY.__getitem__,
@@ -312,6 +358,15 @@ class GuardianApplication:
                         for item in evaluation.risks
                         if item.code in MISSING_INFORMATION_CODES
                     }
+                    | (
+                        {
+                            item.parameter_path or item.invariant_id
+                            for item in invariant_report.checks
+                            if item.outcome == "UNVERIFIED"
+                        }
+                        if invariant_report is not None
+                        else set()
+                    )
                 )
 
                 record = PlanCheck(
@@ -345,6 +400,17 @@ class GuardianApplication:
                     approval_status=evaluation.approval_status,
                     risk_level=risk_level,
                     report={},
+                    experiment_plan_decision_id=command.experiment_plan_decision_id,
+                    experiment_plan_snapshot=(
+                        experiment_plan_snapshot.model_dump(mode="json")
+                        if experiment_plan_snapshot is not None
+                        else None
+                    ),
+                    invariant_check=(
+                        invariant_report.model_dump(mode="json")
+                        if invariant_report is not None
+                        else None
+                    ),
                 )
                 session.add(record)
                 session.flush()
@@ -360,10 +426,47 @@ class GuardianApplication:
                     risk_level=risk_level,
                     missing_information=missing_information,
                     can_create_manifest=(evaluation.check_result is CheckResult.PASS),
+                    experiment_plan_decision_id=command.experiment_plan_decision_id,
+                    experiment_plan_trace=(
+                        experiment_plan_snapshot.trace.model_dump(mode="json")
+                        if experiment_plan_snapshot is not None
+                        else None
+                    ),
+                    invariant_check=(
+                        invariant_report.model_dump(mode="json")
+                        if invariant_report is not None
+                        else None
+                    ),
                     **evaluation.model_dump(),
                 )
                 record.report = result.model_dump(
                     mode="json", exclude={"approval_status", "can_create_manifest"}
+                )
+                session.add(
+                    AuditLog(
+                        team_id=project.team_id,
+                        project_id=project.id,
+                        actor_type="USER",
+                        actor_id=identity.user_id,
+                        action="experiment_check_plan.created",
+                        target_type="PLAN_CHECK",
+                        target_id=record.id,
+                        before_value=None,
+                        after_value={
+                            "check_result": record.check_result.value,
+                            "approval_status": record.approval_status.value,
+                            "experiment_plan_decision_id": (
+                                str(record.experiment_plan_decision_id)
+                                if record.experiment_plan_decision_id
+                                else None
+                            ),
+                            "invariant_status": (
+                                invariant_report.overall_status if invariant_report else None
+                            ),
+                            "credential_id": str(identity.token_id),
+                            "authentication_method": identity.authentication_method,
+                        },
+                    )
                 )
                 session.flush()
                 return result
@@ -378,6 +481,141 @@ class GuardianApplication:
             if replay is not None:
                 return replay
             raise ConflictError("Plan Check 与现有数据冲突") from exc
+
+    def _load_approved_plan_snapshot(
+        self,
+        *,
+        session: Session,
+        command: ExperimentCheckPlanCommand,
+        identity: RequestIdentity,
+        bundle: ProjectContextBundle,
+        project: Project,
+    ) -> ApprovedInvariantSnapshot:
+        decision_id = command.experiment_plan_decision_id
+        assert decision_id is not None
+        decision = session.get(ExperimentPlanDecision, decision_id)
+        revision = (
+            session.get(ExperimentPlanRevision, decision.revision_id)
+            if decision is not None
+            else None
+        )
+        plan = session.get(ExperimentPlan, decision.plan_id) if decision is not None else None
+        if (
+            decision is None
+            or revision is None
+            or plan is None
+            or plan.project_id != command.project_id
+            or plan.team_id != project.team_id
+            or revision.plan_id != plan.id
+            or decision.revision_id != revision.id
+        ):
+            raise ResourceNotFoundError("项目中不存在该已批准实验计划决定")
+        if decision.decision not in {
+            ExperimentPlanDecisionType.APPROVED,
+            ExperimentPlanDecisionType.CONDITIONALLY_APPROVED,
+        }:
+            raise ConflictError("实验计划尚未获得可执行的用户批准")
+        role = self._projects.require_member(
+            session, user_id=identity.user_id, team_id=project.team_id
+        )
+        if role is TeamRole.RESEARCHER and plan.created_by != identity.user_id:
+            raise AuthorizationError("Researcher 只能执行自己创建的已批准实验计划")
+        intent = bundle.active_intent
+        if (
+            revision.context_id != bundle.context.context_id
+            or revision.context_version != bundle.context.version
+            or revision.intent_id != command.experiment_intent_id
+            or intent is None
+            or revision.intent_version != intent.version
+        ):
+            raise ConflictError("实验计划批准版本与当前 Context 或 Intent 不一致")
+        _, policy_hash = formal_policy_snapshot(bundle)
+        if policy_hash != revision.policy_hash:
+            raise ConflictError("实验计划所依据的正式策略已经变化，必须重新审核")
+        approved_plan = decision.approved_snapshot.get("plan")
+        if (
+            not isinstance(approved_plan, dict)
+            or approved_plan.get("revision_id") != str(revision.id)
+            or approved_plan.get("revision") != revision.revision
+            or decision.review_hash != decision.approved_snapshot.get("review_hash")
+        ):
+            raise ConflictError("实验计划决定的不可变批准快照不完整")
+        try:
+            return build_approved_invariant_snapshot(
+                plan_id=plan.id,
+                revision_id=revision.id,
+                revision=revision.revision,
+                decision_id=decision.id,
+                decision_hash=decision.decision_hash,
+                review_hash=decision.review_hash,
+                policy_hash=revision.policy_hash,
+                approved_snapshot=decision.approved_snapshot,
+            )
+        except ValueError as exc:
+            raise ConflictError(f"实验计划批准快照无效: {exc}") from exc
+
+    @staticmethod
+    def _applicable_evidence_value(evidence: Any) -> Any | None:
+        if evidence is None or evidence.applicability.value != "APPLICABLE":
+            return None
+        return evidence.value
+
+    @staticmethod
+    def _merge_invariant_evaluation(evaluation: Any, report: InvariantCheckReport) -> Any:
+        risks = list(evaluation.risks)
+        for item in report.checks:
+            if item.outcome not in {"UNVERIFIED", "VIOLATED"}:
+                continue
+            critical = item.outcome == "VIOLATED" and item.blocking
+            risks.append(
+                RiskItem(
+                    code=(
+                        "APPROVED_PLAN_INVARIANT_VIOLATED"
+                        if critical
+                        else "APPROVED_PLAN_EXPLANATION_REQUIRED"
+                    ),
+                    severity=RiskSeverity.CRITICAL if critical else RiskSeverity.HIGH,
+                    message=item.message,
+                    field_path=item.parameter_path or item.invariant_id,
+                    current_value=item.actual_value,
+                    expected_value=item.expected_value,
+                    impact=(
+                        "实际运行证据超出用户批准的关键边界。"
+                        if critical
+                        else "该差异需要在现有 Plan Check 审批中明确处理。"
+                    ),
+                    blocking=critical,
+                    evidence_type=item.evidence_type,
+                    evidence_source=item.evidence_source,
+                    collected_at=item.collected_at,
+                    collection_tool=item.collection_tool,
+                    recommendation=(
+                        "提交新的实验计划 revision 并重新审核。"
+                        if critical
+                        else "补充声明或由 Owner 在现有计划审批页决策。"
+                    ),
+                )
+            )
+        if evaluation.check_result is CheckResult.BLOCKED or (
+            report.overall_status == "CRITICAL_DEVIATION"
+        ):
+            check_result = CheckResult.BLOCKED
+            approval_status = ApprovalStatus.NOT_REQUIRED
+        elif evaluation.check_result is CheckResult.NEEDS_APPROVAL or (
+            report.overall_status == "NEEDS_EXPLANATION"
+        ):
+            check_result = CheckResult.NEEDS_APPROVAL
+            approval_status = ApprovalStatus.PENDING
+        else:
+            check_result = CheckResult.PASS
+            approval_status = ApprovalStatus.NOT_REQUIRED
+        return evaluation.model_copy(
+            update={
+                "risks": risks,
+                "check_result": check_result,
+                "approval_status": approval_status,
+            }
+        )
 
     def _replay_plan_after_integrity_conflict(
         self, *, requester_id: UUID, idempotency_key: UUID, request_hash: str
@@ -434,6 +672,7 @@ class GuardianApplication:
                     raise ConflictError("该 Plan Check 已使用其他 Idempotency-Key 创建 Manifest")
 
                 approval = self._eligible_approval(session, plan)
+                self._validate_experiment_plan_binding_for_manifest(session, plan)
                 content = build_manifest_content(plan, approval.id if approval else None)
                 manifest = RunManifest(
                     schema_version=content["schema_version"],
@@ -521,7 +760,40 @@ class GuardianApplication:
         raise ConflictError("Plan Check 当前状态不允许创建 Manifest")
 
     @staticmethod
+    def _validate_experiment_plan_binding_for_manifest(session: Session, plan: PlanCheck) -> None:
+        if plan.experiment_plan_decision_id is None:
+            return
+        decision = session.get(ExperimentPlanDecision, plan.experiment_plan_decision_id)
+        if decision is None or decision.decision not in {
+            ExperimentPlanDecisionType.APPROVED,
+            ExperimentPlanDecisionType.CONDITIONALLY_APPROVED,
+        }:
+            raise ConflictError("Plan Check 关联的实验计划决定已经无效")
+        try:
+            snapshot = ApprovedInvariantSnapshot.model_validate(plan.experiment_plan_snapshot)
+            report = InvariantCheckReport.model_validate(plan.invariant_check)
+        except Exception as exc:
+            raise ConflictError("Plan Check 缺少可追溯的实验计划不变量快照") from exc
+        if (
+            snapshot.trace.decision_id != decision.id
+            or snapshot.trace.decision_hash != decision.decision_hash
+            or snapshot.trace.revision_id != decision.revision_id
+            or report.trace != snapshot.trace
+            or report.stage != "PRE_RUN"
+        ):
+            raise ConflictError("Plan Check 的实验计划决定或不变量报告已失配")
+
+    @staticmethod
     def _manifest_result(record: RunManifest) -> RunManifestResult:
+        plan_trace = None
+        invariant_check = None
+        if record.schema_version == 2 and isinstance(record.evidence_snapshot, dict):
+            plan_snapshot = record.evidence_snapshot.get("experiment_plan")
+            if isinstance(plan_snapshot, dict):
+                plan_trace = plan_snapshot.get("trace")
+            candidate_check = record.evidence_snapshot.get("invariant_check")
+            if isinstance(candidate_check, dict):
+                invariant_check = candidate_check
         return RunManifestResult(
             schema_version=record.schema_version,
             manifest_id=record.id,
@@ -546,6 +818,8 @@ class GuardianApplication:
             command=record.command,
             environment=record.environment,
             evidence_snapshot=record.evidence_snapshot,
+            experiment_plan_trace=plan_trace,
+            invariant_check=invariant_check,
             manifest_hash=record.manifest_hash,
             created_by=record.created_by,
             created_at=record.created_at,
@@ -611,6 +885,14 @@ class GuardianApplication:
                 manifest = self._submissions.get_manifest(session, command.run_manifest_id)
                 if manifest is None or manifest.project_id != command.project_id:
                     raise ResourceNotFoundError("项目中不存在该 Run Manifest")
+                try:
+                    final_run_evidence = (
+                        FinalRunEvidence.model_validate(command.final_run_evidence)
+                        if command.final_run_evidence is not None
+                        else None
+                    )
+                except ValueError as exc:
+                    raise InputValidationError(f"最终运行证据无效: {exc}") from exc
 
                 submission = ExperimentSubmission(
                     id=uuid4(),
@@ -623,7 +905,9 @@ class GuardianApplication:
                     manifest_hash=manifest.manifest_hash,
                     declared_experiment_status=command.experiment_status,
                     declared_metrics=command.metrics_summary,
-                    evidence_snapshot=self._submission_evidence(command, manifest),
+                    evidence_snapshot=self._submission_evidence(
+                        command, manifest, final_run_evidence
+                    ),
                     status=SubmissionStatus.RECEIVED,
                 )
                 session.add(submission)
@@ -696,7 +980,9 @@ class GuardianApplication:
 
     @staticmethod
     def _submission_evidence(
-        command: SubmissionPrepareCommand, manifest: RunManifest
+        command: SubmissionPrepareCommand,
+        manifest: RunManifest,
+        final_run_evidence: FinalRunEvidence | None,
     ) -> dict[str, Any]:
         local_metadata = {
             "evidence_type": "LOCAL_ATTESTED",
@@ -727,6 +1013,11 @@ class GuardianApplication:
                 "collected_at": datetime.now(UTC).isoformat(),
                 "collection_tool": "experiment-guardian-server",
             },
+            "final_run_evidence": (
+                final_run_evidence.model_dump(mode="json")
+                if final_run_evidence is not None
+                else None
+            ),
         }
 
     def _replay_submission(

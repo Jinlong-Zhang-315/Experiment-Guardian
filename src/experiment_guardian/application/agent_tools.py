@@ -91,8 +91,10 @@ R15D_B1_TOOL_CATALOG_VERSION = "r15d-b1-v1"
 R15D_B2_TOOL_CATALOG_VERSION = "r15d-b2-v1"
 R15E_A_TOOL_CATALOG_VERSION = "r15e-a-v1"
 TOOL_CATALOG_VERSION = "r15e-b-v1"
-EXTERNAL_TOOL_CATALOG_VERSION = "r17a-external-v1"
-PLAN_REVIEW_TOOL_CATALOG_VERSION = "r17b-plan-review-v1"
+LEGACY_EXTERNAL_TOOL_CATALOG_VERSION = "r17a-external-v1"
+EXTERNAL_TOOL_CATALOG_VERSION = "r17a-external-v2"
+LEGACY_PLAN_REVIEW_TOOL_CATALOG_VERSION = "r17b-plan-review-v1"
+PLAN_REVIEW_TOOL_CATALOG_VERSION = "r17b-plan-review-v2"
 AgentToolDefinition = tuple[
     type[ContractModel],
     str,
@@ -298,7 +300,7 @@ class AgentToolRegistry:
                 self._research_memories_search,
             ),
         }
-        self._external_definitions: AgentToolDefinitions = {
+        self._external_v1_definitions: AgentToolDefinitions = {
             "project_status_get_v1": self._r15a_definitions["project_status_get_v1"],
             "experiments_list_v1": self._r15a_definitions["experiments_list_v1"],
             "experiment_get_v1": self._r15a_definitions["experiment_get_v1"],
@@ -315,6 +317,16 @@ class AgentToolRegistry:
             "research_memories_search_v1": self._r15e_b_definitions[
                 "research_memories_search_v1"
             ],
+        }
+        self._external_definitions: AgentToolDefinitions = {
+            name: definition
+            for name, definition in self._external_v1_definitions.items()
+            if name
+            not in {
+                "research_reports_list_v1",
+                "research_report_get_v1",
+                "research_memories_search_v1",
+            }
         }
 
     @property
@@ -384,8 +396,12 @@ class AgentToolRegistry:
             return self._r15e_a_definitions
         if catalog_version == TOOL_CATALOG_VERSION:
             return self._r15e_b_definitions
+        if catalog_version == LEGACY_EXTERNAL_TOOL_CATALOG_VERSION:
+            return self._external_v1_definitions
         if catalog_version == EXTERNAL_TOOL_CATALOG_VERSION:
             return self._external_definitions
+        if catalog_version == LEGACY_PLAN_REVIEW_TOOL_CATALOG_VERSION:
+            return self._external_v1_definitions
         if catalog_version == PLAN_REVIEW_TOOL_CATALOG_VERSION:
             return self._external_definitions
         raise InputValidationError(f"不支持的 Agent 工具目录版本: {catalog_version}")

@@ -61,6 +61,7 @@ class SqlAlchemyPlanCheckRepository:
             or result.intent_version != record.intent_version
             or result.check_result is not record.check_result
             or result.document_sha256 != record.input_document_hash
+            or result.experiment_plan_decision_id != record.experiment_plan_decision_id
         ):
             raise ConflictError("Plan Check 回执与数据库追溯字段不一致")
         return result

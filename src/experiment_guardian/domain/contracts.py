@@ -376,6 +376,9 @@ class ExperimentCheckPlanCommand(ContractModel):
     command: str = Field(min_length=1, max_length=MAX_RUN_COMMAND_LENGTH)
     git_commit: str = Field(pattern=GIT_COMMIT_PATTERN)
     local_attestation: LocalAttestation
+    experiment_plan_decision_id: UUID | None = None
+    invariant_attestations: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    deviation_explanation: str | None = Field(default=None, max_length=4000)
 
 
 class ExperimentCheckPlanResult(PlanEvaluationResult):
@@ -391,6 +394,9 @@ class ExperimentCheckPlanResult(PlanEvaluationResult):
     risk_level: RiskSeverity
     missing_information: list[str] = Field(default_factory=list)
     can_create_manifest: bool
+    experiment_plan_decision_id: UUID | None = None
+    experiment_plan_trace: dict[str, Any] | None = None
+    invariant_check: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_manifest_eligibility(self) -> "ExperimentCheckPlanResult":
@@ -409,7 +415,7 @@ class ExperimentCheckPlanResult(PlanEvaluationResult):
 class RunManifestResult(ContractModel):
     """由历史 Plan Check 快照生成的不可变运行凭据。"""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     manifest_id: UUID
     project_id: UUID
     plan_check_id: UUID
@@ -432,6 +438,8 @@ class RunManifestResult(ContractModel):
     command: str = Field(min_length=1, max_length=MAX_RUN_COMMAND_LENGTH)
     environment: dict[str, Any]
     evidence_snapshot: dict[str, Any]
+    experiment_plan_trace: dict[str, Any] | None = None
+    invariant_check: dict[str, Any] | None = None
     manifest_hash: str = Field(pattern=SHA256_PATTERN)
     created_by: UUID
     created_at: datetime
@@ -502,6 +510,7 @@ class SubmissionPrepareCommand(ContractModel):
     experiment_status: SubmittedRunStatus
     metrics_summary: dict[str, float] = Field(default_factory=dict)
     files: list[SubmissionArtifactInput] = Field(min_length=2, max_length=10)
+    final_run_evidence: dict[str, Any] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1003,6 +1012,9 @@ class ReviewTrace(ContractModel):
     plan_check_id: UUID
     run_manifest_id: UUID
     manifest_hash: str = Field(pattern=SHA256_PATTERN)
+    experiment_plan_decision_id: UUID | None = None
+    experiment_plan_revision_id: UUID | None = None
+    invariant_status: str | None = None
 
 
 class ReviewFact(ContractModel):

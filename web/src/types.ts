@@ -75,6 +75,9 @@ export interface PlanCheck {
   report: Record<string, unknown>;
   git_commit: string;
   command: string;
+  experiment_plan_decision_id?: string;
+  experiment_plan_trace?: Record<string, unknown>;
+  invariant_check?: Record<string, unknown> & { overall_status?: string };
   created_at: string;
   allowed_actions: string[];
 }
@@ -90,6 +93,7 @@ export interface Submission {
   processing_error?: Record<string, unknown>;
   generated_summary?: Record<string, unknown>;
   review_receipt?: Record<string, unknown>;
+  invariant_check?: Record<string, unknown> & { overall_status?: string };
   risks: Array<Record<string, unknown> & { severity: string; message: string }>;
   artifacts: Array<{
     artifact_id: string;

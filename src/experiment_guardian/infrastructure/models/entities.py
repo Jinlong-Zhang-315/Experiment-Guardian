@@ -413,6 +413,7 @@ class PlanCheck(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __table_args__ = (
         UniqueConstraint("requester_id", "idempotency_key"),
         Index("ix_plan_check_project_created", "project_id", "created_at"),
+        Index("ix_plan_check_experiment_plan_decision", "experiment_plan_decision_id"),
         CheckConstraint(
             "(check_result = 'PASS' AND approval_status = 'NOT_REQUIRED') OR "
             "(check_result = 'BLOCKED' AND approval_status = 'NOT_REQUIRED') OR "
@@ -461,6 +462,11 @@ class PlanCheck(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         enum_column(RiskSeverity, "plan_risk_severity"), nullable=False
     )
     report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    experiment_plan_decision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("experiment_plan_decisions.id")
+    )
+    experiment_plan_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    invariant_check: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -500,7 +506,9 @@ class RunManifest(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             "project_id", "idempotency_key", name="uq_run_manifests_project_idempotency"
         ),
         UniqueConstraint("project_id", "manifest_hash", name="uq_run_manifests_project_hash"),
-        CheckConstraint("schema_version = 1", name="run_manifest_schema_version_one"),
+        CheckConstraint(
+            "schema_version IN (1, 2)", name="run_manifest_schema_version_supported"
+        ),
     )
 
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

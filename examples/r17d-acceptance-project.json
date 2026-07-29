@@ -1,0 +1,60 @@
+{
+  "project": {
+    "name": "Experiment Guardian R17d Acceptance",
+    "description": "v1.0.0 本地版发布候选专用端到端验收项目",
+    "repository_url": "https://example.invalid/experiment-guardian-r17d.git"
+  },
+  "context": {
+    "goal": "验证单变量融合实验的治理、证据和确认闭环",
+    "non_goals": ["不自动启动训练", "不自动修改代码", "不以模型输出替代确定性规则"],
+    "mainline_model": "shift-gcn",
+    "baseline": {"checkpoint": "checkpoints/baseline.pt"},
+    "dataset": "NTU60",
+    "protocol": "40/20",
+    "primary_metric": {"name": "top1", "higher_is_better": true},
+    "default_seeds": [1],
+    "active_branch": "main",
+    "active_config": {
+      "dataset": {"protocol": "40/20"},
+      "model": {"backbone": "shift-gcn", "fusion": 0.2}
+    },
+    "deprecated_items": [],
+    "key_decisions": ["正式协议固定为 40/20", "本轮只探索 fusion coefficient"],
+    "change_reason": "创建 R17d 发布候选专用正式上下文"
+  },
+  "intent": {
+    "name": "R17d fusion coefficient acceptance",
+    "objective": "验证 fusion 从 0.2 调整为 0.3 的本地治理闭环",
+    "hypothesis": "单独调整融合系数可能提高 top1",
+    "allowed_variables": ["model.fusion"],
+    "controlled_variables": ["dataset.protocol", "model.backbone"],
+    "expected_outputs": ["top1"],
+    "acceptance_criteria": ["协议和主干不变", "所有正式结果可追溯到固定版本 Artifact"],
+    "original_message": "只修改 fusion coefficient，保持协议和主干不变"
+  },
+  "constraints": [
+    {
+      "parameter_path": "dataset.protocol",
+      "protection_level": "LOCKED",
+      "expected_value": "40/20",
+      "reason": "正式数据协议不可由单次审批绕过",
+      "original_message": "protocol 固定为 40/20"
+    },
+    {
+      "parameter_path": "model.backbone",
+      "protection_level": "APPROVAL_REQUIRED",
+      "expected_value": "shift-gcn",
+      "reason": "主干变化需要 Owner 审批",
+      "original_message": "backbone 变化必须审批"
+    },
+    {
+      "parameter_path": "model.fusion",
+      "protection_level": "EXPERIMENT_VARIABLE",
+      "expected_value": 0.2,
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "reason": "R17d 验收允许的唯一实验变量",
+      "original_message": "允许修改 fusion coefficient"
+    }
+  ]
+}

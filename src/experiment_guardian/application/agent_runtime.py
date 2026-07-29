@@ -2,6 +2,7 @@
 
 import json
 import time
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, TypedDict
@@ -351,6 +352,12 @@ R17A_EXTERNAL_SYSTEM_PROMPT = """你是 Experiment Guardian 内部的外部 Codi
 }
 不要输出 JSON 之外的文字，也不要输出隐藏推理过程。"""
 
+R17A_EXTERNAL_SYSTEM_PROMPT_V2 = R17A_EXTERNAL_SYSTEM_PROMPT.replace(
+    "实验或策略。实验不可比时不得强行排名，不得把相关性描述为因果关系。",
+    "实验或策略；当前外部身份不提供其读取工具。实验不可比时不得强行排名，不得把相关性描述为\n"
+    "   因果关系。",
+)
+
 R17B_PLAN_REVIEW_SYSTEM_PROMPT = """你是 Experiment Guardian 内部的实验计划审核 Agent。
 
 强制规则：
@@ -398,6 +405,7 @@ SYSTEM_PROMPTS = {
     "r15e-a-v1": R15E_A_SYSTEM_PROMPT,
     "r15e-b-v1": R15E_B_SYSTEM_PROMPT,
     "r17a-external-v1": R17A_EXTERNAL_SYSTEM_PROMPT,
+    "r17a-external-v2": R17A_EXTERNAL_SYSTEM_PROMPT_V2,
     "r17b-plan-review-v1": R17B_PLAN_REVIEW_SYSTEM_PROMPT,
 }
 
@@ -405,6 +413,15 @@ SUMMARY_SYSTEM_PROMPT = """你负责压缩 Experiment Guardian 的较早对话�
 只概括输入消息，不添加事实，不把推测升级为事实，不执行工具，不输出建议或隐藏推理。
 正式项目记录只能保留输入中已有的短标签，摘要本身永远不是治理事实源。
 仅输出符合指定 schema 的 JSON 对象。"""
+
+EVIDENCE_SECTION_RULES = (
+    "证据分段是服务端硬约束：CONFIRMED_FACT 段只能引用 CONFIRMED_FACT；"
+    "ANALYSIS 段只能引用 ANALYSIS；CANDIDATE_DRAFT 段只能引用 CANDIDATE_DRAFT；"
+    "ACTION_PROPOSAL 段只能引用 ACTION_PROPOSAL；HYPOTHESIS 段只能引用 "
+    "CONFIRMED_FACT 或 ANALYSIS。没有对应类型证据时必须省略该类型段；"
+    "例如只有 CONFIRMED_FACT 时，不得生成 ANALYSIS 段，可将尚待验证的推断明确放入 "
+    "HYPOTHESIS 段。每个受约束段都必须包含至少一个匹配类型的 citation_id。"
+)
 
 
 class _AgentState(TypedDict, total=False):
@@ -465,6 +482,8 @@ class GovernanceAgentRuntime:
         messages, context_snapshot = self._build_context(claim)
         self._update_context_snapshot(claim, context_snapshot)
         catalog_version = str(context_snapshot["tool_catalog_version"])
+        answer_response_format = self._answer_response_format(context_snapshot)
+        final_output_rules = self._final_output_rules(context_snapshot)
 
         def require_time() -> None:
             if time.monotonic() - started > self._settings.agent_max_wall_seconds:
@@ -485,6 +504,7 @@ class GovernanceAgentRuntime:
                 messages=state["messages"],
                 tool_choice="none" if force_final else "auto",
                 catalog_version=catalog_version,
+                response_format=answer_response_format,
             )
             next_state: _AgentState = {
                 "messages": list(state["messages"]),
@@ -550,7 +570,10 @@ class GovernanceAgentRuntime:
                             "section 必须包含 evidence_kind、title、content、citation_ids。"
                             "未调用 research_report_prepare_v1 时 research_report 必须为 null "
                             "或省略。计划审核 Run 必须返回 experiment_plan_review，普通 Run "
-                            "必须省略它。当前允许引用的 evidence_id 与类型为："
+                            "必须省略它。"
+                            + EVIDENCE_SECTION_RULES
+                            + final_output_rules
+                            + "当前允许引用的 evidence_id 与类型为："
                             + json.dumps(
                                 evidence_contract,
                                 ensure_ascii=False,
@@ -577,12 +600,27 @@ class GovernanceAgentRuntime:
                     raise InputValidationError("治理 Agent 最终回答结构或引用无效") from exc
                 next_state["repair_count"] = repair_count + 1
                 next_state["force_final"] = True
+                evidence_contract = {
+                    evidence_id: item.get("evidence_kind")
+                    for evidence_id, item in next_state["evidence"].items()
+                }
                 next_state["messages"].append(
                     AgentChatMessage(
                         role="user",
                         content=(
                             "上一个回答未通过服务端结构或引用校验。请仅使用已获得的 "
                             "evidence_id，按系统指定 JSON Schema 重新输出；不要调用工具。"
+                            + EVIDENCE_SECTION_RULES
+                            + final_output_rules
+                            + "本次服务端校验失败原因："
+                            + str(exc)[:500]
+                            + "。当前允许引用的 evidence_id 与类型为："
+                            + json.dumps(
+                                evidence_contract,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            )
                         ),
                     )
                 )
@@ -751,6 +789,7 @@ class GovernanceAgentRuntime:
                         "r15e-a-v1",
                         "r15e-b-v1",
                         "r17a-external-v1",
+                        "r17a-external-v2",
                     }
                 ):
                     return
@@ -1317,6 +1356,45 @@ class GovernanceAgentRuntime:
         other = len(text) - cjk
         return int((cjk + other / 4) * 1.2) + 256
 
+    @staticmethod
+    def _answer_response_format(context_snapshot: dict[str, Any]) -> AgentResponseFormat:
+        schema = deepcopy(AgentAnswer.model_json_schema())
+        description = "Evidence-bound Experiment Guardian Agent answer."
+        if context_snapshot.get("prompt_version") == "r17a-external-v2":
+            # 外部协作 Run 没有研究报告或计划审核语义。裁剪 Provider 所见 Schema，
+            # 避免模型因用户提到“计划”而误填其他 Run 专属的可选字段。
+            properties = schema.get("properties")
+            if isinstance(properties, dict):
+                properties.pop("research_report", None)
+                properties.pop("experiment_plan_review", None)
+            definitions = schema.get("$defs")
+            if isinstance(definitions, dict):
+                evidence_kind = definitions.get("AgentEvidenceKind")
+                if isinstance(evidence_kind, dict):
+                    evidence_kind["enum"] = [
+                        AgentEvidenceKind.CONFIRMED_FACT.value,
+                        AgentEvidenceKind.USER_PROVIDED.value,
+                        AgentEvidenceKind.ANALYSIS.value,
+                        AgentEvidenceKind.HYPOTHESIS.value,
+                    ]
+            description = "Concise read-only external collaboration answer."
+        return AgentResponseFormat(
+            name="AgentAnswer",
+            description=description,
+            json_schema=schema,
+        )
+
+    @staticmethod
+    def _final_output_rules(context_snapshot: dict[str, Any]) -> str:
+        if context_snapshot.get("prompt_version") == "r17a-external-v2":
+            return (
+                "本 Run 是只读外部协作问答：禁止输出 research_report、"
+                "experiment_plan_review、ACTION_PROPOSAL 或 CANDIDATE_DRAFT。"
+                "answer_markdown 不超过 1500 个字符，sections 不超过 4 个，每段 content "
+                "不超过 600 个字符；只回答请求本身，不复制完整配置或扩写审批流程。"
+            )
+        return ""
+
     def _invoke_model(
         self,
         *,
@@ -1325,6 +1403,7 @@ class GovernanceAgentRuntime:
         messages: list[AgentChatMessage],
         tool_choice: str,
         catalog_version: str,
+        response_format: AgentResponseFormat,
     ) -> tuple[str, list[AgentToolRequest], AgentModelUsage]:
         model_call_started = time.monotonic()
         call_id = self._start_model_call(
@@ -1333,6 +1412,7 @@ class GovernanceAgentRuntime:
             messages=messages,
             tool_choice=tool_choice,
             catalog_version=catalog_version,
+            response_format=response_format,
         )
         text_parts: list[str] = []
         calls: list[AgentToolRequest] = []
@@ -1345,11 +1425,7 @@ class GovernanceAgentRuntime:
                 tools=self._tools.specs_for_version(catalog_version),
                 tool_choice=tool_choice,
                 max_output_tokens=self._settings.agent_max_output_tokens,
-                response_format=AgentResponseFormat(
-                    name="AgentAnswer",
-                    description="Evidence-bound Experiment Guardian Agent answer.",
-                    json_schema=AgentAnswer.model_json_schema(),
-                ),
+                response_format=response_format,
             ):
                 if event.event_type == "text_delta" and event.text is not None:
                     text_parts.append(event.text)
@@ -1486,6 +1562,7 @@ class GovernanceAgentRuntime:
         catalog_version: str,
         purpose: AgentModelCallPurpose = AgentModelCallPurpose.AGENT_TURN,
         include_tools: bool = True,
+        response_format: AgentResponseFormat | None = None,
     ) -> UUID:
         now = datetime.now(UTC)
         with self._session_factory() as session, session.begin():
@@ -1513,11 +1590,15 @@ class GovernanceAgentRuntime:
                         "name": (
                             "AgentContextSummary"
                             if purpose is AgentModelCallPurpose.CONTEXT_SUMMARY
+                            else response_format.name
+                            if response_format is not None
                             else "AgentAnswer"
                         ),
                         "schema_sha256": canonical_json_hash(
                             AgentContextSummaryPayload.model_json_schema()
                             if purpose is AgentModelCallPurpose.CONTEXT_SUMMARY
+                            else response_format.json_schema
+                            if response_format is not None
                             else AgentAnswer.model_json_schema()
                         ),
                     },
@@ -1713,6 +1794,8 @@ class GovernanceAgentRuntime:
 
     @staticmethod
     def _summary_prompt_version(prompt_version: str) -> str:
+        if prompt_version == "r17a-external-v2":
+            return "r17a-external-summary-v2"
         if prompt_version == "r17a-external-v1":
             return "r17a-external-summary-v1"
         if prompt_version == "r15e-b-v1":
@@ -1731,7 +1814,7 @@ class GovernanceAgentRuntime:
 
     @staticmethod
     def _summary_schema_version(prompt_version: str) -> int:
-        if prompt_version == "r17a-external-v1":
+        if prompt_version in {"r17a-external-v1", "r17a-external-v2"}:
             return 7
         if prompt_version == "r15e-b-v1":
             return 7

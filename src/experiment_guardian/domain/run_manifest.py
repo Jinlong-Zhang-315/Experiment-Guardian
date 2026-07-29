@@ -6,8 +6,13 @@ from typing import Any
 
 from experiment_guardian.application.errors import ConflictError
 from experiment_guardian.domain.enums import EvidenceApplicability
+from experiment_guardian.domain.invariant_check import (
+    ApprovedInvariantSnapshot,
+    InvariantCheckReport,
+)
 
-MANIFEST_SCHEMA_VERSION = 1
+LEGACY_MANIFEST_SCHEMA_VERSION = 1
+PLAN_BOUND_MANIFEST_SCHEMA_VERSION = 2
 
 
 def canonical_json_hash(value: Any) -> str:
@@ -156,8 +161,27 @@ def build_manifest_content(plan: Any, approval_record_id: Any | None) -> dict[st
             "risks": plan.report.get("risks", []),
         },
     }
+    schema_version = LEGACY_MANIFEST_SCHEMA_VERSION
+    if plan.experiment_plan_decision_id is not None:
+        try:
+            plan_snapshot = ApprovedInvariantSnapshot.model_validate(
+                plan.experiment_plan_snapshot
+            )
+            invariant_check = InvariantCheckReport.model_validate(plan.invariant_check)
+        except Exception as exc:
+            raise ConflictError("Plan Check 的批准计划或不变量快照无效") from exc
+        if (
+            plan_snapshot.trace.decision_id != plan.experiment_plan_decision_id
+            or invariant_check.trace != plan_snapshot.trace
+            or invariant_check.stage != "PRE_RUN"
+            or invariant_check.overall_status == "CRITICAL_DEVIATION"
+        ):
+            raise ConflictError("Plan Check 的批准计划追溯或运行前结论不一致")
+        schema_version = PLAN_BOUND_MANIFEST_SCHEMA_VERSION
+        evidence_snapshot["experiment_plan"] = plan_snapshot.model_dump(mode="json")
+        evidence_snapshot["invariant_check"] = invariant_check.model_dump(mode="json")
     return {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "project_id": str(plan.project_id),
         "plan_check_id": str(plan.id),
         "approval_record_id": str(approval_record_id) if approval_record_id else None,

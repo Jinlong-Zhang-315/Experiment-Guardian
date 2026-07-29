@@ -23,6 +23,12 @@ from experiment_guardian.domain.enums import (
     WorkflowStatus,
     WorkflowStep,
 )
+from experiment_guardian.domain.invariant_check import (
+    ApprovedInvariantSnapshot,
+    FinalRunEvidence,
+    InvariantCheckReport,
+    evaluate_submission_invariants,
+)
 from experiment_guardian.domain.plan_check import canonical_config_hash
 from experiment_guardian.domain.run_manifest import canonical_json_hash
 from experiment_guardian.domain.submission_analysis import (
@@ -32,6 +38,7 @@ from experiment_guardian.domain.submission_analysis import (
 )
 from experiment_guardian.infrastructure.models import (
     ExperimentSubmission,
+    PlanCheck,
     ProjectContext,
     RunManifest,
     SubmissionRisk,
@@ -385,6 +392,81 @@ class SubmissionAnalysisService:
                             message="完成的实验结果缺少项目主指标",
                         )
                     )
+                invariant_report: InvariantCheckReport | None = None
+                if manifest.schema_version == 2:
+                    plan = session.get(PlanCheck, manifest.plan_check_id)
+                    try:
+                        plan_snapshot_raw = manifest.evidence_snapshot.get("experiment_plan")
+                        pre_run_raw = manifest.evidence_snapshot.get("invariant_check")
+                        if (
+                            plan is None
+                            or plan.experiment_plan_decision_id is None
+                            or not isinstance(plan_snapshot_raw, dict)
+                            or not isinstance(pre_run_raw, dict)
+                            or canonical_json_hash(plan_snapshot_raw)
+                            != canonical_json_hash(plan.experiment_plan_snapshot)
+                            or canonical_json_hash(pre_run_raw)
+                            != canonical_json_hash(plan.invariant_check)
+                        ):
+                            raise ValueError("v2 Manifest 与 Plan Check 的计划快照不一致")
+                        approved_snapshot = ApprovedInvariantSnapshot.model_validate(
+                            plan_snapshot_raw
+                        )
+                        pre_run_report = InvariantCheckReport.model_validate(pre_run_raw)
+                        if (
+                            approved_snapshot.trace.decision_id != plan.experiment_plan_decision_id
+                            or pre_run_report.trace != approved_snapshot.trace
+                        ):
+                            raise ValueError("v2 Manifest 的计划决定追溯不一致")
+                        final_raw = submission.evidence_snapshot.get("final_run_evidence")
+                        final_evidence = (
+                            FinalRunEvidence.model_validate(final_raw)
+                            if isinstance(final_raw, dict)
+                            else None
+                        )
+                        parsed_configuration = config.get("parsed")
+                        if not isinstance(parsed_configuration, dict):
+                            raise ValueError("上传配置缺少可用于不变量核对的解析结果")
+                        invariant_report = evaluate_submission_invariants(
+                            snapshot=approved_snapshot,
+                            manifest_report=pre_run_report,
+                            parsed_config=parsed_configuration,
+                            config_document_sha256=str(config.get("document_sha256")),
+                            manifest_git_commit=manifest.git_commit,
+                            manifest_run_command=manifest.command,
+                            manifest_checkpoint=manifest.checkpoint,
+                            final_evidence=final_evidence,
+                        )
+                    except (TypeError, ValueError) as exc:
+                        self._terminal_in_session(
+                            submission,
+                            WorkflowStep.MANIFEST_VALIDATION,
+                            "PLAN_INVARIANT_TRACE_INVALID",
+                            f"批准计划的不变量追溯无效: {exc}",
+                        )
+                        return
+                    for item in invariant_report.checks:
+                        if item.outcome != "VIOLATED" and not item.blocking:
+                            continue
+                        findings.append(
+                            {
+                                "code": "APPROVED_PLAN_INVARIANT_VIOLATED",
+                                "severity": RiskSeverity.CRITICAL.value,
+                                "field_path": item.parameter_path or item.invariant_id,
+                                "current": item.actual_value,
+                                "expected": item.expected_value,
+                                "message": item.message,
+                                "blocking": True,
+                                "evidence_type": item.evidence_type.value,
+                                "evidence_source": item.evidence_source,
+                                "collected_at": (
+                                    item.collected_at.isoformat()
+                                    if item.collected_at is not None
+                                    else None
+                                ),
+                                "collection_tool": item.collection_tool,
+                            }
+                        )
                 payload = {
                     "passed": not findings,
                     "checks": [
@@ -396,6 +478,7 @@ class SubmissionAnalysisService:
                         "result_status",
                         "result_metrics",
                         "primary_metric",
+                        *(["approved_plan_invariants"] if invariant_report else []),
                     ],
                     "findings": findings,
                 }
@@ -404,6 +487,11 @@ class SubmissionAnalysisService:
                     WorkflowStep.MANIFEST_VALIDATION,
                     "manifest_validation",
                     payload,
+                    related_sections=(
+                        {"invariant_validation": invariant_report.model_dump(mode="json")}
+                        if invariant_report is not None
+                        else None
+                    ),
                 )
 
         run_with_serialization_retry(persist)
@@ -521,6 +609,12 @@ class SubmissionAnalysisService:
                     )
                     if fingerprint in existing:
                         continue
+                    raw_evidence_type = raw.get("evidence_type")
+                    evidence_type = (
+                        EvidenceType(raw_evidence_type)
+                        if isinstance(raw_evidence_type, str)
+                        else EvidenceType.LOCAL_ATTESTED
+                    )
                     session.add(
                         SubmissionRisk(
                             submission_id=submission.id,
@@ -549,17 +643,23 @@ class SubmissionAnalysisService:
                                 else "当前提交与正式 Manifest 或提交声明不一致"
                             ),
                             evidence_type=(
-                                EvidenceType.CLOUD_VERIFIED
-                                if is_duplicate
-                                else EvidenceType.LOCAL_ATTESTED
+                                EvidenceType.CLOUD_VERIFIED if is_duplicate else evidence_type
                             ),
                             evidence_source=(
                                 "experiment_submissions/artifacts"
                                 if is_duplicate
-                                else "uploaded CONFIG/RESULT content"
+                                else str(
+                                    raw.get("evidence_source") or "uploaded CONFIG/RESULT content"
+                                )
                             ),
-                            collected_at=datetime.now(UTC),
-                            collection_tool="experiment-guardian-r11-rules",
+                            collected_at=(
+                                datetime.fromisoformat(raw["collected_at"])
+                                if isinstance(raw.get("collected_at"), str)
+                                else datetime.now(UTC)
+                            ),
+                            collection_tool=str(
+                                raw.get("collection_tool") or "experiment-guardian-r11-rules"
+                            ),
                             constraint_source=None,
                             constraint_status=None,
                             inference_basis=None,
@@ -703,9 +803,12 @@ class SubmissionAnalysisService:
         payload: dict[str, Any],
         *,
         final: bool = False,
+        related_sections: dict[str, Any] | None = None,
     ) -> None:
         snapshot = self._snapshot(submission)
         snapshot[section] = payload
+        if related_sections:
+            snapshot.update(related_sections)
         steps = dict(snapshot.get("steps", {}))
         steps[step.value] = {
             "completed_at": datetime.now(UTC).isoformat(),

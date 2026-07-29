@@ -35,6 +35,7 @@
 | 2026-07-23 | R15 Plan | `working tree` | 内部实验治理 Agent 分期设计 |
 | 2026-07-28 | R17a | `working tree` | 外部 Coding Agent 协作入口与带引用问答 |
 | 2026-07-28 | R17b | `working tree` | 版本化自然语言实验计划、有限自动修订与人工决定 |
+| 2026-07-28 | R17c | `working tree` | 三阶段关键不变量核对与 v2 Manifest |
 | 2026-07-23 | R15a | `working tree` | 只读 Agent 对话纵向切片 |
 | 2026-07-23 | R15b | `working tree` | 实验分析与对话压缩 |
 | 2026-07-24 | R15c | `working tree` | 治理草稿与影响分析 |
@@ -1966,6 +1967,129 @@ Agent Run、ModelCall、ToolCall、Citation、Event、lease、generation 和审�
   Submission 三阶段关键不变量核对、运行进度与产物回传留给 R17c。
 * 本轮不增加自动训练、代码修改、任意 SQL、委托审批、候选不变量自动发布为正式 Constraint，
   也不改变现有 Plan Check、Manifest、Submission 或 Experiment 状态机。
+
+## 2026-07-28 / R17c：三阶段关键不变量核对与 v2 Manifest
+
+版本：`working tree`。
+
+### 更新内容
+
+* 新增纯领域层不变量检查契约和规则。来源分为正式 Constraint、用户确认的计划候选和条件批准
+  条款；阶段分为计划批准、运行前和结果提交，结论分为一致、非关键变化、需要解释和关键偏离。
+* `experiment_check_plan` 新增可选 `experiment_plan_decision_id`、不变量声明和偏离说明。绑定时
+  重新检查项目、成员、revision、Context/Intent 和 policy hash；经典不带决定 ID 的调用兼容。
+* 结构化确认不变量使用严格 JSON 类型和无碰撞路径比较。自然语言条件只能使用带来源、时间和
+  工具的 `LOCAL_ATTESTED`；满足声明不会被描述为云端事实，违反产生 `BLOCKED`，缺失产生
+  `NEEDS_APPROVAL`。
+* revision `20260728_26` 为 Plan Check 增加计划决定外键、批准快照和运行前不变量报告；
+  Run Manifest 支持 schema v1/v2。v2 把决定、review/policy hash 和运行前结论加入 Manifest hash。
+* `submission_prepare` 可保存最终运行证据。既有 `MANIFEST_VALIDATION` 节点对固定 CONFIG 版本、
+  Git、命令、checkpoint 和自然语言声明再次核对；关键偏离或证据缺失形成
+  `CRITICAL + blocking` 风险，不改变 Submission 状态机。
+* 审核回执增加计划决定、revision 和最终不变量状态追溯；正式确认会重新校验这些字段。Plan 和
+  Submission Web 页面优先展示阶段结论，保留完整 JSON。
+
+### 修复的问题
+
+* 计划审批、运行前配置和结果提交此前是三段独立证据，现在能够通过 decision、Plan Check、
+  schema v2 Manifest 和 Submission 建立不可变追溯。
+* 用户确认的计划级结构化不变量不再只能显示：运行前偏离会直接阻止 Manifest，不能通过普通
+  Owner Plan Check 审批绕过。
+* v2 Submission 缺少最终 Git、命令、配置哈希或确认条件声明时仍保留失败草稿和分析历史，但
+  不能通过形式化点击确认成正式 Experiment。
+* 低影响的计划配置证据差异只保存有界路径摘要，避免把两份完整配置重复塞入检查报告。
+
+### 数据库迁移
+
+* 旧 Plan Check 保持新增列为空，旧 schema v1 Manifest 不回填、不重算 hash。
+* 空数据库和没有 v2 Manifest 的数据库支持 `26 -> 25` 降级。
+* 一旦存在 schema v2 Manifest，revision 26 会拒绝降级，避免不可变证据被改写为旧语义。
+
+### 验证结果
+
+* 新增规则单测覆盖严格类型、结构化偏离、自然语言声明边界、最终证据缺失阻断和完整证据通过。
+* 纵向集成测试覆盖 R17b 计划审核/自动修订/人工批准、绑定 Plan Check、schema v2 Manifest，
+  以及缺少最终证据时 Submission 产生 blocking 风险。
+* Plan Check、Manifest、Submission、审核回执、正式确认和 MCP 定向回归通过；SQLite 全迁移往返
+  通过。Python 默认全量 343 项执行到 100%，其中 19 项按外部服务开关跳过。
+* 真实本地 CockroachDB 隔离库完成 revision 26 升级和完整事务链路，测试结束后删除临时库；
+  SQLAlchemy 反射 `VECTOR` 时仍有方言级已知 warning，不影响结果。
+* Ruff 全仓通过，mypy 检查 84 个源码文件通过；Web ESLint、16 项 Vitest 和 production build
+  通过。新增页面测试覆盖 Plan Check 与 Submission 两个不变量核对区块。
+* 本地 Compose 完成 migration/API/Worker/Web 重建，现有数据库升级到 `20260728_26`；API health
+  和 Web 静态入口实测通过。当前本地配置 `AGENT_ENABLED=false`，可选 Agent Worker 未启用。
+
+### 已知遗留项
+
+* 经典不带决定 ID 的 MCP 链路按兼容策略继续存在；文档规定外部计划协作链路必须传决定 ID，
+  但本轮不使用破坏兼容性的全局强制开关。
+* 自然语言条件只能依赖带边界的本地声明，Experiment Guardian 仍不能独立观察真实训练行为。
+* R17d 只做本地端到端、并发恢复、安全与发布验收，不继续增加业务能力。
+
+## 2026-07-29 / R17d：v1.0.0 本地版发布加固
+
+版本：`working tree`，候选版本 `1.0.0`。
+
+### 更新内容
+
+* 新增专用 `examples/r17d-acceptance-project.json` 和 `scripts/verify_r17d_local.py`。脚本只接受
+  专用项目，通过 Web、stdio MCP 和现有 Worker 串起外部任务、计划审核、人工决定、Plan Check、
+  LOCKED 负例、schema v2 Manifest、MinIO Artifact、Submission 分析、正式确认和查询。
+* 发布门核对 Host 白名单、local_owner/CSRF、正式引用、三阶段不变量、固定 VersionId、百炼摘要
+  和 1024 维 embedding、关键写操作幂等重放及正式策略不变；报告不保存 Token、Cookie 或模型
+  原始输入输出。
+* 包、API 和 Web 版本统一为 `1.0.0`。Compose 的服务环境文件支持
+  `EG_ENV_FILE=${EG_ENV_FILE:-.env.local}`，可用不入库的独立发布配置运行，不改变默认本地启动。
+* `.env.local.example` 将真实 Agent 建议值调整为每 Run 5 次模型调用、300 秒墙钟时间，为百炼
+  Function Calling、独立严格 JSON 回合和一次有界修复预留空间。
+* R17c 纵向集成测试补齐“最终证据完整时不产生阻断风险”，Web mock 和双页面测试补齐计划、
+  运行前与结果阶段不变量展示。
+
+### 修复的问题
+
+* 真实百炼首次验收发现默认 thinking 会消耗大量 reasoning token，使严格 JSON 在闭合前以
+  `length` 截断。`BailianAgentChatModel` 现显式发送 `enable_thinking=false`；单元测试同时核对
+  auto 工具回合和严格最终回合的请求参数。
+* 最终回答修复提示现在重复给出证据类型硬映射、当前 evidence allowlist 和服务端拒绝原因。
+  `CONFIRMED_FACT` 不能伪装为 `ANALYSIS`；没有分析证据时只能省略分析段或明确写成
+  `HYPOTHESIS`。服务端 validator 没有放宽。
+* 外部 `r17a-external-v1` 目录曾暴露三个仅支持 Web Session 的报告/记忆工具，MCP 身份选中后
+  会确定性失败。新 Run 使用 `r17a-external-v2`，只开放项目、正式实验、比较和统计；计划审核
+  使用 `r17b-plan-review-v2` 目录。v1 定义继续保留用于历史 Run 还原。
+* 外部 v2 最终回答使用裁剪后的专用 JSON Schema，禁止 Report、Plan Review、Action Proposal
+  和 Candidate Draft 字段，并限制回答长度。实际 Schema hash 随模型调用快照保存。
+* 发布脚本原先使用旧审核资格枚举名，导致无风险、`can_confirm=true` 的 Submission 被门禁误拒。
+  脚本现直接引用领域 `ReviewEligibility` 和 `RiskSeverity` 枚举，避免再次漂移。
+* 发布文档的真实 CockroachDB 命令从未被测试读取的 `TEST_COCKROACH_URL` 修正为
+  `DATABASE_URL`。
+
+### 数据库迁移
+
+* R17d 没有新增迁移。数据库 head 保持 `20260728_26`；R17c 的 revision 26 和 schema v2
+  Manifest 降级保护继续有效。
+
+### 验证结果
+
+* 真实 R17d 门禁以 `qwen3.7-plus` Agent/摘要、`text-embedding-v4`、MinIO 和 CockroachDB
+  完成，9 次 Agent 模型调用后生成正式 Experiment；12 个发布检查全部 PASS。去敏报告为
+  `artifacts/r17d-acceptance-report.json`。
+* Python 默认全量收集 347 项：328 项通过，19 项按真实云/MinIO/Cockroach/百炼开关跳过。
+  Ruff 全仓通过，mypy 检查 84 个源码文件通过。
+* 真实 MinIO 集成 1 项通过，覆盖预签名上传、真实 VersionId、固定版本读取和防静默覆盖；真实
+  CockroachDB 两项通过，覆盖 migration、Plan Check 全链、并发唯一 claim、lease 接管、
+  generation、最大重试和死信。`VECTOR` 反射仍产生已知方言 warning，不影响测试结果。
+* Web ESLint、8 个 Vitest 文件共 16 项和 production build 通过。Compose 配置解析通过；重建后
+  API health 返回 `1.0.0`，capabilities 保持既有 7 个治理 MCP 工具，Alembic head 核对通过。
+
+### 已知遗留项
+
+* 宿主 Chromium 缺少 `libatk-1.0.so.0`；官方 Playwright 1.61.1 镜像下载在当前网络环境长时间
+  无进展后终止，因此本轮不能把桌面/移动浏览器 E2E 记录为通过。对应页面组件测试、lint 和
+  build 已通过，但仍需在具备浏览器依赖或预拉取镜像的 CI 重跑 `npm run test:e2e`。
+* 本地版发布声明不覆盖 Cognito、AWS S3、SQS、Bedrock 和 Terraform 的真实云部署验收；这些
+  适配器及自动化测试仍保留，不能由本地 PASS 推导为云线路已上线。
+* 验收证明治理和证据链可工作，不证明真实训练行为或实验结果正确。R17d 不新增自动训练、代码
+  修改、任意 SQL、委托审批或新的治理状态机，也未自动 commit/tag。
 
 ## 新日志模板
 

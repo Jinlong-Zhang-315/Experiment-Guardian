@@ -238,6 +238,7 @@ def test_bailian_agent_streams_text_usage_and_json_mode() -> None:
     )
     assert "".join(item.text or "" for item in events) == '{"answer_markdown":"ok"}'
     assert captured["stream"] is True
+    assert captured["enable_thinking"] is False
     assert captured["response_format"] == {"type": "json_object"}
     assert any(
         item.usage is not None and item.usage.input_tokens == 12 for item in events
@@ -334,6 +335,7 @@ def test_bailian_agent_does_not_mix_json_mode_with_tool_selection() -> None:
         )
     )
     assert "response_format" not in captured
+    assert captured["enable_thinking"] is False
     assert any(event.tool_call is not None for event in events)
     assert not any(event.text for event in events)
 

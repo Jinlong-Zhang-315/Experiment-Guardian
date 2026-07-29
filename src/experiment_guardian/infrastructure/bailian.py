@@ -350,6 +350,9 @@ class BailianAgentChatModel(AgentChatModel):
             "max_tokens": max_output_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
+            # 治理输出需要短、稳定且可校验。百炼 Qwen 混合思考模型默认可能消耗
+            # 大量 reasoning token，并在 JSON 完成前触发 length。
+            "enable_thinking": False,
         }
         # 百炼 OpenAI-compatible 的 json_object 会让部分 Qwen 模型把工具调用编码进正文。
         # 工具选择回合保持原生 Function Calling；强制最终回合再启用 JSON，并由服务端

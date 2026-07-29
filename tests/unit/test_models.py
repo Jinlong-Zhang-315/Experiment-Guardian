@@ -49,6 +49,9 @@ def test_version_and_evidence_snapshots_are_persisted() -> None:
         "input_document_hash",
         "context_snapshot",
         "intent_snapshot",
+        "experiment_plan_decision_id",
+        "experiment_plan_snapshot",
+        "invariant_check",
     } <= set(plan_check.columns.keys())
     assert {"plan_check_id", "context_version", "intent_version", "evidence_snapshot"} <= set(
         manifest.columns.keys()
@@ -76,8 +79,14 @@ def test_approval_and_manifest_are_immutable_by_schema() -> None:
         "uq_run_manifests_plan_check",
         "uq_run_manifests_project_idempotency",
         "uq_run_manifests_project_hash",
-        "ck_run_manifests_run_manifest_schema_version_one",
+        "ck_run_manifests_run_manifest_schema_version_supported",
     } <= manifest_constraints
+    schema_constraint = next(
+        constraint
+        for constraint in manifest.constraints
+        if constraint.name == "ck_run_manifests_run_manifest_schema_version_supported"
+    )
+    assert str(schema_constraint.sqltext) == "schema_version IN (1, 2)"
     assert {"schema_version", "config_document_hash"} <= set(manifest.columns.keys())
 
 

@@ -103,6 +103,9 @@ class PlanCheckWebView(ContractModel):
     report: dict[str, Any]
     git_commit: str
     command: str
+    experiment_plan_decision_id: UUID | None = None
+    experiment_plan_trace: dict[str, Any] | None = None
+    invariant_check: dict[str, Any] | None = None
     created_at: datetime
     allowed_actions: list[str]
 
@@ -135,6 +138,7 @@ class SubmissionWebView(ContractModel):
     processing_error: dict[str, Any] | None = None
     generated_summary: dict[str, Any] | None = None
     review_receipt: dict[str, Any] | None = None
+    invariant_check: dict[str, Any] | None = None
     risks: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[ArtifactWebView] = Field(default_factory=list)
     created_at: datetime

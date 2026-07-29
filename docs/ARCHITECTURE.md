@@ -1,11 +1,10 @@
 # Experiment Guardian 当前框架图
 
-更新时间：2026-07-28
-当前实现：R17b 版本化自然语言实验计划、有限自动修订与人工决定
+更新时间：2026-07-29
+当前实现：v1.0.0 / R17d 本地版发布加固
 
-下一计划：R17c 计划、运行前和结果提交三阶段关键不变量核对。总体边界见
-`EXTERNAL_CODING_AGENT_PLAN.md`。
-数据库 head：`20260728_25`
+四阶段外部 Agent 协作路线已收口。发布门见 `R17D_RELEASE.md`，后续默认进入缺陷维护。
+数据库 head：`20260728_26`
 
 除明确标记“计划”的章节外，本文描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与
 自动化验证，`[EXTERNAL]` 表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
@@ -216,12 +215,13 @@ infra/terraform/                AWS/Cognito/ECS/CloudFront/S3/SQS IaC
 demo/r14/                       最终演示输入文件
 scripts/verify_r14_deployment.py 公开部署认证/发现验收
 scripts/verify_r16_local.py      本地 RC 与可选真实百炼只读验收
+scripts/verify_r17d_local.py     v1.0.0 本地公共接口 + 真实百炼强制发布门
 ```
 
 依赖方向保持：接口层 -> 应用层 -> 领域层；基础设施实现应用端口。前端不重新计算风险、
 审批资格或角色权限。
 
-## R17b Agent 当前框架图
+## R17d Agent 当前框架图
 
 ```text
 Web 治理 Agent 页 <------------------ MCP 创建的同用户任务可见并可续聊
@@ -294,17 +294,18 @@ external_agent_plan_submit / external_agent_plan_revise / external_agent_plan_ge
    |       +--> MCP_OAUTH -> grant + client, live revoke/expiry/project checks
    |       +--> scope snapshot intersected with current permission
    |
-   +--> r17a-external-v1 read-only catalog
+   +--> r17a-external-v2 read-only catalog
            +--> project / formal experiment / comparison / statistics
-           +--> candidate report and research-memory reads
+           +--> no Web-only report or research-memory tools
            +--> no draft, proposal, approval, manifest or formal write tool
+           +--> v1 retained only for historical Run reconstruction
    |
    +--> ExperimentPlanService
            +--> immutable ExperimentPlanRevision
            |      +--> full plan/evidence + formal policy snapshot/hash
            |      +--> deterministic YAML/JSON + LOCKED hard check
            +--> AgentRun kind=EXPERIMENT_PLAN_REVIEW
-           |      +--> r17b prompt + existing read-only catalog
+           |      +--> r17b prompt + r17b-plan-review-v2 read-only catalog
            |      +--> at most 2 text-only automatic revisions
            |      +--> policy drift checked before model call
            +--> ExperimentPlanReview
@@ -314,6 +315,21 @@ external_agent_plan_submit / external_agent_plan_revise / external_agent_plan_ge
                   +--> Web Session + recent auth + live RBAC
                   +--> exact revision/candidate choices/approved snapshot
                   +--> does not replace formal Plan Check or create Manifest
+                  |
+                  v optional decision binding
+               PlanCheck [R17c]
+                  +--> normalized formal/candidate/condition invariants
+                  +--> strict configuration checks + LOCAL_ATTESTED declarations
+                  +--> PASS / NEEDS_APPROVAL / BLOCKED precedence
+                  |
+                  v
+               RunManifest schema v2 [R17c]
+                  +--> decision/review/policy hashes + pre-run report in manifest hash
+                  |
+                  v
+               Submission MANIFEST_VALIDATION [R17c]
+                  +--> fixed CONFIG version + final Git/command/checkpoint/declarations
+                  +--> critical deviation or missing key evidence => blocking risk
 
 Owner Web Session
    |
@@ -340,6 +356,32 @@ Artifact 关联、双幂等结果和审计在同一事务中落库。正式事�
 继续使用独立 evidence，摘要和研究报告不参与正式判断。报告生成时冻结来源 ToolCall 输出、
 Experiment 顺序、provider/model/prompt/schema 与双哈希；后续来源状态变化只显示警告，不追溯改写。
 
+## R17d 发布门调用图
+
+```text
+examples/r17d-acceptance-project.json
+              |
+              v
+      bootstrap-local (idempotent)
+              |
+              v
+scripts/verify_r17d_local.py
+  |-- Web/Nginx ----------> Host allowlist + local_owner + CSRF
+  |-- stdio MCP ----------> external task + plan + formal governance tools
+  |-- Agent Worker -------> real Bailian answer/review + citations
+  |-- Owner Web decision -> immutable plan decision / submission confirmation
+  |-- MinIO -------------> presigned PUT + real VersionId + fixed-version verify
+  |-- DB Worker ---------> deterministic analysis + real Bailian summary/embedding
+  |-- experiments_query -> confirmed Experiment trace
+  +-- final context read -> Context/Intent/Constraint must remain unchanged
+
+parallel release regressions
+  |-- DatabaseOutboxQueue: claim/lease/generation/retry/dead-letter
+  |-- Agent CockroachDB: concurrent claim/recovery/idempotency
+  |-- Playwright: desktop/mobile invariant checkpoint visibility
+  +-- migration head: 20260728_26 (R17d has no migration)
+```
+
 ## 数据关系
 
 ```text
@@ -351,9 +393,10 @@ User(cognito_sub)
   |      idle/absolute/recent   +--< ExperimentIntent(version, context version)
   |                            +--< ProtectedParameter(version, confirmation)
   +--< OidcTransaction         |
-  |      state hash/encrypted  +--< PlanCheck(full policy/evidence snapshots)
+  |      state hash/encrypted  +--< PlanCheck(policy/evidence/invariant snapshots)
   |                            |      +--0..1 ApprovalRecord
-  +--< McpOAuthGrant           |      +--0..1 RunManifest(immutable)
+  +--< McpOAuthGrant           |      +--0..1 ExperimentPlanDecision
+         |                     |      +--0..1 RunManifest(schema v1/v2, immutable)
          |                     |
          +-- McpOAuthClient ---+--< ExperimentSubmission
               one project      |      +--< Artifact(S3 VersionId/evidence)
@@ -446,7 +489,10 @@ External Coding Agent plan
 -> only fully auto-fixable text issues may append another revision, at most two rounds
 -> Web user reviews exact revision, candidate invariants, hashes and impact receipt
 -> independent recent-authenticated decision freezes the plan-level authorization
--> formal experiment_check_plan remains mandatory before Run Manifest creation
+-> external Agent passes decision_id and local invariant attestations to formal experiment_check_plan
+-> deterministic pre-run check creates schema v2 Run Manifest when eligible
+-> final Submission evidence is checked again against fixed CONFIG, Manifest and approved invariants
+-> blocking deviations cannot be confirmed as formal Experiment
 ```
 
 ## 不在框架内

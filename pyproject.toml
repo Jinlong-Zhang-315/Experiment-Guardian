@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "experiment-guardian"
-version = "0.1.0"
+version = "1.0.0"
 description = "提高深度学习实验一致性、可追溯性和风险可见性的治理服务"
 readme = "README.md"
 requires-python = ">=3.12"
