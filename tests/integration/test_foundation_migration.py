@@ -157,6 +157,9 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         "agent_action_proposals",
     } <= set(inspector.get_table_names())
     assert "current_summary_id" in {item["name"] for item in inspector.get_columns("agent_threads")}
+    assert "capability_domain" in {
+        item["name"] for item in inspector.get_columns("agent_threads")
+    }
     assert {
         "purpose",
         "provider",
@@ -257,7 +260,30 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
         str(item["name"]).endswith("run_manifest_schema_version_supported")
         for item in inspector.get_check_constraints("run_manifests")
     )
+    citation_checks = inspector.get_check_constraints("agent_citations")
+    assert any(
+        "ACTION_PROPOSAL" in str(item.get("sqltext"))
+        and "CANDIDATE_DRAFT" in str(item.get("sqltext"))
+        for item in citation_checks
+    )
     engine.dispose()
+
+    run_alembic("downgrade", "20260730_27")
+    engine = create_engine(database_url)
+    assert all(
+        "ACTION_PROPOSAL" not in str(item.get("sqltext"))
+        for item in inspect(engine).get_check_constraints("agent_citations")
+    )
+    engine.dispose()
+    run_alembic("upgrade", "head")
+
+    run_alembic("downgrade", "20260728_26")
+    engine = create_engine(database_url)
+    assert "capability_domain" not in {
+        item["name"] for item in inspect(engine).get_columns("agent_threads")
+    }
+    engine.dispose()
+    run_alembic("upgrade", "head")
 
     run_alembic("downgrade", "20260728_25")
     engine = create_engine(database_url)

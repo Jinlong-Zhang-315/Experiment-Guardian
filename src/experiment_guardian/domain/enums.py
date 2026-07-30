@@ -219,6 +219,16 @@ class AgentThreadStatus(StrEnum):
     ARCHIVED = "ARCHIVED"
 
 
+class AgentCapabilityDomain(StrEnum):
+    """Web 治理 Agent 会话的确定性能力边界。"""
+
+    GENERAL = "GENERAL"
+    ANALYSIS = "ANALYSIS"
+    POLICY = "POLICY"
+    RESEARCH = "RESEARCH"
+    PROPOSAL = "PROPOSAL"
+
+
 class AgentThreadOrigin(StrEnum):
     WEB = "WEB"
     EXTERNAL_MCP = "EXTERNAL_MCP"

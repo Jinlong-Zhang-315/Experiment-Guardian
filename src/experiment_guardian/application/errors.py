@@ -35,6 +35,12 @@ class InputValidationError(ApplicationError):
     code = "INVALID_INPUT"
 
 
+class DataIntegrityError(ApplicationError):
+    """持久化结果违反确定性数据库约束，不能通过重试恢复。"""
+
+    code = "DATA_INTEGRITY_ERROR"
+
+
 class ServiceUnavailableError(ApplicationError):
     code = "SERVICE_UNAVAILABLE"
 

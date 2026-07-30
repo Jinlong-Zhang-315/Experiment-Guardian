@@ -1005,6 +1005,7 @@ class ExperimentPlanService:
             prompt_version=PLAN_REVIEW_PROMPT_VERSION,
             tool_catalog_version=PLAN_REVIEW_TOOL_CATALOG_VERSION,
             context_snapshot={
+                "capability_domain": "PLAN_REVIEW",
                 "experiment_plan_revision_id": str(revision.id),
                 "experiment_plan_hard_check": hard_check.model_dump(mode="json"),
             },

@@ -1,0 +1,3831 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-30T10:33:10.872119+00:00",
+  "base_url": "http://127.0.0.1:5199",
+  "project_id": "ab12b4ee-d1ec-4605-ac74-d8d636156ff1",
+  "provider": "bailian",
+  "repetitions": 3,
+  "inventory": {
+    "experiments": 1,
+    "plan_checks": 4,
+    "submissions": 2,
+    "active_policy_drafts": 0,
+    "research_reports": 0
+  },
+  "cases": [
+    {
+      "case_id": "analysis.project_status",
+      "capability_domain": "ANALYSIS",
+      "expected_tools": [
+        "project_status_get_v1"
+      ]
+    },
+    {
+      "case_id": "policy.current_state",
+      "capability_domain": "POLICY",
+      "expected_tools": [
+        "project_status_get_v1"
+      ]
+    },
+    {
+      "case_id": "research.recent_experiments",
+      "capability_domain": "RESEARCH",
+      "expected_tools": [
+        "experiments_list_v1"
+      ]
+    },
+    {
+      "case_id": "proposal.current_boundary",
+      "capability_domain": "PROPOSAL",
+      "expected_tools": [
+        "project_status_get_v1"
+      ]
+    },
+    {
+      "case_id": "analysis.pending_work",
+      "capability_domain": "ANALYSIS",
+      "expected_tools": [
+        "pending_work_list_v1"
+      ]
+    },
+    {
+      "case_id": "research.report_history",
+      "capability_domain": "RESEARCH",
+      "expected_tools": [
+        "research_reports_list_v1"
+      ]
+    },
+    {
+      "case_id": "research.memory_search",
+      "capability_domain": "RESEARCH",
+      "expected_tools": [
+        "research_memories_search_v1"
+      ]
+    },
+    {
+      "case_id": "analysis.experiment_detail",
+      "capability_domain": "ANALYSIS",
+      "expected_tools": [
+        "experiment_get_v1"
+      ]
+    },
+    {
+      "case_id": "research.experiment_evidence",
+      "capability_domain": "RESEARCH",
+      "expected_tools": [
+        "experiment_get_v1"
+      ]
+    },
+    {
+      "case_id": "analysis.plan_diagnosis",
+      "capability_domain": "ANALYSIS",
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ]
+    }
+  ],
+  "formal_state_unchanged": true,
+  "baseline": {
+    "architecture": "general",
+    "observation_count": 30,
+    "case_count": 10,
+    "task_success_rate": 1.0,
+    "exact_tool_selection_rate": 1.0,
+    "invalid_tool_call_rate": 0.0,
+    "redundant_tool_call_rate": 0.0,
+    "citation_compliance_rate": 1.0,
+    "high_risk_error_count": 0,
+    "average_input_tokens": 20443.7,
+    "average_output_tokens": 1215.4,
+    "average_model_calls": 3.0,
+    "average_latency_ms": 25722.833333333332,
+    "consistency_rate": 1.0
+  },
+  "candidate": {
+    "architecture": "profiles",
+    "observation_count": 30,
+    "case_count": 10,
+    "task_success_rate": 1.0,
+    "exact_tool_selection_rate": 1.0,
+    "invalid_tool_call_rate": 0.0,
+    "redundant_tool_call_rate": 0.0,
+    "citation_compliance_rate": 1.0,
+    "high_risk_error_count": 0,
+    "average_input_tokens": 11058.4,
+    "average_output_tokens": 736.1333333333333,
+    "average_model_calls": 3.1,
+    "average_latency_ms": 16412.166666666668,
+    "consistency_rate": 1.0
+  },
+  "comparison": {
+    "baseline": {
+      "architecture": "general",
+      "observation_count": 30,
+      "case_count": 10,
+      "task_success_rate": 1.0,
+      "exact_tool_selection_rate": 1.0,
+      "invalid_tool_call_rate": 0.0,
+      "redundant_tool_call_rate": 0.0,
+      "citation_compliance_rate": 1.0,
+      "high_risk_error_count": 0,
+      "average_input_tokens": 20443.7,
+      "average_output_tokens": 1215.4,
+      "average_model_calls": 3.0,
+      "average_latency_ms": 25722.833333333332,
+      "consistency_rate": 1.0
+    },
+    "candidate": {
+      "architecture": "profiles",
+      "observation_count": 30,
+      "case_count": 10,
+      "task_success_rate": 1.0,
+      "exact_tool_selection_rate": 1.0,
+      "invalid_tool_call_rate": 0.0,
+      "redundant_tool_call_rate": 0.0,
+      "citation_compliance_rate": 1.0,
+      "high_risk_error_count": 0,
+      "average_input_tokens": 11058.4,
+      "average_output_tokens": 736.1333333333333,
+      "average_model_calls": 3.1,
+      "average_latency_ms": 16412.166666666668,
+      "consistency_rate": 1.0
+    },
+    "candidate_eligible_for_default": true,
+    "blocking_reasons": []
+  },
+  "by_capability_domain": {
+    "ANALYSIS": {
+      "baseline": {
+        "architecture": "general:ANALYSIS",
+        "observation_count": 12,
+        "case_count": 4,
+        "task_success_rate": 1.0,
+        "exact_tool_selection_rate": 1.0,
+        "invalid_tool_call_rate": 0.0,
+        "redundant_tool_call_rate": 0.0,
+        "citation_compliance_rate": 1.0,
+        "high_risk_error_count": 0,
+        "average_input_tokens": 21843.0,
+        "average_output_tokens": 1281.3333333333333,
+        "average_model_calls": 3.0,
+        "average_latency_ms": 25937.25,
+        "consistency_rate": 1.0
+      },
+      "candidate": {
+        "architecture": "profiles:ANALYSIS",
+        "observation_count": 12,
+        "case_count": 4,
+        "task_success_rate": 1.0,
+        "exact_tool_selection_rate": 1.0,
+        "invalid_tool_call_rate": 0.0,
+        "redundant_tool_call_rate": 0.0,
+        "citation_compliance_rate": 1.0,
+        "high_risk_error_count": 0,
+        "average_input_tokens": 11524.0,
+        "average_output_tokens": 697.4166666666666,
+        "average_model_calls": 3.0,
+        "average_latency_ms": 15793.833333333334,
+        "consistency_rate": 1.0
+      },
+      "candidate_eligible_for_default": true,
+      "blocking_reasons": []
+    },
+    "POLICY": {
+      "baseline": {
+        "architecture": "general:POLICY",
+        "observation_count": 3,
+        "case_count": 1,
+        "task_success_rate": 1.0,
+        "exact_tool_selection_rate": 1.0,
+        "invalid_tool_call_rate": 0.0,
+        "redundant_tool_call_rate": 0.0,
+        "citation_compliance_rate": 1.0,
+        "high_risk_error_count": 0,
+        "average_input_tokens": 21845.0,
+        "average_output_tokens": 1323.6666666666667,
+        "average_model_calls": 3.0,
+        "average_latency_ms": 26676.0,
+        "consistency_rate": 1.0
+      },
+      "candidate": {
+        "architecture": "profiles:POLICY",
+        "observation_count": 3,
+        "case_count": 1,
+        "task_success_rate": 1.0,
+        "exact_tool_selection_rate": 1.0,
+        "invalid_tool_call_rate": 0.0,
+        "redundant_tool_call_rate": 0.0,
+        "citation_compliance_rate": 1.0,
+        "high_risk_error_count": 0,
+        "average_input_tokens": 15194.0,
+        "average_output_tokens": 840.6666666666666,
+        "average_model_calls": 3.0,
+        "average_latency_ms": 18232.333333333332,
+        "consistency_rate": 1.0
+      },
+      "candidate_eligible_for_default": true,
+      "blocking_reasons": []
+    },
+    "RESEARCH": {
+      "baseline": {
+        "architecture": "general:RESEARCH",
+        "observation_count": 12,
+        "case_count": 4,
+        "task_success_rate": 1.0,
+        "exact_tool_selection_rate": 1.0,
+        "invalid_tool_call_rate": 0.0,
+        "redundant_tool_call_rate": 0.0,
+        "citation_compliance_rate": 1.0,
+        "high_risk_error_count": 0,
+        "average_input_tokens": 18340.75,
+        "average_output_tokens": 848.8333333333334,
+        "average_model_calls": 3.0,
+        "average_latency_ms": 20928.75,
+        "consistency_rate": 1.0
+      },
+      "candidate": {
+        "architecture": "profiles:RESEARCH",
+        "observation_count": 12,
+        "case_count": 4,
+        "task_success_rate": 1.0,
+        "exact_tool_selection_rate": 1.0,
+        "invalid_tool_call_rate": 0.0,
+        "redundant_tool_call_rate": 0.0,
+        "citation_compliance_rate": 1.0,
+        "high_risk_error_count": 0,
+        "average_input_tokens": 8321.416666666666,
+        "average_output_tokens": 628.3333333333334,
+        "average_model_calls": 3.0,
+        "average_latency_ms": 14311.416666666666,
+        "consistency_rate": 1.0
+      },
+      "candidate_eligible_for_default": true,
+      "blocking_reasons": []
+    },
+    "PROPOSAL": {
+      "baseline": {
+        "architecture": "general:PROPOSAL",
+        "observation_count": 3,
+        "case_count": 1,
+        "task_success_rate": 1.0,
+        "exact_tool_selection_rate": 1.0,
+        "invalid_tool_call_rate": 0.0,
+        "redundant_tool_call_rate": 0.0,
+        "citation_compliance_rate": 1.0,
+        "high_risk_error_count": 0,
+        "average_input_tokens": 21857.0,
+        "average_output_tokens": 2309.6666666666665,
+        "average_model_calls": 3.0,
+        "average_latency_ms": 43088.333333333336,
+        "consistency_rate": 1.0
+      },
+      "candidate": {
+        "architecture": "profiles:PROPOSAL",
+        "observation_count": 3,
+        "case_count": 1,
+        "task_success_rate": 1.0,
+        "exact_tool_selection_rate": 1.0,
+        "invalid_tool_call_rate": 0.0,
+        "redundant_tool_call_rate": 0.0,
+        "citation_compliance_rate": 1.0,
+        "high_risk_error_count": 0,
+        "average_input_tokens": 16008.333333333334,
+        "average_output_tokens": 1217.6666666666667,
+        "average_model_calls": 4.0,
+        "average_latency_ms": 25468.333333333332,
+        "consistency_rate": 1.0
+      },
+      "candidate_eligible_for_default": true,
+      "blocking_reasons": []
+    }
+  },
+  "observations": [
+    {
+      "architecture": "general",
+      "case_id": "analysis.project_status",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 21842,
+      "output_tokens": 1150,
+      "model_calls": 3,
+      "latency_ms": 23571
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.project_status",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 11523,
+      "output_tokens": 723,
+      "model_calls": 3,
+      "latency_ms": 15360
+    },
+    {
+      "architecture": "general",
+      "case_id": "policy.current_state",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 21845,
+      "output_tokens": 1342,
+      "model_calls": 3,
+      "latency_ms": 26700
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "policy.current_state",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 15194,
+      "output_tokens": 1201,
+      "model_calls": 3,
+      "latency_ms": 24310
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.recent_experiments",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 17325,
+      "output_tokens": 804,
+      "model_calls": 3,
+      "latency_ms": 17610
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.recent_experiments",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 7317,
+      "output_tokens": 601,
+      "model_calls": 3,
+      "latency_ms": 13409
+    },
+    {
+      "architecture": "general",
+      "case_id": "proposal.current_boundary",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 21857,
+      "output_tokens": 2500,
+      "model_calls": 3,
+      "latency_ms": 45732
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "proposal.current_boundary",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 16009,
+      "output_tokens": 1169,
+      "model_calls": 4,
+      "latency_ms": 24560
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.pending_work",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 20571,
+      "output_tokens": 1123,
+      "model_calls": 3,
+      "latency_ms": 23148
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.pending_work",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 10252,
+      "output_tokens": 445,
+      "model_calls": 3,
+      "latency_ms": 10800
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.report_history",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 16814,
+      "output_tokens": 348,
+      "model_calls": 3,
+      "latency_ms": 8887
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.report_history",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 6806,
+      "output_tokens": 202,
+      "model_calls": 3,
+      "latency_ms": 6868
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.memory_search",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 17033,
+      "output_tokens": 777,
+      "model_calls": 3,
+      "latency_ms": 16690
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.memory_search",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 6957,
+      "output_tokens": 492,
+      "model_calls": 3,
+      "latency_ms": 11371
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.experiment_detail",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 22192,
+      "output_tokens": 1622,
+      "model_calls": 3,
+      "latency_ms": 30906
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.experiment_detail",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 11873,
+      "output_tokens": 688,
+      "model_calls": 3,
+      "latency_ms": 15593
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.experiment_evidence",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 22213,
+      "output_tokens": 1505,
+      "model_calls": 3,
+      "latency_ms": 30127
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.experiment_evidence",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 12205,
+      "output_tokens": 1147,
+      "model_calls": 3,
+      "latency_ms": 23259
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 22767,
+      "output_tokens": 1171,
+      "model_calls": 3,
+      "latency_ms": 23819
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 12448,
+      "output_tokens": 925,
+      "model_calls": 3,
+      "latency_ms": 19425
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.project_status",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 21842,
+      "output_tokens": 1126,
+      "model_calls": 3,
+      "latency_ms": 22850
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.project_status",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 11523,
+      "output_tokens": 747,
+      "model_calls": 3,
+      "latency_ms": 17114
+    },
+    {
+      "architecture": "general",
+      "case_id": "policy.current_state",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 21845,
+      "output_tokens": 1378,
+      "model_calls": 3,
+      "latency_ms": 27108
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "policy.current_state",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 15194,
+      "output_tokens": 642,
+      "model_calls": 3,
+      "latency_ms": 14721
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.recent_experiments",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 17325,
+      "output_tokens": 829,
+      "model_calls": 3,
+      "latency_ms": 16957
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.recent_experiments",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 7317,
+      "output_tokens": 610,
+      "model_calls": 3,
+      "latency_ms": 14381
+    },
+    {
+      "architecture": "general",
+      "case_id": "proposal.current_boundary",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 21857,
+      "output_tokens": 2226,
+      "model_calls": 3,
+      "latency_ms": 41815
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "proposal.current_boundary",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 16007,
+      "output_tokens": 1112,
+      "model_calls": 4,
+      "latency_ms": 23264
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.pending_work",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 20571,
+      "output_tokens": 1059,
+      "model_calls": 3,
+      "latency_ms": 22950
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.pending_work",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 10252,
+      "output_tokens": 581,
+      "model_calls": 3,
+      "latency_ms": 13676
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.report_history",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 16814,
+      "output_tokens": 341,
+      "model_calls": 3,
+      "latency_ms": 9659
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.report_history",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 6806,
+      "output_tokens": 260,
+      "model_calls": 3,
+      "latency_ms": 7877
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.memory_search",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 16967,
+      "output_tokens": 779,
+      "model_calls": 3,
+      "latency_ms": 17360
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.memory_search",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 6959,
+      "output_tokens": 513,
+      "model_calls": 3,
+      "latency_ms": 12046
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.experiment_detail",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 22192,
+      "output_tokens": 1745,
+      "model_calls": 3,
+      "latency_ms": 33897
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.experiment_detail",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 11873,
+      "output_tokens": 847,
+      "model_calls": 3,
+      "latency_ms": 18808
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.experiment_evidence",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 22213,
+      "output_tokens": 1408,
+      "model_calls": 3,
+      "latency_ms": 28952
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.experiment_evidence",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 12205,
+      "output_tokens": 1003,
+      "model_calls": 3,
+      "latency_ms": 22307
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 22767,
+      "output_tokens": 1369,
+      "model_calls": 3,
+      "latency_ms": 28263
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 2,
+      "task_succeeded": true,
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 12448,
+      "output_tokens": 699,
+      "model_calls": 3,
+      "latency_ms": 15747
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.project_status",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 21842,
+      "output_tokens": 1108,
+      "model_calls": 3,
+      "latency_ms": 23758
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.project_status",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 11523,
+      "output_tokens": 737,
+      "model_calls": 3,
+      "latency_ms": 17014
+    },
+    {
+      "architecture": "general",
+      "case_id": "policy.current_state",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 21845,
+      "output_tokens": 1251,
+      "model_calls": 3,
+      "latency_ms": 26220
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "policy.current_state",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 15194,
+      "output_tokens": 679,
+      "model_calls": 3,
+      "latency_ms": 15666
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.recent_experiments",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 17325,
+      "output_tokens": 778,
+      "model_calls": 3,
+      "latency_ms": 16939
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.recent_experiments",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 7317,
+      "output_tokens": 553,
+      "model_calls": 3,
+      "latency_ms": 12942
+    },
+    {
+      "architecture": "general",
+      "case_id": "proposal.current_boundary",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 21857,
+      "output_tokens": 2203,
+      "model_calls": 3,
+      "latency_ms": 41718
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "proposal.current_boundary",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 16009,
+      "output_tokens": 1372,
+      "model_calls": 4,
+      "latency_ms": 28581
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.pending_work",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 20571,
+      "output_tokens": 967,
+      "model_calls": 3,
+      "latency_ms": 20311
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.pending_work",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 10252,
+      "output_tokens": 473,
+      "model_calls": 3,
+      "latency_ms": 11955
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.report_history",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 16814,
+      "output_tokens": 347,
+      "model_calls": 3,
+      "latency_ms": 9352
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.report_history",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 6806,
+      "output_tokens": 291,
+      "model_calls": 3,
+      "latency_ms": 8126
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.memory_search",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 17033,
+      "output_tokens": 761,
+      "model_calls": 3,
+      "latency_ms": 47710
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.memory_search",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 6957,
+      "output_tokens": 511,
+      "model_calls": 3,
+      "latency_ms": 12072
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.experiment_detail",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 22192,
+      "output_tokens": 1481,
+      "model_calls": 3,
+      "latency_ms": 29185
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.experiment_detail",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 11873,
+      "output_tokens": 699,
+      "model_calls": 3,
+      "latency_ms": 16257
+    },
+    {
+      "architecture": "general",
+      "case_id": "research.experiment_evidence",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 22213,
+      "output_tokens": 1509,
+      "model_calls": 3,
+      "latency_ms": 30902
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "research.experiment_evidence",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 12205,
+      "output_tokens": 1357,
+      "model_calls": 3,
+      "latency_ms": 27079
+    },
+    {
+      "architecture": "general",
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 22767,
+      "output_tokens": 1455,
+      "model_calls": 3,
+      "latency_ms": 28589
+    },
+    {
+      "architecture": "profiles",
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 3,
+      "task_succeeded": true,
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 12448,
+      "output_tokens": 805,
+      "model_calls": 3,
+      "latency_ms": 17777
+    }
+  ],
+  "traces": [
+    {
+      "case_id": "analysis.project_status",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "14257f78-5824-4e79-a2b5-832e7fb7534b",
+      "run_id": "730676a1-f478-472a-a127-b8dd5c450943",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "74a1e71655e08ae889cdfbb301a176fa6c90750ed867838091e97dc6c57b2b03",
+      "usage": {
+        "input_tokens": 21842,
+        "latency_ms": 23571,
+        "output_tokens": 1150
+      }
+    },
+    {
+      "case_id": "analysis.project_status",
+      "repetition": 1,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "12a934e0-5f9a-4199-957e-64809dbb0631",
+      "run_id": "19a84de6-0b19-4545-bec3-8681090df112",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "74a1e71655e08ae889cdfbb301a176fa6c90750ed867838091e97dc6c57b2b03",
+      "usage": {
+        "input_tokens": 11523,
+        "latency_ms": 15360,
+        "output_tokens": 723
+      }
+    },
+    {
+      "case_id": "policy.current_state",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "bccc9062-1f0d-4ddd-81c3-763bd4f04b38",
+      "run_id": "f06b1135-8fbd-4bce-8cfc-0f3057580f01",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "cf0dbb1e143205e1e731468b495de22ab8eba9ce16120e0eea0b3765a0afc299",
+      "usage": {
+        "input_tokens": 21845,
+        "latency_ms": 26700,
+        "output_tokens": 1342
+      }
+    },
+    {
+      "case_id": "policy.current_state",
+      "repetition": 1,
+      "capability_domain": "POLICY",
+      "thread_id": "d574a213-1612-45ed-8b6d-ec5c90222cd4",
+      "run_id": "ae36fd67-e534-43a0-a498-4bacff23168d",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-policy-v1",
+      "tool_catalog_version": "r18-policy-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "b0038ef76989f8eaf5dc2588b5e510cc16d1dc4d9294ba47cf1cf7409340851a",
+      "usage": {
+        "input_tokens": 15194,
+        "latency_ms": 24310,
+        "output_tokens": 1201
+      }
+    },
+    {
+      "case_id": "research.recent_experiments",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "3d2765e9-bc59-4808-aa8d-236c96cd198b",
+      "run_id": "3c08cc51-975a-4ce9-9362-c431fcd3ff0a",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "03ff74bf7a054743a575339da0df3c9d2597c2d5579dc2413fbe29e8e27a96bb",
+      "usage": {
+        "input_tokens": 17325,
+        "latency_ms": 17610,
+        "output_tokens": 804
+      }
+    },
+    {
+      "case_id": "research.recent_experiments",
+      "repetition": 1,
+      "capability_domain": "RESEARCH",
+      "thread_id": "dfbee75f-e749-432c-aeb7-4e28a6542bc5",
+      "run_id": "e3290b75-648c-4f28-a1ec-0b5c0042b53f",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "7be96362982de240c2375fc21277ff27cbca26362241ca88a001f95c15826269",
+      "usage": {
+        "input_tokens": 7317,
+        "latency_ms": 13409,
+        "output_tokens": 601
+      }
+    },
+    {
+      "case_id": "proposal.current_boundary",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "15a24fe9-fa21-471b-8edc-901e95d73c36",
+      "run_id": "dfe8aea8-e409-4cc1-a151-ab495405e0cf",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "cc24e7d916b3aad4b63ddd29438a2a048c6cdc198834554f720d0d6dde0f99ef",
+      "usage": {
+        "input_tokens": 21857,
+        "latency_ms": 45732,
+        "output_tokens": 2500
+      }
+    },
+    {
+      "case_id": "proposal.current_boundary",
+      "repetition": 1,
+      "capability_domain": "PROPOSAL",
+      "thread_id": "834a3f3f-d9bb-46d2-8067-964b51d30d0f",
+      "run_id": "c4a435ba-96ba-40e0-b6ce-00f4224e890a",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-proposal-v1",
+      "tool_catalog_version": "r18-proposal-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "f17a8b06f531b32a713bc082ebccbfeb8955a32e1f708f78d04e9749633aa49c",
+      "usage": {
+        "input_tokens": 16009,
+        "latency_ms": 24560,
+        "output_tokens": 1169
+      }
+    },
+    {
+      "case_id": "analysis.pending_work",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "da779d2d-8767-4402-b3e0-0f792f8951ce",
+      "run_id": "e13465af-14b3-4950-9817-868d080590be",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "19368f6c58085e60aab629eaa0b05a63da8fef961c851fae8edbacb1939f6551",
+      "usage": {
+        "input_tokens": 20571,
+        "latency_ms": 23148,
+        "output_tokens": 1123
+      }
+    },
+    {
+      "case_id": "analysis.pending_work",
+      "repetition": 1,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "11eb4567-f5a5-4d50-aa1b-50bf08052626",
+      "run_id": "240bf585-0564-45ff-98e8-772abbe9d670",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "67fe21d022cd47a3b78d9e4e39e5062bd2c2766bae68eeb6be10893a14968455",
+      "usage": {
+        "input_tokens": 10252,
+        "latency_ms": 10800,
+        "output_tokens": 445
+      }
+    },
+    {
+      "case_id": "research.report_history",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "1f3c14fb-25ae-4528-8235-efca89391809",
+      "run_id": "ed79ca16-ef9f-4d16-a4a2-36455b3bfb42",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "061013e3628650d9eea7803c56d42360d66b2291c0cf7e4e8db27acfe7cf9859",
+      "usage": {
+        "input_tokens": 16814,
+        "latency_ms": 8887,
+        "output_tokens": 348
+      }
+    },
+    {
+      "case_id": "research.report_history",
+      "repetition": 1,
+      "capability_domain": "RESEARCH",
+      "thread_id": "feba6f2f-6421-4aa1-ab45-98e51f01de2e",
+      "run_id": "5db4a3e7-0d3f-405d-8e29-d12154ebd725",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "7adde8e2ca14ae09268c4c8dc0c91d8016cff5ff4d12d28f74347f3a43a17804",
+      "usage": {
+        "input_tokens": 6806,
+        "latency_ms": 6868,
+        "output_tokens": 202
+      }
+    },
+    {
+      "case_id": "research.memory_search",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "076e8c86-35ec-4c4f-b62b-42287e400d98",
+      "run_id": "fa04d33d-08bd-4bb5-86fe-af384ec1c7f9",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "5720a54a11a2d30dc120ec2e39b42d1a6e1f235b2baf8e36e31a37c53118d51f",
+      "usage": {
+        "input_tokens": 17033,
+        "latency_ms": 16690,
+        "output_tokens": 777
+      }
+    },
+    {
+      "case_id": "research.memory_search",
+      "repetition": 1,
+      "capability_domain": "RESEARCH",
+      "thread_id": "7c499582-50f3-4209-ae35-19af6a4480af",
+      "run_id": "b861e2f6-f818-4aff-b5bd-3766d37f428f",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "6da2d8e37863edc3cb38db9f59e0e7447affc1cd8a1088ac38563194b020a7bf",
+      "usage": {
+        "input_tokens": 6957,
+        "latency_ms": 11371,
+        "output_tokens": 492
+      }
+    },
+    {
+      "case_id": "analysis.experiment_detail",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "cc2a1629-7306-4eff-825a-48bc23e48e3d",
+      "run_id": "3bc75e1a-3a86-4223-bc3c-d047dccbef4c",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "b4f461dec81813dc3ea4d8ddc9214610defb655d4341326ad667c23079f558b6",
+      "usage": {
+        "input_tokens": 22192,
+        "latency_ms": 30906,
+        "output_tokens": 1622
+      }
+    },
+    {
+      "case_id": "analysis.experiment_detail",
+      "repetition": 1,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "387d681a-7ee2-4184-a675-7fb7635a47e1",
+      "run_id": "6aefda87-9e6f-4cc6-8866-816fce44d701",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "beb51d31163542adafdb5b09d71eb76b1b042f0b9e0762df8d08af7f4a99bce3",
+      "usage": {
+        "input_tokens": 11873,
+        "latency_ms": 15593,
+        "output_tokens": 688
+      }
+    },
+    {
+      "case_id": "research.experiment_evidence",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "28cb2dee-ed7d-48ac-a692-abf65d2e4dae",
+      "run_id": "33e76fb5-8472-41b2-9fb5-266417e96b20",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "b309026e012903786e7b1f379ae670a1d6844d67ac61f03bbd6a876b8cbff266",
+      "usage": {
+        "input_tokens": 22213,
+        "latency_ms": 30127,
+        "output_tokens": 1505
+      }
+    },
+    {
+      "case_id": "research.experiment_evidence",
+      "repetition": 1,
+      "capability_domain": "RESEARCH",
+      "thread_id": "16b53ca6-e3db-4482-82a4-e5aee61f754e",
+      "run_id": "0f1936b1-cc5b-46dd-85d1-6dfab98ee85a",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "83ccc6c6435b1e14bdae8c4f5c9a196d26baf4d5c5668865c913bddba86c1c1a",
+      "usage": {
+        "input_tokens": 12205,
+        "latency_ms": 23259,
+        "output_tokens": 1147
+      }
+    },
+    {
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "732a3ca2-2cbe-4cad-aa5d-36c1a9d15766",
+      "run_id": "4ac0df48-377f-4db1-b7db-988c0ee69c38",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "46f02381c0b8d50b34d19e129fa25ef1b598a05f7c7569ce0d78e6433bc7bbed",
+      "usage": {
+        "input_tokens": 22767,
+        "latency_ms": 23819,
+        "output_tokens": 1171
+      }
+    },
+    {
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 1,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "5e9e3d90-ca84-4999-ae38-27f702106626",
+      "run_id": "06fc553a-688e-4787-9eab-cff482b87871",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "8a871524eee373b4014a968f4ffdf9e715a905c7c45182c434b3e1db9653840b",
+      "usage": {
+        "input_tokens": 12448,
+        "latency_ms": 19425,
+        "output_tokens": 925
+      }
+    },
+    {
+      "case_id": "analysis.project_status",
+      "repetition": 2,
+      "capability_domain": "GENERAL",
+      "thread_id": "a4589f1f-ce5b-4b00-8b6e-cc42f186bc9d",
+      "run_id": "0bef1fbc-e973-4aa8-b248-b58dcbe93cf8",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "bfb9c6201fd73b0f7e04dc2310fd24d43fdba104124043237560acb9e91de014",
+      "usage": {
+        "input_tokens": 21842,
+        "latency_ms": 22850,
+        "output_tokens": 1126
+      }
+    },
+    {
+      "case_id": "analysis.project_status",
+      "repetition": 2,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "a492ead5-7d60-4b85-a750-081bc9f25ba0",
+      "run_id": "643cb028-f37b-4542-a1c3-c0271c25cd19",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "cc165c34812e499b700fa397964422db4b1433dfa0b5fb14814fab6e0c6229d8",
+      "usage": {
+        "input_tokens": 11523,
+        "latency_ms": 17114,
+        "output_tokens": 747
+      }
+    },
+    {
+      "case_id": "policy.current_state",
+      "repetition": 2,
+      "capability_domain": "GENERAL",
+      "thread_id": "08a6a092-6a3c-4e8f-8c18-254fb8be9ecf",
+      "run_id": "3be0d32f-7d64-498f-bcfd-57434a027dc9",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "1d8d02a1e2ada7d16200660b7cc51f21edacccca2e078189141d097c12a2a909",
+      "usage": {
+        "input_tokens": 21845,
+        "latency_ms": 27108,
+        "output_tokens": 1378
+      }
+    },
+    {
+      "case_id": "policy.current_state",
+      "repetition": 2,
+      "capability_domain": "POLICY",
+      "thread_id": "752e012d-c052-4b1a-a187-8f94de7b2e02",
+      "run_id": "882fa2a5-0bbf-4d10-8661-61434468592c",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-policy-v1",
+      "tool_catalog_version": "r18-policy-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "417bed44f7ddf79f447e7dac4d7d971795c25feb2af199ced7d383fb8bc7f8ca",
+      "usage": {
+        "input_tokens": 15194,
+        "latency_ms": 14721,
+        "output_tokens": 642
+      }
+    },
+    {
+      "case_id": "research.recent_experiments",
+      "repetition": 2,
+      "capability_domain": "GENERAL",
+      "thread_id": "68eca31d-b976-4649-b39b-0f6978119a8e",
+      "run_id": "82833fb1-a7f3-49a4-8a16-1c4270765867",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "0334ebf300822d65dbf5cc2982261d7c0e1b4a7e06b1241e6516c0c7da5a79c4",
+      "usage": {
+        "input_tokens": 17325,
+        "latency_ms": 16957,
+        "output_tokens": 829
+      }
+    },
+    {
+      "case_id": "research.recent_experiments",
+      "repetition": 2,
+      "capability_domain": "RESEARCH",
+      "thread_id": "41688138-f7ee-437a-ad4a-9ddee155e8da",
+      "run_id": "dd64ab06-8564-4924-ac2e-9513a8334ab1",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "832a1ec4df5b3be3ee291aa9d9c607ea03ca26b8309d986d61aedc1e084a2d5d",
+      "usage": {
+        "input_tokens": 7317,
+        "latency_ms": 14381,
+        "output_tokens": 610
+      }
+    },
+    {
+      "case_id": "proposal.current_boundary",
+      "repetition": 2,
+      "capability_domain": "GENERAL",
+      "thread_id": "0563e185-9e8a-4106-b154-0cdf0ccdf0d9",
+      "run_id": "2538b089-b9d6-4fac-9cbc-7c82a616233d",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "b7b19ae14ba613ec5424285b7fb938b21581450063ab1e59bf58589d83ca61d2",
+      "usage": {
+        "input_tokens": 21857,
+        "latency_ms": 41815,
+        "output_tokens": 2226
+      }
+    },
+    {
+      "case_id": "proposal.current_boundary",
+      "repetition": 2,
+      "capability_domain": "PROPOSAL",
+      "thread_id": "fc3378a7-7372-4725-9615-57b9697c5139",
+      "run_id": "86baa828-fe5e-43f3-8589-8dbc60ea9912",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-proposal-v1",
+      "tool_catalog_version": "r18-proposal-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "5f133f3241ee25c1bd2d8a7d4528c0f64a07cc2e354c708874b1139db0c422e6",
+      "usage": {
+        "input_tokens": 16007,
+        "latency_ms": 23264,
+        "output_tokens": 1112
+      }
+    },
+    {
+      "case_id": "analysis.pending_work",
+      "repetition": 2,
+      "capability_domain": "GENERAL",
+      "thread_id": "86c26336-d518-46f4-aa90-96b20e44bdcb",
+      "run_id": "0434a242-f865-4ba3-94dc-260389382c84",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "67fe21d022cd47a3b78d9e4e39e5062bd2c2766bae68eeb6be10893a14968455",
+      "usage": {
+        "input_tokens": 20571,
+        "latency_ms": 22950,
+        "output_tokens": 1059
+      }
+    },
+    {
+      "case_id": "analysis.pending_work",
+      "repetition": 2,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "5166d18a-2fc1-4244-a8e2-238edaacf32e",
+      "run_id": "15db29d9-3f5d-434b-a3b8-1a0c34b9a999",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "51810f61c3510cbbc011c3bfa803ac09fbad9c2866a10e517fd13f00412652cc",
+      "usage": {
+        "input_tokens": 10252,
+        "latency_ms": 13676,
+        "output_tokens": 581
+      }
+    },
+    {
+      "case_id": "research.report_history",
+      "repetition": 2,
+      "capability_domain": "GENERAL",
+      "thread_id": "534dda05-458c-40f0-9cf4-94b8847130ec",
+      "run_id": "b4e30799-12b4-4e07-953b-b3b90f276f6e",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "061013e3628650d9eea7803c56d42360d66b2291c0cf7e4e8db27acfe7cf9859",
+      "usage": {
+        "input_tokens": 16814,
+        "latency_ms": 9659,
+        "output_tokens": 341
+      }
+    },
+    {
+      "case_id": "research.report_history",
+      "repetition": 2,
+      "capability_domain": "RESEARCH",
+      "thread_id": "690b51f5-b1c7-41ac-bdd2-18efef51ab72",
+      "run_id": "461e7b48-2d2a-42ca-bc9f-528d1c68cea1",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "4abfbfc98c1996b61b7828c4121eb9eb5ee9c03e450e726b6a9b381ea546cdc7",
+      "usage": {
+        "input_tokens": 6806,
+        "latency_ms": 7877,
+        "output_tokens": 260
+      }
+    },
+    {
+      "case_id": "research.memory_search",
+      "repetition": 2,
+      "capability_domain": "GENERAL",
+      "thread_id": "a058e8e0-4020-4686-ad56-e4558e4630ae",
+      "run_id": "d55a6139-f04e-44ba-bf1a-2f2e31684e5b",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "82c3b522f21951856387fa178245bae3f8e0d790225978b0735b0825323b0233",
+      "usage": {
+        "input_tokens": 16967,
+        "latency_ms": 17360,
+        "output_tokens": 779
+      }
+    },
+    {
+      "case_id": "research.memory_search",
+      "repetition": 2,
+      "capability_domain": "RESEARCH",
+      "thread_id": "ba2ba825-890e-4ac5-a40e-7b81cedbcf6f",
+      "run_id": "0dcab988-5b0f-49d1-be14-53d8e87311b7",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "4b4edab040497bbd30c7cd4807e2bfc81dea4cfff8ee44c51bb6bf0d74cd42d4",
+      "usage": {
+        "input_tokens": 6959,
+        "latency_ms": 12046,
+        "output_tokens": 513
+      }
+    },
+    {
+      "case_id": "analysis.experiment_detail",
+      "repetition": 2,
+      "capability_domain": "GENERAL",
+      "thread_id": "ccbff7a2-947c-43fa-9f95-b7dafd8ea999",
+      "run_id": "e93d85fd-fcc7-4cfc-9e7e-05d0aea2a4db",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "e7fd827d25f7148c78f585829c8ede5425056b2c9cad73dda240d3bed01b7f54",
+      "usage": {
+        "input_tokens": 22192,
+        "latency_ms": 33897,
+        "output_tokens": 1745
+      }
+    },
+    {
+      "case_id": "analysis.experiment_detail",
+      "repetition": 2,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "e46cc80f-f391-4fc0-974e-a15de3c3f8fd",
+      "run_id": "82e2dce0-7f9c-4cdf-aaf1-2b6ee9acc13c",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "beb51d31163542adafdb5b09d71eb76b1b042f0b9e0762df8d08af7f4a99bce3",
+      "usage": {
+        "input_tokens": 11873,
+        "latency_ms": 18808,
+        "output_tokens": 847
+      }
+    },
+    {
+      "case_id": "research.experiment_evidence",
+      "repetition": 2,
+      "capability_domain": "GENERAL",
+      "thread_id": "5089312b-daa4-4fa4-aa3a-f8b6138e4318",
+      "run_id": "bc63794d-b37e-44dd-8371-12a9ae1c3a31",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "35e3a5dceeb272de38f7a14f3d09d70add5bb31bc97700755ac377037b1a0d5e",
+      "usage": {
+        "input_tokens": 22213,
+        "latency_ms": 28952,
+        "output_tokens": 1408
+      }
+    },
+    {
+      "case_id": "research.experiment_evidence",
+      "repetition": 2,
+      "capability_domain": "RESEARCH",
+      "thread_id": "43c4d8f4-3574-493a-b075-b9c282ae96ac",
+      "run_id": "9a8857ba-2dcd-43e0-8031-2b4dd40f111e",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "1710ca679b69d2cc2e4ed5de28b58831b4f588a88c4f47b99e774409d25d7332",
+      "usage": {
+        "input_tokens": 12205,
+        "latency_ms": 22307,
+        "output_tokens": 1003
+      }
+    },
+    {
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 2,
+      "capability_domain": "GENERAL",
+      "thread_id": "77f5c999-19fc-4c41-b0aa-428a7c87dec4",
+      "run_id": "0119e315-19b6-431c-87c0-fecd1cbc7905",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "53bd5463eb64698528c5110d28c3e361453e27e761847341dd5d246a413ea4a6",
+      "usage": {
+        "input_tokens": 22767,
+        "latency_ms": 28263,
+        "output_tokens": 1369
+      }
+    },
+    {
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 2,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "68861fb6-76d6-444a-8c46-93b37e7a3a51",
+      "run_id": "ff445648-638d-4b51-9c15-4dee6545fcc0",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "24713ab9b22cf3f9f433c03c017895babb28c67ff92f90c66725506a379e4f37",
+      "usage": {
+        "input_tokens": 12448,
+        "latency_ms": 15747,
+        "output_tokens": 699
+      }
+    },
+    {
+      "case_id": "analysis.project_status",
+      "repetition": 3,
+      "capability_domain": "GENERAL",
+      "thread_id": "49fd07e2-ec1d-49b4-8c14-7c864659099a",
+      "run_id": "7f6f0694-355c-4d72-9dae-79c0211f0972",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "45fa1a0323d6b1d3827f66e620ada03314a1b276212762a07bd9978e0b727fd2",
+      "usage": {
+        "input_tokens": 21842,
+        "latency_ms": 23758,
+        "output_tokens": 1108
+      }
+    },
+    {
+      "case_id": "analysis.project_status",
+      "repetition": 3,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "701ff735-a220-4a72-a133-1b1f61eafb56",
+      "run_id": "4d520374-9232-41e4-b279-9255e4d1f8e9",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "e2403e95f4c807ae631e31a58b9ea8c6adbcbd7af7e506dd52fa962b07cbbfe8",
+      "usage": {
+        "input_tokens": 11523,
+        "latency_ms": 17014,
+        "output_tokens": 737
+      }
+    },
+    {
+      "case_id": "policy.current_state",
+      "repetition": 3,
+      "capability_domain": "GENERAL",
+      "thread_id": "bf8a1246-205c-4c01-8bce-2144faea4327",
+      "run_id": "06d5b71a-f164-47dd-a3ac-510a16730bb3",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "63a403d916ea3064fa30e12c97762c53ca86cc129f1aef6209ca96c300654f82",
+      "usage": {
+        "input_tokens": 21845,
+        "latency_ms": 26220,
+        "output_tokens": 1251
+      }
+    },
+    {
+      "case_id": "policy.current_state",
+      "repetition": 3,
+      "capability_domain": "POLICY",
+      "thread_id": "7842e927-7db2-4624-97bf-939eb5740f8d",
+      "run_id": "0bcfb7a8-f5c9-43a0-96dd-11ee39b5ef60",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-policy-v1",
+      "tool_catalog_version": "r18-policy-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "69ecccf1138ea79438c0b17ee190f0cbfceffe8761e21786b6effc3ad29999f4",
+      "usage": {
+        "input_tokens": 15194,
+        "latency_ms": 15666,
+        "output_tokens": 679
+      }
+    },
+    {
+      "case_id": "research.recent_experiments",
+      "repetition": 3,
+      "capability_domain": "GENERAL",
+      "thread_id": "dbba219e-b00c-484e-b210-ffab428ccd71",
+      "run_id": "d8385c96-b727-425e-89e8-03f1c47a882f",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "dbeb3f37b36141835417d068f587394f7cec31c25abae1287cea1f60d539f1a7",
+      "usage": {
+        "input_tokens": 17325,
+        "latency_ms": 16939,
+        "output_tokens": 778
+      }
+    },
+    {
+      "case_id": "research.recent_experiments",
+      "repetition": 3,
+      "capability_domain": "RESEARCH",
+      "thread_id": "d7c48e83-e461-4a85-8e93-0d2fa29bc7b3",
+      "run_id": "4aa1b44e-f79c-428a-9a28-e5bf929ac6ca",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "experiments_list_v1"
+      ],
+      "actual_tools": [
+        "experiments_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "36ed5afdfd39e3365bbb5ed868c0b6d69091f3498b4ffa21a473eca79e3931cc",
+      "usage": {
+        "input_tokens": 7317,
+        "latency_ms": 12942,
+        "output_tokens": 553
+      }
+    },
+    {
+      "case_id": "proposal.current_boundary",
+      "repetition": 3,
+      "capability_domain": "GENERAL",
+      "thread_id": "c3213172-0376-47d5-ba8f-cb8506975b19",
+      "run_id": "52ecb8fb-ccdc-4c00-955f-41e3c5090358",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "a7fcfc05066939a719006c15eede4fef85e5a0a036e1444401b0565b74215d44",
+      "usage": {
+        "input_tokens": 21857,
+        "latency_ms": 41718,
+        "output_tokens": 2203
+      }
+    },
+    {
+      "case_id": "proposal.current_boundary",
+      "repetition": 3,
+      "capability_domain": "PROPOSAL",
+      "thread_id": "a42c8a89-e288-434e-85e3-ec3388e9d300",
+      "run_id": "01f3f0f0-4194-45ff-9964-04c1aa5eb09a",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-proposal-v1",
+      "tool_catalog_version": "r18-proposal-v1",
+      "expected_tools": [
+        "project_status_get_v1"
+      ],
+      "actual_tools": [
+        "project_status_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "94fcf0746968b2ad4bc8e9d0fbf2bae3a934a3200d6196c4b84cf2378ad27d18",
+      "usage": {
+        "input_tokens": 16009,
+        "latency_ms": 28581,
+        "output_tokens": 1372
+      }
+    },
+    {
+      "case_id": "analysis.pending_work",
+      "repetition": 3,
+      "capability_domain": "GENERAL",
+      "thread_id": "be7f4439-e187-42c8-bf41-b0a4ec1af746",
+      "run_id": "0f05ec64-c161-431e-9370-b2b798795fcf",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "40dc099417a85b1f06fff23be46089d3c26520915563bfc8d9cb7c58e9162dd4",
+      "usage": {
+        "input_tokens": 20571,
+        "latency_ms": 20311,
+        "output_tokens": 967
+      }
+    },
+    {
+      "case_id": "analysis.pending_work",
+      "repetition": 3,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "1e159530-4711-4ca9-ac08-64f4544ea7ea",
+      "run_id": "a6818030-e97e-43f8-8a17-26fbc79bde0f",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "pending_work_list_v1"
+      ],
+      "actual_tools": [
+        "pending_work_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "7b25293fd2c42fcf323cce0367c6b99b182e7e4de71b2b88f4b711bd390b825c",
+      "usage": {
+        "input_tokens": 10252,
+        "latency_ms": 11955,
+        "output_tokens": 473
+      }
+    },
+    {
+      "case_id": "research.report_history",
+      "repetition": 3,
+      "capability_domain": "GENERAL",
+      "thread_id": "f84fbcf3-91a4-475f-aa5d-e438d3d84d03",
+      "run_id": "503261cb-34b4-4cf3-8044-4a0c92ace122",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "9e039ba83a79afaa8ffb4c550d578f73df5b51dd651840067fafec0df4ad928a",
+      "usage": {
+        "input_tokens": 16814,
+        "latency_ms": 9352,
+        "output_tokens": 347
+      }
+    },
+    {
+      "case_id": "research.report_history",
+      "repetition": 3,
+      "capability_domain": "RESEARCH",
+      "thread_id": "ec8f526a-84fa-4498-aa09-afb1db884542",
+      "run_id": "49d7c454-0ecc-48a5-93cb-53474161798d",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "research_reports_list_v1"
+      ],
+      "actual_tools": [
+        "research_reports_list_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "cd9796b2da70bc26221249572565f454c0ec7ae8ca4d7658829c1efed07f878d",
+      "usage": {
+        "input_tokens": 6806,
+        "latency_ms": 8126,
+        "output_tokens": 291
+      }
+    },
+    {
+      "case_id": "research.memory_search",
+      "repetition": 3,
+      "capability_domain": "GENERAL",
+      "thread_id": "48588a99-eb55-4318-b00c-979503fad8c1",
+      "run_id": "18bc2736-10cc-4090-af95-1952f92f2da8",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "776699f7e50ae7d33b2ba3c9523a5c9c5c76f9883e45235e52115c642d16a504",
+      "usage": {
+        "input_tokens": 17033,
+        "latency_ms": 47710,
+        "output_tokens": 761
+      }
+    },
+    {
+      "case_id": "research.memory_search",
+      "repetition": 3,
+      "capability_domain": "RESEARCH",
+      "thread_id": "7fd3bede-c41d-45ab-9100-6fe081e24615",
+      "run_id": "640cf84b-02e1-4cda-a285-eb04399c9139",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "research_memories_search_v1"
+      ],
+      "actual_tools": [
+        "research_memories_search_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "55bcab05ece53b9696545f01aa4e59057b9e4675d9c82e6773e14523e7744410",
+      "usage": {
+        "input_tokens": 6957,
+        "latency_ms": 12072,
+        "output_tokens": 511
+      }
+    },
+    {
+      "case_id": "analysis.experiment_detail",
+      "repetition": 3,
+      "capability_domain": "GENERAL",
+      "thread_id": "3f5a2517-d067-448e-9cc7-1f65f019d4f3",
+      "run_id": "51851471-beec-4ef0-a6fd-98cff784d765",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "90ad6b256422e9b55a9fc477447487738d1df0060713d0ec3cb9e1a13bcf7b21",
+      "usage": {
+        "input_tokens": 22192,
+        "latency_ms": 29185,
+        "output_tokens": 1481
+      }
+    },
+    {
+      "case_id": "analysis.experiment_detail",
+      "repetition": 3,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "d4974d32-53d1-42b2-92cb-a4ee5a79030d",
+      "run_id": "b714bcfb-b697-4149-9e0c-644b6add1be6",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "c530307e1cd4661c13a0deb84621a92e8d544552e8dda5b55c51e05e809f0863",
+      "usage": {
+        "input_tokens": 11873,
+        "latency_ms": 16257,
+        "output_tokens": 699
+      }
+    },
+    {
+      "case_id": "research.experiment_evidence",
+      "repetition": 3,
+      "capability_domain": "GENERAL",
+      "thread_id": "71c0ba6e-78c3-4b00-994f-4d64551f5f47",
+      "run_id": "80481bee-ff9b-46cd-8652-620921ae22d2",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "2afc5502f644fa6d161c9b67691972757fcfa8f4e6d921c1560fdd8a397bc233",
+      "usage": {
+        "input_tokens": 22213,
+        "latency_ms": 30902,
+        "output_tokens": 1509
+      }
+    },
+    {
+      "case_id": "research.experiment_evidence",
+      "repetition": 3,
+      "capability_domain": "RESEARCH",
+      "thread_id": "3671db6a-bff1-41fb-b703-09d3933db142",
+      "run_id": "3a93103a-4789-4cb8-9b7c-546311ce0cbd",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-research-v1",
+      "tool_catalog_version": "r18-research-v1",
+      "expected_tools": [
+        "experiment_get_v1"
+      ],
+      "actual_tools": [
+        "experiment_get_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "3ce5963def33e894bd2c925721caad78079fdd8b3b0df63e2e38717a95b6986c",
+      "usage": {
+        "input_tokens": 12205,
+        "latency_ms": 27079,
+        "output_tokens": 1357
+      }
+    },
+    {
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 3,
+      "capability_domain": "GENERAL",
+      "thread_id": "e80cf60a-ac25-42ff-ae68-e7c19c2cc024",
+      "run_id": "fbf27971-dc34-41e9-996c-9a73a3000f8f",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "a2bea002f9c8ea7adcf7689951225a7a931109b432344d2d585f176564d8aef6",
+      "usage": {
+        "input_tokens": 22767,
+        "latency_ms": 28589,
+        "output_tokens": 1455
+      }
+    },
+    {
+      "case_id": "analysis.plan_diagnosis",
+      "repetition": 3,
+      "capability_domain": "ANALYSIS",
+      "thread_id": "cbc2a6e7-4beb-4869-9bf5-e9c9b31e6f74",
+      "run_id": "f525a77a-1c47-472a-8080-20bbb71aafae",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-analysis-v1",
+      "tool_catalog_version": "r18-analysis-v1",
+      "expected_tools": [
+        "plan_check_explain_v1"
+      ],
+      "actual_tools": [
+        "plan_check_explain_v1"
+      ],
+      "citation_count": 1,
+      "answer_sha256": "0760160da1762ff1ff608cffb554399ec4640d5849c5b475c1ec0c19f15ccf05",
+      "usage": {
+        "input_tokens": 12448,
+        "latency_ms": 17777,
+        "output_tokens": 805
+      }
+    }
+  ]
+}

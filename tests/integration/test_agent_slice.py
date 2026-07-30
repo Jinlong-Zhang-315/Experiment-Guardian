@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from experiment_guardian.application.agent import (
@@ -17,6 +18,7 @@ from experiment_guardian.application.agent import (
     AgentRunIdentityResolver,
 )
 from experiment_guardian.application.agent_observability import AgentObservabilityService
+from experiment_guardian.application.agent_profiles import WEB_SPECIALIZED_PROFILES
 from experiment_guardian.application.agent_runtime import (
     AgentRunProcessor,
     GovernanceAgentRuntime,
@@ -56,6 +58,8 @@ from experiment_guardian.domain.agent import (
 from experiment_guardian.domain.agent_research import research_report_source_hash
 from experiment_guardian.domain.contracts import ConfigurationDocument, SubmissionFinalizeCommand
 from experiment_guardian.domain.enums import (
+    AgentCallStatus,
+    AgentCapabilityDomain,
     AgentContextSummaryStatus,
     AgentEvidenceKind,
     AgentModelCallPurpose,
@@ -81,6 +85,7 @@ from experiment_guardian.infrastructure.models import (
     AgentResearchReport,
     AgentRun,
     AgentRunEvent,
+    AgentToolCall,
     AuditLog,
     ExperimentPlan,
     ExperimentPlanDecision,
@@ -173,6 +178,36 @@ class ScriptedAgentModel(AgentChatModel):
             finish_reason="stop",
             provider_request_id="scripted-2",
         )
+
+
+class MissingProposalPrerequisiteModel(AgentChatModel):
+    provider = "bailian"
+    model_id = "qwen-agent"
+    structured_final_requires_tool_choice_none = False
+
+    def stream_turn(
+        self,
+        *,
+        messages: Sequence[AgentChatMessage],
+        tools: Sequence[AgentToolSpec],
+        tool_choice: str,
+        max_output_tokens: int,
+        response_format: AgentResponseFormat | None = None,
+    ) -> Iterator[AgentModelEvent]:
+        del messages, tools, tool_choice, max_output_tokens, response_format
+        yield AgentModelEvent(
+            event_type="tool_call",
+            tool_call=AgentToolRequest(
+                call_id="call-proposal-without-diagnosis",
+                name="action_proposal_prepare_plan_decision_v1",
+                arguments={
+                    "plan_check_id": str(uuid4()),
+                    "decision": "APPROVED",
+                    "decision_reason": "模型跳过了前置诊断",
+                },
+            ),
+        )
+        yield AgentModelEvent(event_type="completed", finish_reason="tool_calls")
 
 
 class SeparateFinalTurnAgentModel(AgentChatModel):
@@ -722,6 +757,78 @@ def _setup(
     )
 
 
+def test_web_threads_route_to_explicit_capability_profiles(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    service, identity, initialized, _ = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    for domain, profile in WEB_SPECIALIZED_PROFILES.items():
+        thread = service.create_thread(
+            project_id=project_id,
+            identity=identity,
+            request=AgentThreadCreateRequest(capability_domain=domain),
+        )
+        assert thread.capability_domain is domain
+        receipt = service.create_message(
+            project_id=project_id,
+            thread_id=thread.thread_id,
+            identity=identity,
+            idempotency_key=uuid4(),
+            request=AgentMessageCreateRequest(content=f"测试 {domain.value} 能力域"),
+        )
+        with plan_check_session_factory() as session:
+            run = session.get(AgentRun, receipt.run_id)
+            assert run is not None
+            assert run.prompt_version == profile.prompt_version
+            assert run.tool_catalog_version == profile.tool_catalog_version
+            assert run.context_snapshot["capability_domain"] == domain.value
+
+
+def test_runtime_rejects_and_audits_proposal_without_same_run_diagnosis(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    service, identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    thread = service.create_thread(
+        project_id=project_id,
+        identity=identity,
+        request=AgentThreadCreateRequest(capability_domain=AgentCapabilityDomain.PROPOSAL),
+    )
+    receipt = service.create_message(
+        project_id=project_id,
+        thread_id=thread.thread_id,
+        identity=identity,
+        idempotency_key=uuid4(),
+        request=AgentMessageCreateRequest(content="跳过诊断直接准备批准提案"),
+    )
+    repository = SqlAlchemyAgentRepository()
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        GovernanceAgentRuntime(
+            plan_check_session_factory,
+            repository,
+            AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+            MissingProposalPrerequisiteModel(),
+            settings,
+        ),
+        settings,
+        worker_id="proposal-policy-worker",
+    )
+    assert processor.process_once()
+    with plan_check_session_factory() as session:
+        run = session.get(AgentRun, receipt.run_id)
+        assert run is not None
+        assert run.status is AgentRunStatus.FAILED
+        assert run.error is not None and run.error["code"] == "INVALID_INPUT"
+        call = session.scalar(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
+        assert call is not None
+        assert call.status is AgentCallStatus.FAILED
+        assert call.error is not None
+        assert "确定性前置读取" in call.error["message"]
+
+
 def test_agent_run_is_idempotent_and_persists_verified_answer(
     plan_check_session_factory: sessionmaker[Session],
 ) -> None:
@@ -791,6 +898,63 @@ def test_agent_run_is_idempotent_and_persists_verified_answer(
             "answer.delta",
             "run.completed",
         ]
+
+
+def test_agent_run_does_not_retry_or_expose_database_integrity_errors(
+    plan_check_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, identity, initialized, settings = _setup(plan_check_session_factory)
+    project_id = initialized.project_id  # type: ignore[attr-defined]
+    thread = service.create_thread(
+        project_id=project_id,
+        identity=identity,
+        request=AgentThreadCreateRequest(),
+    )
+    receipt = service.create_message(
+        project_id=project_id,
+        thread_id=thread.thread_id,
+        identity=identity,
+        idempotency_key=uuid4(),
+        request=AgentMessageCreateRequest(content="触发确定性持久化错误"),
+    )
+    repository = SqlAlchemyAgentRepository()
+    runtime = GovernanceAgentRuntime(
+        plan_check_session_factory,
+        repository,
+        AgentToolRegistry(plan_check_session_factory, SqlAlchemyProjectRepository()),
+        ScriptedAgentModel(),
+        settings,
+    )
+
+    def fail_with_integrity_error(**_: object) -> None:
+        raise IntegrityError(
+            "INSERT INTO secret_table VALUES ('sensitive')",
+            {},
+            RuntimeError("constraint violation with sensitive parameters"),
+        )
+
+    monkeypatch.setattr(runtime, "execute", fail_with_integrity_error)
+    processor = AgentRunProcessor(
+        plan_check_session_factory,
+        repository,
+        AgentRunIdentityResolver(settings),
+        runtime,
+        settings,
+        worker_id="integrity-failure-worker",
+    )
+
+    assert processor.process_once()
+    with plan_check_session_factory() as session:
+        run = session.get(AgentRun, receipt.run_id)
+        assert run is not None
+        assert run.status is AgentRunStatus.FAILED
+        assert run.attempt_count == 1
+        assert run.error == {
+            "code": "DATA_INTEGRITY_ERROR",
+            "message": "Agent 运行结果违反数据库完整性约束，请检查迁移和数据模型",
+            "retryable": False,
+        }
 
 
 def test_external_mcp_task_reuses_agent_runtime_and_is_visible_from_web(

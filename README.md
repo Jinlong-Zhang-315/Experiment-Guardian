@@ -69,6 +69,10 @@ Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Contex
   真实百炼执行完整链路，同时验证 LOCKED 负例、Host 白名单、关键写入幂等、正式策略不变和
   Agent 调用预算；真实门已用 9 次 Agent 模型调用通过。外部新 Run 使用只暴露可调用只读工具
   的 `r17a-external-v2` 目录，恢复、并发、死信和双视口页面回归保留为独立自动化门。
+* R18 内部 Agent 能力域隔离：保留同一个有界 ReAct Runtime，Web 会话可显式选择通用、
+  实验分析、策略草稿、研究综合或操作提案配置。专业配置只加载 5 至 9 个相关工具并裁剪输出
+  Schema；Proposal 缺少同 Run、同目标前置诊断时由服务端拒绝并审计。真实百炼 60 Run 成对
+  评测通过后，Web 新会话默认使用 `ANALYSIS`；API 缺省值和旧 Thread 仍保持 `GENERAL`。
 
 MCP 暴露七个正式治理工具和六个外部协作工具：
 
@@ -160,9 +164,11 @@ docker compose --env-file .env.local logs local-init
 [`docs/POLICY_DUAL_REPRESENTATION.md`](docs/POLICY_DUAL_REPRESENTATION.md)。
 内部实验治理 Agent 的能力边界、工具目录、上下文压缩、确认协议和分期计划见
 [`docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md`](docs/INTERNAL_GOVERNANCE_AGENT_PLAN.md)；
+当前架构审计、能力域矩阵和默认切换评测门见
+[`docs/AGENT_ARCHITECTURE_REVIEW.md`](docs/AGENT_ARCHITECTURE_REVIEW.md)；
 外部 Coding Agent 的 R17a-R17d 路线见
 [`docs/EXTERNAL_CODING_AGENT_PLAN.md`](docs/EXTERNAL_CODING_AGENT_PLAN.md)。
-当前完成 R17d 本地版发布加固。报告仍由用户明确选择 Experiment；每条
+当前完成 R18b 真实百炼能力域评测，v1.0.0 正式业务链路保持不变。报告仍由用户明确选择 Experiment；每条
 finding 使用确定性模板形成独立候选记忆，embedding 由可恢复 Worker 异步生成。报告和正式
 Experiment Memory 均不受索引失败影响；所有提案仍需独立 Web 确认。Bedrock Agent 强制使用
 Structured Outputs JSON Schema，不接受仅靠提示词约束 JSON 的降级路径。
@@ -214,7 +220,7 @@ experiment-guardian-api
 
 默认 API：`http://127.0.0.1:8000`，OpenAPI：`/docs`。
 
-当前 Alembic head 为 `20260728_26`：
+当前 Alembic head 为 `20260730_28`：
 
 ```text
 01 foundation/context
@@ -242,6 +248,8 @@ experiment-guardian-api
 24 external MCP Agent tasks and durable Web/Token/OAuth Run identity bindings
 25 versioned experiment plans, Agent reviews and immutable human decisions
 26 approved-plan invariant checkpoints and schema v2 Run Manifests
+27 deterministic Web Agent capability domains
+28 current Agent Citation evidence kinds
 ```
 
 revision 24 将旧 Agent Thread/Run 回填为 Web 来源，并为外部 MCP 任务保存初始正式策略快照、
@@ -254,6 +262,12 @@ revision 25 新增计划、revision、审核和人类决定四张表，并为 Ag
 revision 26 为 Plan Check 增加可选的计划决定、批准快照和不变量检查，并允许新的计划绑定
 Manifest 使用 schema v2。旧 Plan Check 和 schema v1 Manifest 不回填、不重建。存在 v2
 Manifest 时降级会明确失败，避免修改或丢失不可变证据链。
+
+revision 27 为 Web Agent Thread 增加不可变能力域。旧 Thread 回填为 `GENERAL`，不会改变既有
+Prompt、工具目录或正式业务状态；降级只删除能力域列，不删除 Thread、Message 或 Run。
+
+revision 28 将 Agent Citation 数据库约束与当前六种 Evidence 类型对齐。降级前若存在
+`CANDIDATE_DRAFT` 或 `ACTION_PROPOSAL` 引用会明确拒绝，避免留下无法解释的历史数据。
 
 初始化现有团队和首个项目仍可使用可信本地 CLI/API：
 

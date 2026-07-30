@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
-更新时间：2026-07-29
-当前完成轮次：R17d v1.0.0 本地版发布加固
-下一步：进入缺陷维护；不预设新的功能阶段
+更新时间：2026-07-30
+当前完成轮次：R18b 内部 Agent 真实百炼架构验证
+下一步：保持当前简单架构；扩大真实数据覆盖后再评估是否移除 `GENERAL` 兼容模式
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -41,6 +41,8 @@
 | R17b | 版本化自然语言实验计划 | 完成 | 硬检查、带引用审核、最多两轮自动修订、不可变人工决定 |
 | R17c | 三阶段关键不变量核对 | 完成 | 批准快照、增强 Plan Check、v2 Manifest、最终证据阻断 |
 | R17d | 本地端到端与首版发布 | 完成 | 公共接口闭环、真实百炼门、恢复安全回归、v1.0.0 |
+| R18a | 内部 Agent 能力域隔离 | 完成 | 会话级确定性路由、专用目录/Schema、Proposal 前置硬门禁 |
+| R18b | 真实百炼架构验证 | 完成 | 60 Run 成对评测、Proposal 实链、默认 ANALYSIS、迁移约束修复 |
 
 ## R15：内部实验治理 Agent 路线
 
@@ -420,8 +422,36 @@
 * 百炼 Agent 关闭 thinking，并为外部只读 Run 使用裁剪 Schema。新 Run 使用
   `r17a-external-v2` 和 `r17b-plan-review-v2` 安全目录；v1 仅保留历史还原。
 
-后续默认进入缺陷维护。只有真实使用暴露明确缺口时再建立下一阶段；不继续预排自动训练、代码
-修改、委托审批、任意 SQL、新模型工具或新的治理状态机。
+## R18a：内部 Agent 能力域隔离基础
+
+交付：
+
+* 保留单一有界 ReAct Runtime；Web Thread 可固定 `GENERAL/ANALYSIS/POLICY/RESEARCH/PROPOSAL`。
+* 四个专业配置分别冻结 Prompt、5 至 9 个工具、输出 Schema 和摘要引用策略；模型不能切换域。
+* 外部协作与计划审核维持现有独立配置，不增加 Supervisor 或模型路由调用。
+* Proposal 的校验/影响/诊断前置步骤改为同 Run、同目标服务端硬门禁，拒绝请求也保存审计。
+* revision 27 回填旧 Thread 为 `GENERAL`；旧 Prompt/目录版本继续支持历史 Run。
+* 新增统一架构轨迹评测器；R18a 当时保留 `GENERAL` 默认，没有用静态结构判断替代真实模型效果。
+
+## R18b：真实百炼架构验证
+
+交付：
+
+* 同一本地 CockroachDB 快照、同一 `qwen3.7-plus` 模型下完成 10 个 case、每 case 3 次的
+  `GENERAL` 与专业配置成对评测，共 60 个 Run；两组任务、工具、Citation 和一致性均为 100%。
+* 专业配置平均输入 Token 降低 45.91%，输出 Token 降低 39.43%，延迟降低 36.20%；模型调用
+  从 3.0 增至 3.1，主要来自 Proposal 输出修复，未用成本指标交换安全指标。
+* 真实 Submission Proposal 额外验证同 Run 诊断顺序、候选创建、Action Proposal Citation
+  持久化和取消；未确认 Submission，正式对象快照保持不变。
+* 修复空报告/记忆查询无 Evidence、专业输出 Citation Schema、数据库 Evidence 类型约束和
+  IntegrityError 无效重试。Web 新会话默认切到 `ANALYSIS`，兼容 API 和旧 Thread 保持 `GENERAL`。
+* Proposal 硬门禁和真实链均通过，不新增 Supervisor 或专用 Proposal Workflow。详细样本边界与
+  指标见 `AGENT_ARCHITECTURE_REVIEW.md` 和 `R18B_BAILIAN_EVALUATION.md`。
+
+## 唯一下一步
+
+当前不继续重构 Agent 拓扑。后续只在积累更多正式 Experiment、Policy Draft、Research Report
+和高风险 Submission 样本后扩大真实回归集；在没有更广数据前不删除 `GENERAL` 历史兼容模式。
 
 ## 每轮更新规则
 

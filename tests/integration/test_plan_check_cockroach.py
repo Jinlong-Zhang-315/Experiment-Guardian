@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import create_engine, func, inspect, or_, select, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
 from experiment_guardian.application.async_summary import OutboxDispatcher
@@ -180,9 +181,15 @@ def _cleanup_test_database_jobs(connection: object, database_name: str) -> None:
         {"database_pattern": f"%{database_name}%"},
     ).mappings()
     for row in rows:
-        connection.exec_driver_sql(  # type: ignore[attr-defined]
-            f"CANCEL JOB {int(row['job_id'])}"
-        )
+        try:
+            connection.exec_driver_sql(  # type: ignore[attr-defined]
+                f"CANCEL JOB {int(row['job_id'])}"
+            )
+        except DBAPIError as exc:
+            # CockroachDB 的 Schema GC Job 会出现在 SHOW JOBS，但协议明确禁止取消。
+            # 它不应覆盖前面已经完成的迁移和业务断言。
+            if "not cancelable" not in str(exc).lower():
+                raise
 
 
 def _evidence(value: object, source: str) -> FieldEvidence:
@@ -258,6 +265,14 @@ def test_plan_check_full_chain_on_isolated_cockroach_database() -> None:
         assert "cognito_sub" in {
             column["name"] for column in inspect(test_engine).get_columns("users")
         }
+        assert "capability_domain" in {
+            column["name"] for column in inspect(test_engine).get_columns("agent_threads")
+        }
+        assert any(
+            "ACTION_PROPOSAL" in str(item.get("sqltext"))
+            and "CANDIDATE_DRAFT" in str(item.get("sqltext"))
+            for item in inspect(test_engine).get_check_constraints("agent_citations")
+        )
         assert "provider" in {
             column["name"]
             for column in inspect(test_engine).get_columns("submission_embeddings")

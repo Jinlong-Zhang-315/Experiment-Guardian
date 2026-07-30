@@ -133,6 +133,7 @@ export interface Page<T> { items: T[]; next_cursor?: string }
 
 export type AgentThreadStatus = "ACTIVE" | "ARCHIVED";
 export type AgentThreadOrigin = "WEB" | "EXTERNAL_MCP";
+export type AgentCapabilityDomain = "GENERAL" | "ANALYSIS" | "POLICY" | "RESEARCH" | "PROPOSAL";
 export type AgentRunStatus = "PENDING" | "RUNNING" | "RETRYABLE_FAILURE" | "SUCCEEDED" | "FAILED" | "DEAD_LETTER";
 
 export interface AgentThread {
@@ -140,6 +141,7 @@ export interface AgentThread {
   project_id: string;
   title: string;
   origin: AgentThreadOrigin;
+  capability_domain: AgentCapabilityDomain;
   status: AgentThreadStatus;
   created_at: string;
   updated_at: string;
@@ -337,6 +339,10 @@ export interface AgentRun extends AgentRunReceipt {
   max_attempts: number;
   provider: string;
   model_id: string;
+  run_kind: "CONVERSATION" | "EXPERIMENT_PLAN_REVIEW";
+  capability_domain: string;
+  prompt_version: string;
+  tool_catalog_version: string;
   usage: Record<string, unknown>;
   model_calls: AgentModelCall[];
   error?: { code?: string; message?: string; retryable?: boolean };

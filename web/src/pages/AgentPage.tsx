@@ -6,6 +6,7 @@ import { api, formatTime, idempotencyKey, streamServerEvents } from "../api";
 import { Badge, Empty, ErrorNotice } from "../components";
 import type {
   AgentMessage,
+  AgentCapabilityDomain,
   AgentRun,
   AgentRunReceipt,
   AgentThread,
@@ -20,6 +21,13 @@ import { AgentObservabilityWorkspace, AgentRunDetailsDialog } from "./AgentObser
 import { ExperimentPlanWorkspace } from "./ExperimentPlanWorkspace";
 
 const ACTIVE_RUNS = new Set(["PENDING", "RUNNING", "RETRYABLE_FAILURE"]);
+const CAPABILITY_OPTIONS: Array<{ value: AgentCapabilityDomain; label: string }> = [
+  { value: "GENERAL", label: "通用" },
+  { value: "ANALYSIS", label: "实验分析" },
+  { value: "POLICY", label: "策略草稿" },
+  { value: "RESEARCH", label: "研究综合" },
+  { value: "PROPOSAL", label: "操作提案" },
+];
 
 function AnswerContent({ content }: { content: string }) {
   return <div className="agent-answer">{content.split("\n").map((line, index) => {
@@ -89,6 +97,7 @@ export function AgentPage() {
   const [planWorkspace, setPlanWorkspace] = useState<{ open: boolean; planId?: string }>({ open: false });
   const [observabilityOpen, setObservabilityOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState("");
+  const [newThreadCapability, setNewThreadCapability] = useState<AgentCapabilityDomain>("ANALYSIS");
   const lastEventId = useRef(0);
 
   const threads = useQuery({
@@ -113,7 +122,7 @@ export function AgentPage() {
 
   const createThread = useMutation({
     mutationFn: () => api<AgentThread>(`/projects/${projectId}/agent/threads`, {
-      method: "POST", body: JSON.stringify({}),
+      method: "POST", body: JSON.stringify({ capability_domain: newThreadCapability }),
     }),
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: ["agent-threads", projectId] });
@@ -251,6 +260,7 @@ export function AgentPage() {
         <button className="button" onClick={() => setReportWorkspace({ open: true })}><BookOpenText />研究报告</button>
         <button className="button" onClick={() => setPlanWorkspace({ open: true })}><ClipboardCheck />实验计划</button>
         <button className="button" onClick={() => setShowArchived((value) => !value)}>{showArchived ? <ArchiveRestore /> : <Archive />}{showArchived ? "当前会话" : "已归档"}</button>
+        <div className="segmented agent-capability-selector" aria-label="新对话能力域">{CAPABILITY_OPTIONS.map((option) => <button type="button" title={option.label} className={newThreadCapability === option.value ? "active" : ""} key={option.value} onClick={() => setNewThreadCapability(option.value)}>{option.label}</button>)}</div>
         <button className="button primary" onClick={() => createThread.mutate()} disabled={createThread.isPending}><MessageSquarePlus />新对话</button>
       </div>
     </header>
@@ -258,11 +268,11 @@ export function AgentPage() {
     {!threads.data.items.length ? <Empty>{showArchived ? "没有已归档会话" : "创建一个会话后开始查询项目正式记录"}</Empty> :
       <div className="agent-workspace">
         <aside className="agent-thread-list">{threads.data.items.map((item) => <button className={selectedId === item.thread_id ? "active" : ""} key={item.thread_id} onClick={() => setSelectedId(item.thread_id)}>
-          <Bot /><span><strong>{item.title}</strong><small>{item.origin === "EXTERNAL_MCP" ? "MCP 任务 · " : ""}{formatTime(item.updated_at)}</small></span>
+          <Bot /><span><strong>{item.title}</strong><small>{item.origin === "EXTERNAL_MCP" ? "MCP 任务 · " : `${item.capability_domain ?? "GENERAL"} · `}{formatTime(item.updated_at)}</small></span>
         </button>)}</aside>
         <section className="agent-conversation">
           <div className="agent-conversation-toolbar">
-            <div><strong>{thread.data?.thread.title ?? "会话"}</strong>{thread.data?.thread.origin === "EXTERNAL_MCP" && <Badge value="MCP 任务" />}{runStatus && <Badge value={runStatus} />}</div>
+            <div><strong>{thread.data?.thread.title ?? "会话"}</strong>{thread.data?.thread.origin === "EXTERNAL_MCP" ? <Badge value="MCP 任务" /> : thread.data && <Badge value={thread.data.thread.capability_domain ?? "GENERAL"} />}{runStatus && <Badge value={runStatus} />}</div>
             {thread.data && <button className="icon-button" title={showArchived ? "恢复会话" : "归档会话"} aria-label={showArchived ? "恢复会话" : "归档会话"} disabled={Boolean(activeRun && ACTIVE_RUNS.has(runStatus))} onClick={() => updateThread.mutate({ id: thread.data!.thread.thread_id, archived: !showArchived })}>{showArchived ? <ArchiveRestore /> : <Archive />}</button>}
           </div>
           <div className="agent-message-list">

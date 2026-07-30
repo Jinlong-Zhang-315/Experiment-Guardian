@@ -10,12 +10,19 @@ from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from experiment_guardian.application.agent import AgentRunIdentityResolver
+from experiment_guardian.application.agent_profiles import (
+    SPECIALIZED_SYSTEM_PROMPTS,
+    specialized_profile_for_prompt,
+)
+from experiment_guardian.application.agent_tool_policy import require_proposal_prerequisites
 from experiment_guardian.application.agent_tools import AgentToolRegistry
 from experiment_guardian.application.errors import (
     ApplicationError,
+    DataIntegrityError,
     InputValidationError,
     ServiceUnavailableError,
 )
@@ -407,6 +414,7 @@ SYSTEM_PROMPTS = {
     "r17a-external-v1": R17A_EXTERNAL_SYSTEM_PROMPT,
     "r17a-external-v2": R17A_EXTERNAL_SYSTEM_PROMPT_V2,
     "r17b-plan-review-v1": R17B_PLAN_REVIEW_SYSTEM_PROMPT,
+    **SPECIALIZED_SYSTEM_PROMPTS,
 }
 
 SUMMARY_SYSTEM_PROMPT = """你负责压缩 Experiment Guardian 的较早对话历史。
@@ -437,6 +445,7 @@ class _AgentState(TypedDict, total=False):
     input_tokens: int
     output_tokens: int
     tool_names: list[str]
+    completed_tool_requests: list[AgentToolRequest]
     report_source: dict[str, Any]
     report_tool_call_id: str
 
@@ -514,6 +523,7 @@ class GovernanceAgentRuntime:
                 "evidence_tool_ids": dict(state.get("evidence_tool_ids", {})),
                 "repair_count": state.get("repair_count", 0),
                 "tool_names": list(state.get("tool_names", [])),
+                "completed_tool_requests": list(state.get("completed_tool_requests", [])),
                 "input_tokens": state.get("input_tokens", 0) + (usage.input_tokens or 0),
                 "output_tokens": state.get("output_tokens", 0) + (usage.output_tokens or 0),
             }
@@ -588,6 +598,7 @@ class GovernanceAgentRuntime:
             try:
                 answer = AgentAnswer.model_validate_json(text)
                 self._validate_answer(answer, next_state["evidence"])
+                self._validate_profile_answer(answer, context_snapshot)
                 self._validate_research_report_answer(answer, next_state)
                 self._validate_experiment_plan_review_answer(
                     answer,
@@ -634,6 +645,7 @@ class GovernanceAgentRuntime:
             evidence = dict(state.get("evidence", {}))
             evidence_tool_ids = dict(state.get("evidence_tool_ids", {}))
             tool_names = list(state.get("tool_names", []))
+            completed_tool_requests = list(state.get("completed_tool_requests", []))
             report_source = state.get("report_source")
             report_tool_call_id = state.get("report_tool_call_id")
             tool_count = state.get("tool_calls", 0)
@@ -676,6 +688,16 @@ class GovernanceAgentRuntime:
                 if tool_count > self._settings.agent_max_tool_calls:
                     raise InputValidationError("治理 Agent 超过工具调用次数上限")
                 self._renew_claim(claim)
+                try:
+                    require_proposal_prerequisites(request, completed_tool_requests)
+                except InputValidationError as exc:
+                    self._record_rejected_tool(
+                        claim=claim,
+                        sequence=tool_count,
+                        request=request,
+                        error=exc,
+                    )
+                    raise
                 result, tool_call_id = self._execute_tool(
                     claim=claim,
                     sequence=tool_count,
@@ -687,6 +709,7 @@ class GovernanceAgentRuntime:
                     evidence[item.evidence_id] = item.model_dump(mode="json")
                     evidence_tool_ids[item.evidence_id] = str(tool_call_id)
                 tool_names.append(request.name)
+                completed_tool_requests.append(request)
                 if report_tool:
                     report_source = result.model_dump(mode="json")
                     report_tool_call_id = str(tool_call_id)
@@ -707,6 +730,7 @@ class GovernanceAgentRuntime:
                 "evidence": evidence,
                 "evidence_tool_ids": evidence_tool_ids,
                 "tool_names": tool_names,
+                "completed_tool_requests": completed_tool_requests,
                 **(
                     {
                         "report_source": report_source,
@@ -748,6 +772,7 @@ class GovernanceAgentRuntime:
                 "input_tokens": 0,
                 "output_tokens": 0,
                 "tool_names": [],
+                "completed_tool_requests": [],
             }
         )
         answer = AgentAnswer.model_validate(result["final_answer"])
@@ -779,18 +804,21 @@ class GovernanceAgentRuntime:
                 if (
                     run is None
                     or run.generation != claim.generation
-                    or run.prompt_version
-                    not in {
-                        "r15b-v1",
-                        "r15c-v1",
-                        "r15d-v1",
-                        "r15d-b1-v1",
-                        "r15d-b2-v1",
-                        "r15e-a-v1",
-                        "r15e-b-v1",
-                        "r17a-external-v1",
-                        "r17a-external-v2",
-                    }
+                    or (
+                        run.prompt_version
+                        not in {
+                            "r15b-v1",
+                            "r15c-v1",
+                            "r15d-v1",
+                            "r15d-b1-v1",
+                            "r15d-b2-v1",
+                            "r15e-a-v1",
+                            "r15e-b-v1",
+                            "r17a-external-v1",
+                            "r17a-external-v2",
+                        }
+                        and specialized_profile_for_prompt(run.prompt_version) is None
+                    )
                 ):
                     return
                 thread = session.get(AgentThread, run.thread_id)
@@ -962,8 +990,40 @@ class GovernanceAgentRuntime:
                 )
 
             prompt_version = str(run_snapshot["prompt_version"])
+            profile = specialized_profile_for_prompt(prompt_version)
+            preserve_drafts = (
+                profile.preserve_draft_references
+                if profile is not None
+                else prompt_version
+                in {
+                    "r15c-v1",
+                    "r15d-v1",
+                    "r15d-b1-v1",
+                    "r15d-b2-v1",
+                    "r15e-a-v1",
+                    "r15e-b-v1",
+                }
+            )
+            preserve_reports = (
+                profile.preserve_research_report_references
+                if profile is not None
+                else prompt_version in {"r15e-a-v1", "r15e-b-v1"}
+            )
+            preserve_memories = (
+                profile.preserve_research_memory_references
+                if profile is not None
+                else prompt_version == "r15e-b-v1"
+            )
             proposal_reference_instruction = ""
-            if prompt_version == "r15d-v1":
+            if profile is not None and profile.preserve_proposal_references:
+                proposal_reference_instruction = (
+                    "proposal_references 只保留输入中明确出现的 proposal_id、operation、"
+                    "status、proposal_digest、expires_at；Policy 提案保留 source_draft_id "
+                    "和 source_draft_revision，Plan 提案保留 target_plan_check_id 和 "
+                    "decision；Submission 提案保留 target_submission_id、decision 和 "
+                    "review_eligibility。不得把提案写成已执行。"
+                )
+            elif prompt_version == "r15d-v1":
                 proposal_reference_instruction = (
                     "proposal_references 只保留输入中明确出现的 proposal_id、operation、"
                     "status、proposal_digest、source_draft_id、source_draft_revision "
@@ -998,15 +1058,7 @@ class GovernanceAgentRuntime:
                         + (
                             "draft_references 只保留输入中明确出现的 draft_id、revision、"
                             "status 和未解决歧义，不得补全或猜测；"
-                            if prompt_version
-                            in {
-                                "r15c-v1",
-                                "r15d-v1",
-                                "r15d-b1-v1",
-                                "r15d-b2-v1",
-                                "r15e-a-v1",
-                                "r15e-b-v1",
-                            }
+                            if preserve_drafts
                             else ""
                         )
                         + proposal_reference_instruction
@@ -1014,14 +1066,14 @@ class GovernanceAgentRuntime:
                             "research_report_references 只能逐字保留输入消息中的 report_id、"
                             "title、source_hash 和 experiment_ids，不得复制报告正文或改写为"
                             "正式事实。"
-                            if prompt_version in {"r15e-a-v1", "r15e-b-v1"}
+                            if preserve_reports
                             else ""
                         )
                         + (
                             "research_memory_references 只能逐字保留输入消息中的 memory_id、"
                             "report_id、finding_id 和 content_hash，不得复制记忆正文或把候选"
                             "分析升级为正式事实。"
-                            if prompt_version == "r15e-b-v1"
+                            if preserve_memories
                             else ""
                         )
                         + "\n"
@@ -1105,7 +1157,7 @@ class GovernanceAgentRuntime:
                 for item in source["messages"]
                 if item.get("research_report_reference") is not None
             ]
-            if prompt_version in {"r15e-a-v1", "r15e-b-v1"}:
+            if preserve_reports:
                 payload = payload.model_copy(
                     update={
                         "research_report_references": [
@@ -1114,7 +1166,7 @@ class GovernanceAgentRuntime:
                         ],
                     }
                 )
-            if prompt_version == "r15e-b-v1":
+            if preserve_memories:
                 expected_memory_references = []
                 seen_memory_ids: set[str] = set()
                 for item in source["messages"]:
@@ -1360,7 +1412,32 @@ class GovernanceAgentRuntime:
     def _answer_response_format(context_snapshot: dict[str, Any]) -> AgentResponseFormat:
         schema = deepcopy(AgentAnswer.model_json_schema())
         description = "Evidence-bound Experiment Guardian Agent answer."
-        if context_snapshot.get("prompt_version") == "r17a-external-v2":
+        prompt_version = str(context_snapshot.get("prompt_version", ""))
+        profile = specialized_profile_for_prompt(prompt_version)
+        if profile is not None:
+            properties = schema.get("properties")
+            if isinstance(properties, dict):
+                properties.pop("experiment_plan_review", None)
+                if not profile.allow_research_report:
+                    properties.pop("research_report", None)
+            required = schema.setdefault("required", [])
+            if isinstance(required, list) and "citations" not in required:
+                required.append("citations")
+            definitions = schema.get("$defs")
+            if isinstance(definitions, dict):
+                evidence_kind = definitions.get("AgentEvidenceKind")
+                if isinstance(evidence_kind, dict):
+                    evidence_kind["enum"] = [item.value for item in profile.allowed_evidence_kinds]
+                section_schema = definitions.get("AgentAnswerSection")
+                if isinstance(section_schema, dict):
+                    section_required = section_schema.setdefault("required", [])
+                    if (
+                        isinstance(section_required, list)
+                        and "citation_ids" not in section_required
+                    ):
+                        section_required.append("citation_ids")
+            description = f"Bounded {profile.capability_domain.value} governance answer."
+        elif prompt_version == "r17a-external-v2":
             # 外部协作 Run 没有研究报告或计划审核语义。裁剪 Provider 所见 Schema，
             # 避免模型因用户提到“计划”而误填其他 Run 专属的可选字段。
             properties = schema.get("properties")
@@ -1386,7 +1463,11 @@ class GovernanceAgentRuntime:
 
     @staticmethod
     def _final_output_rules(context_snapshot: dict[str, Any]) -> str:
-        if context_snapshot.get("prompt_version") == "r17a-external-v2":
+        prompt_version = str(context_snapshot.get("prompt_version", ""))
+        profile = specialized_profile_for_prompt(prompt_version)
+        if profile is not None:
+            return profile.final_output_rules
+        if prompt_version == "r17a-external-v2":
             return (
                 "本 Run 是只读外部协作问答：禁止输出 research_report、"
                 "experiment_plan_review、ACTION_PROPOSAL 或 CANDIDATE_DRAFT。"
@@ -1551,6 +1632,52 @@ class GovernanceAgentRuntime:
                     },
                 )
             raise
+
+    def _record_rejected_tool(
+        self,
+        *,
+        claim: AgentRunClaim,
+        sequence: int,
+        request: AgentToolRequest,
+        error: InputValidationError,
+    ) -> None:
+        """持久化被确定性编排策略拒绝的模型工具请求。"""
+
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            run = self._require_claim(session, claim)
+            row = AgentToolCall(
+                run_id=run.id,
+                generation=claim.generation,
+                call_id=request.call_id,
+                sequence=sequence,
+                tool_name=request.name,
+                tool_version="1",
+                status=AgentCallStatus.FAILED,
+                arguments=request.arguments,
+                arguments_hash=self._json_hash(request.arguments),
+                error={"code": error.code, "message": str(error)[:1000]},
+                started_at=now,
+                completed_at=now,
+            )
+            session.add(row)
+            self._repository.append_event(
+                session,
+                run=run,
+                event_type="tool.started",
+                payload={"tool": request.name, "sequence": sequence},
+            )
+            self._repository.append_event(
+                session,
+                run=run,
+                event_type="tool.completed",
+                payload={
+                    "tool": request.name,
+                    "sequence": sequence,
+                    "failed": True,
+                    "policy_rejected": True,
+                },
+            )
 
     def _start_model_call(
         self,
@@ -1739,6 +1866,28 @@ class GovernanceAgentRuntime:
                     raise InputValidationError("待验证假设只能引用事实或分析证据")
 
     @staticmethod
+    def _validate_profile_answer(
+        answer: AgentAnswer,
+        context_snapshot: dict[str, Any],
+    ) -> None:
+        """即使模型供应商未严格执行 JSON Schema，也不能跨越能力域输出边界。"""
+
+        profile = specialized_profile_for_prompt(str(context_snapshot.get("prompt_version", "")))
+        if profile is None:
+            return
+        allowed_kinds = set(profile.allowed_evidence_kinds)
+        if any(section.evidence_kind not in allowed_kinds for section in answer.sections):
+            raise InputValidationError("Agent 回答包含当前能力域不允许的 Evidence 类型")
+        if answer.experiment_plan_review is not None:
+            raise InputValidationError("专业 Web Agent 不能输出实验计划审核结构")
+        if not profile.allow_research_report and answer.research_report is not None:
+            raise InputValidationError("当前能力域不能输出研究报告结构")
+        if len(answer.answer_markdown) > profile.max_answer_characters:
+            raise InputValidationError("Agent 回答超过当前能力域长度上限")
+        if len(answer.sections) > profile.max_sections:
+            raise InputValidationError("Agent 回答分段超过当前能力域数量上限")
+
+    @staticmethod
     def _validate_research_report_answer(answer: AgentAnswer, state: _AgentState) -> None:
         source = state.get("report_source")
         if source is None:
@@ -1794,6 +1943,9 @@ class GovernanceAgentRuntime:
 
     @staticmethod
     def _summary_prompt_version(prompt_version: str) -> str:
+        profile = specialized_profile_for_prompt(prompt_version)
+        if profile is not None:
+            return profile.summary_prompt_version
         if prompt_version == "r17a-external-v2":
             return "r17a-external-summary-v2"
         if prompt_version == "r17a-external-v1":
@@ -1814,6 +1966,9 @@ class GovernanceAgentRuntime:
 
     @staticmethod
     def _summary_schema_version(prompt_version: str) -> int:
+        profile = specialized_profile_for_prompt(prompt_version)
+        if profile is not None:
+            return profile.summary_schema_version
         if prompt_version in {"r17a-external-v1", "r17a-external-v2"}:
             return 7
         if prompt_version == "r15e-b-v1":
@@ -2169,6 +2324,12 @@ class AgentRunProcessor:
             self._runtime.execute(claim=claim, identity=identity)
         except ServiceUnavailableError as exc:
             self._mark_failure(claim, exc, retryable=True)
+        except IntegrityError:
+            self._mark_failure(
+                claim,
+                DataIntegrityError("Agent 运行结果违反数据库完整性约束，请检查迁移和数据模型"),
+                retryable=False,
+            )
         except ApplicationError as exc:
             self._mark_failure(claim, exc, retryable=False)
         except Exception as exc:

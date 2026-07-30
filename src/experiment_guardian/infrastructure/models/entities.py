@@ -31,6 +31,7 @@ from experiment_guardian.domain.enums import (
     ActionProposalOperation,
     ActionProposalStatus,
     AgentCallStatus,
+    AgentCapabilityDomain,
     AgentContextSummaryStatus,
     AgentMessageRole,
     AgentModelCallPurpose,
@@ -955,6 +956,11 @@ class AgentThread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default=AgentThreadOrigin.WEB,
         nullable=False,
     )
+    capability_domain: Mapped[AgentCapabilityDomain] = mapped_column(
+        enum_column(AgentCapabilityDomain, "agent_capability_domain", length=32),
+        default=AgentCapabilityDomain.GENERAL,
+        nullable=False,
+    )
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     status: Mapped[AgentThreadStatus] = mapped_column(
         enum_column(AgentThreadStatus, "agent_thread_status", length=16), nullable=False
@@ -1600,6 +1606,11 @@ class AgentCitation(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __table_args__ = (
         UniqueConstraint("message_id", "evidence_id", name="uq_agent_citations_message_evidence"),
         Index("ix_agent_citations_run", "run_id"),
+        CheckConstraint(
+            "evidence_kind IN ('CONFIRMED_FACT', 'USER_PROVIDED', 'CANDIDATE_DRAFT', "
+            "'ACTION_PROPOSAL', 'ANALYSIS', 'HYPOTHESIS')",
+            name="evidence_kind_valid",
+        ),
     )
 
     message_id: Mapped[UUID] = mapped_column(ForeignKey("agent_messages.id"), nullable=False)

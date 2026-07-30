@@ -33,6 +33,8 @@ const run: AgentRun = {
   run_id: "run-1", thread_id: "thread-1", trigger_message_id: "message-1",
   status: "SUCCEEDED", events_url: "/events", attempt_count: 1,
   max_attempts: 3, provider: "bedrock", model_id: observability.current_model_id,
+  run_kind: "CONVERSATION", capability_domain: "ANALYSIS",
+  prompt_version: "r18-analysis-v1", tool_catalog_version: "r18-analysis-v1",
   usage: { input_tokens: 1200, output_tokens: 300 }, final_message_id: "message-2",
   created_at: "2026-07-27T08:00:00Z", completed_at: "2026-07-27T08:00:01Z",
   model_calls: [{

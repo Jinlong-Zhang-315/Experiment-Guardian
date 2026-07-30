@@ -107,11 +107,12 @@ export function AgentRunDetailsDialog({
         {query.isPending && <div className="page-loading">正在加载 Run 详情</div>}
         {query.data && <>
           <section className="run-observability-summary">
-            <div><Activity /><span><small>状态</small><Badge value={query.data.status} /></span></div>
+            <div><Activity /><span><small>状态 / 能力域</small><Badge value={query.data.status} /><strong>{query.data.capability_domain}</strong></span></div>
             <div><Gauge /><span><small>Provider / Model</small><strong>{query.data.provider} · {query.data.model_id}</strong></span></div>
             <div><Clock3 /><span><small>尝试次数</small><strong>{query.data.attempt_count} / {query.data.max_attempts}</strong></span></div>
             <div><CircleDollarSign /><span><small>配置费率估算</small><strong>{totalCost.size ? [...totalCost].map(([currency, value]) => `${currency} ${value.toFixed(10)}`).join(" · ") : "-"}</strong></span></div>
           </section>
+          <section className="run-profile"><code>{query.data.prompt_version}</code><code>{query.data.tool_catalog_version}</code></section>
           {!query.data.model_calls.length ? <Empty>该 Run 尚无模型调用记录</Empty> : <div className="table-wrap"><table><thead><tr><th>次序</th><th>用途</th><th>状态</th><th>Provider / Model</th><th>Token In / Out</th><th>延迟</th><th>估算费用</th><th>结束原因</th></tr></thead><tbody>
             {query.data.model_calls.map((call) => <tr key={call.call_id}><td>{call.generation}.{call.ordinal}</td><td><Badge value={call.purpose} /></td><td><Badge value={call.status} /></td><td>{call.provider}<br /><code>{call.model_id}</code></td><td>{integer(call.input_tokens)} / {integer(call.output_tokens)}</td><td>{latency(call.latency_ms)}</td><td>{cost(call.estimated_cost, call.cost_currency)}</td><td>{call.error_code ?? call.finish_reason ?? "-"}</td></tr>)}
           </tbody></table></div>}

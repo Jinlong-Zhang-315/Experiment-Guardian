@@ -143,6 +143,8 @@ textarea { resize: vertical; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo
 .search-bar label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
 .search-results { margin: 0 0 26px; }
 .agent-header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.agent-capability-selector { display: flex; max-width: 100%; overflow-x: auto; }
+.agent-capability-selector button { white-space: nowrap; }
 .agent-workspace { min-height: 660px; display: grid; grid-template-columns: 270px minmax(0, 1fr); border: 1px solid var(--line); background: var(--paper); }
 .agent-thread-list { border-right: 1px solid var(--line); background: #fafbfa; overflow-y: auto; }
 .agent-thread-list button { width: 100%; min-height: 62px; border: 0; border-bottom: 1px solid var(--line); background: transparent; display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 9px; align-items: center; padding: 10px 12px; text-align: left; cursor: pointer; color: var(--ink); }
@@ -353,6 +355,8 @@ textarea { resize: vertical; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo
 .run-observability-summary span { min-width: 0; display: grid; gap: 5px; }
 .run-observability-summary small { color: var(--muted); }
 .run-observability-summary strong { overflow-wrap: anywhere; }
+.run-profile { display: flex; flex-wrap: wrap; gap: 8px; margin: -8px 0 18px; }
+.run-profile code { padding: 4px 7px; border: 1px solid var(--line); background: #f7f8f7; }
 .research-workspace-backdrop { position: fixed; inset: 0; z-index: 36; padding: 18px; background: rgb(18 21 22 / 58%); display: grid; place-items: center; }
 .research-workspace { width: min(1380px, 100%); height: min(900px, calc(100vh - 36px)); min-height: 580px; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; background: var(--paper); border: 1px solid #aeb5b1; border-radius: 7px; box-shadow: 0 20px 70px rgb(0 0 0 / 30%); }
 .research-workspace-header { min-height: 64px; padding: 11px 14px 11px 20px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid var(--line); }

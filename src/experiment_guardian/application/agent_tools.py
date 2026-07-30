@@ -14,6 +14,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from experiment_guardian.application.action_proposals import ActionProposalService
+from experiment_guardian.application.agent_profiles import (
+    ANALYSIS_TOOL_CATALOG_VERSION,
+    POLICY_TOOL_CATALOG_VERSION,
+    PROPOSAL_TOOL_CATALOG_VERSION,
+    RESEARCH_TOOL_CATALOG_VERSION,
+)
 from experiment_guardian.application.async_review import (
     review_eligibility_for_risks,
     review_receipt_source_hash,
@@ -300,6 +306,59 @@ class AgentToolRegistry:
                 self._research_memories_search,
             ),
         }
+        # 专业目录显式列出能力，而不是从最新通用目录做运行时过滤。这样新增通用工具时，
+        # 不会被意外暴露到已有专业能力域。
+        self._analysis_definitions: AgentToolDefinitions = {
+            name: self._r15e_b_definitions[name]
+            for name in (
+                "project_status_get_v1",
+                "experiments_list_v1",
+                "experiment_get_v1",
+                "pending_work_list_v1",
+                "experiments_compare_v1",
+                "experiment_group_stats_v1",
+                "plan_check_explain_v1",
+                "submission_diagnose_v1",
+                "research_memories_search_v1",
+            )
+        }
+        self._policy_definitions: AgentToolDefinitions = {
+            name: self._r15e_b_definitions[name]
+            for name in (
+                "project_status_get_v1",
+                "policy_draft_create_v1",
+                "policy_draft_update_v1",
+                "policy_draft_validate_v1",
+                "policy_draft_impact_get_v1",
+            )
+        }
+        self._research_definitions: AgentToolDefinitions = {
+            name: self._r15e_b_definitions[name]
+            for name in (
+                "project_status_get_v1",
+                "experiments_list_v1",
+                "experiment_get_v1",
+                "experiments_compare_v1",
+                "experiment_group_stats_v1",
+                "research_report_prepare_v1",
+                "research_reports_list_v1",
+                "research_report_get_v1",
+                "research_memories_search_v1",
+            )
+        }
+        self._proposal_definitions: AgentToolDefinitions = {
+            name: self._r15e_b_definitions[name]
+            for name in (
+                "project_status_get_v1",
+                "policy_draft_validate_v1",
+                "policy_draft_impact_get_v1",
+                "plan_check_explain_v1",
+                "submission_diagnose_v1",
+                "action_proposal_prepare_v1",
+                "action_proposal_prepare_plan_decision_v1",
+                "action_proposal_prepare_submission_decision_v1",
+            )
+        }
         self._external_v1_definitions: AgentToolDefinitions = {
             "project_status_get_v1": self._r15a_definitions["project_status_get_v1"],
             "experiments_list_v1": self._r15a_definitions["experiments_list_v1"],
@@ -404,6 +463,14 @@ class AgentToolRegistry:
             return self._external_v1_definitions
         if catalog_version == PLAN_REVIEW_TOOL_CATALOG_VERSION:
             return self._external_definitions
+        if catalog_version == ANALYSIS_TOOL_CATALOG_VERSION:
+            return self._analysis_definitions
+        if catalog_version == POLICY_TOOL_CATALOG_VERSION:
+            return self._policy_definitions
+        if catalog_version == RESEARCH_TOOL_CATALOG_VERSION:
+            return self._research_definitions
+        if catalog_version == PROPOSAL_TOOL_CATALOG_VERSION:
+            return self._proposal_definitions
         raise InputValidationError(f"不支持的 Agent 工具目录版本: {catalog_version}")
 
     def _project_status(
@@ -933,8 +1000,30 @@ class AgentToolRegistry:
                     payload=payload,
                 )
             )
+        if not evidence:
+            evidence_id = f"{evidence_prefix}_0"
+            empty_payload = {
+                "count": 0,
+                "limit": validated.limit,
+                "authoritative": False,
+            }
+            evidence.append(
+                AgentEvidence(
+                    evidence_id=evidence_id,
+                    evidence_kind=AgentEvidenceKind.ANALYSIS,
+                    entity_type="RESEARCH_REPORT_QUERY",
+                    label="候选研究报告空查询结果",
+                    excerpt="当前查询未返回候选研究报告",
+                    payload=empty_payload,
+                )
+            )
         return AgentToolResult(
-            content={"items": items, "count": len(items), "authoritative": False},
+            content={
+                "items": items,
+                "count": len(items),
+                "authoritative": False,
+                **({"evidence_id": evidence[0].evidence_id} if not items else {}),
+            },
             evidence=evidence,
         )
 
@@ -1005,6 +1094,25 @@ class AgentToolRegistry:
                     payload=payload,
                 )
             )
+        if not evidence:
+            evidence_id = f"{evidence_prefix}_0"
+            empty_payload = {
+                "query": validated.query,
+                "candidate_count": response.candidate_count,
+                "candidate_truncated": response.candidate_truncated,
+                "retrieval_role": "CANDIDATE_EVIDENCE",
+                "authoritative": False,
+            }
+            evidence.append(
+                AgentEvidence(
+                    evidence_id=evidence_id,
+                    evidence_kind=AgentEvidenceKind.ANALYSIS,
+                    entity_type="RESEARCH_MEMORY_QUERY",
+                    label="候选研究记忆空查询结果",
+                    excerpt="当前结构化过滤与语义检索未返回候选研究记忆",
+                    payload=empty_payload,
+                )
+            )
         return AgentToolResult(
             content={
                 "items": items,
@@ -1013,6 +1121,7 @@ class AgentToolRegistry:
                 "retrieval_role": "CANDIDATE_EVIDENCE",
                 "authoritative": False,
                 "notice": "候选研究记忆不是正式事实；正式结论必须重新读取正式记录。",
+                **({"evidence_id": evidence[0].evidence_id} if not items else {}),
             },
             evidence=evidence,
         )

@@ -1,10 +1,11 @@
 # Experiment Guardian 当前框架图
 
-更新时间：2026-07-29
-当前实现：v1.0.0 / R17d 本地版发布加固
+更新时间：2026-07-30
+当前实现：v1.0.0 / R18b 内部 Agent 能力域真实百炼验证
 
-四阶段外部 Agent 协作路线已收口。发布门见 `R17D_RELEASE.md`，后续默认进入缺陷维护。
-数据库 head：`20260728_26`
+R17 外部协作与发布路线已收口。R18 收窄内部 Agent 上下文和工具暴露，不修改正式治理链；
+R18b 已通过真实百炼成对评测。审计和评测结果见 `AGENT_ARCHITECTURE_REVIEW.md`。
+数据库 head：`20260730_28`
 
 除明确标记“计划”的章节外，本文描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与
 自动化验证，`[EXTERNAL]` 表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
@@ -221,7 +222,7 @@ scripts/verify_r17d_local.py     v1.0.0 本地公共接口 + 真实百炼强制�
 依赖方向保持：接口层 -> 应用层 -> 领域层；基础设施实现应用端口。前端不重新计算风险、
 审批资格或角色权限。
 
-## R17d Agent 当前框架图
+## R18 Agent 当前框架图
 
 ```text
 Web 治理 Agent 页 <------------------ MCP 创建的同用户任务可见并可续聊
@@ -231,7 +232,8 @@ Web 治理 Agent 页 <------------------ MCP 创建的同用户任务可见并�
 Agent API
    |
    +--> AgentConversationService
-   |       +--> Thread / Message / Run / Citation / answer sections [DONE]
+   |       +--> Thread(capability_domain) / Message / Run / Citation [DONE]
+   |       +--> deterministic thread profile routing; no model classifier [DONE]
    |       +--> rolling summary v6 / draft + proposal + report references [DONE]
    |       +--> Policy Draft list / revision / abandon [DONE]
    |       +--> Action Proposal list / confirm / cancel [DONE]
@@ -246,7 +248,13 @@ Agent API
            |
    +--> GovernanceAgentRuntime [DONE]
    |       +--> bounded single-agent LangGraph, max calls/tools/wall time
-   |       +--> frozen prior catalogs + r15e-b prompt/catalog compatibility
+   |       +--> frozen prior catalogs + r15e-b GENERAL compatibility
+   |       +--> specialized profiles [DONE]
+   |       |       ANALYSIS  -> 9 read/diagnosis tools
+   |       |       POLICY    -> 5 draft/validation tools
+   |       |       RESEARCH  -> 9 experiment/report/memory tools
+   |       |       PROPOSAL  -> 8 read/preparation tools
+   |       +--> profile-specific Prompt / output Schema / summary references
    |       +--> recent messages + non-authoritative rolling summary
    |       +--> AgentChatModel
    |       |       +--> Bailian streaming Function Calling [DONE]
@@ -254,7 +262,7 @@ Agent API
    |       |       |    +--> finish_reason 或 [DONE] 证明流完成
    |       |       +--> Bedrock ConverseStream + strict JSON Schema [DONE]
    |       |       +--> startup-selected provider; no fallback [DONE]
-   |       +--> AgentToolRegistry
+   |       +--> AgentToolRegistry (以下 16 个为 GENERAL 历史兼容全集)
    |               +--> project_status_get_v1 [DONE]
    |               +--> experiments_list_v1 [DONE]
    |               +--> experiment_get_v1 [DONE]
@@ -270,6 +278,7 @@ Agent API
    |               +--> action_proposal_prepare_v1 [DONE, no execute]
    |               +--> action_proposal_prepare_plan_decision_v1 [DONE, no execute]
    |               +--> action_proposal_prepare_submission_decision_v1 [DONE, no execute]
+   |               |      +--> same-Run/same-target diagnostic guard [DONE]
    |               +--> research_report_prepare_v1 [DONE, explicit 2-8 experiments]
    |               +--> research_reports_list_v1 [DONE, shared read]
    |               +--> research_report_get_v1 [DONE, shared read]
@@ -410,7 +419,7 @@ User(cognito_sub)
                                       +--< Memory VECTOR(1024)
                                       +--< Artifact association
                                |
-                               +--< AgentThread
+                               +--< AgentThread(capability_domain)
                                       +--< AgentMessage
                                       |      +--0..1 AgentResearchReport(final response)
                                       +--0..1 current READY AgentContextSummary
@@ -469,7 +478,8 @@ Owner Cognito login
 -> team Web/MCP query with structured filters before vector candidate ordering
 
 Owner/Researcher Web Agent message
--> idempotently persist user message + queued AgentRun
+-> Thread 固化 GENERAL/ANALYSIS/POLICY/RESEARCH/PROPOSAL
+-> idempotently persist user message + queued AgentRun with profile snapshot
 -> Agent Worker atomically claims lease/generation
 -> bounded Bailian Function Calling
 -> authorized tools return structured facts/analysis, append a candidate-only draft revision,

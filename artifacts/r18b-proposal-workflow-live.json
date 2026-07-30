@@ -1,0 +1,298 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-30T10:46:47.214248+00:00",
+  "base_url": "http://127.0.0.1:5199",
+  "project_id": "ab12b4ee-d1ec-4605-ac74-d8d636156ff1",
+  "provider": "bailian",
+  "repetitions": 1,
+  "inventory": {
+    "experiments": 1,
+    "plan_checks": 4,
+    "submissions": 2,
+    "active_policy_drafts": 0,
+    "research_reports": 0
+  },
+  "cases": [
+    {
+      "case_id": "proposal.submission_prepare",
+      "capability_domain": "PROPOSAL",
+      "expected_tools": [
+        "submission_diagnose_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ]
+    }
+  ],
+  "formal_state_unchanged": true,
+  "canceled_proposal_ids": [
+    "d57b661e-c357-4e83-80a2-9de2d0ff82f2"
+  ],
+  "baseline": {
+    "architecture": "general",
+    "observation_count": 1,
+    "case_count": 1,
+    "task_success_rate": 1.0,
+    "exact_tool_selection_rate": 1.0,
+    "invalid_tool_call_rate": 0.0,
+    "redundant_tool_call_rate": 0.0,
+    "citation_compliance_rate": 1.0,
+    "high_risk_error_count": 0,
+    "average_input_tokens": 38439.0,
+    "average_output_tokens": 1755.0,
+    "average_model_calls": 4.0,
+    "average_latency_ms": 34580.0,
+    "consistency_rate": 1.0
+  },
+  "candidate": {
+    "architecture": "profiles",
+    "observation_count": 1,
+    "case_count": 1,
+    "task_success_rate": 1.0,
+    "exact_tool_selection_rate": 1.0,
+    "invalid_tool_call_rate": 0.0,
+    "redundant_tool_call_rate": 0.0,
+    "citation_compliance_rate": 1.0,
+    "high_risk_error_count": 0,
+    "average_input_tokens": 22225.0,
+    "average_output_tokens": 996.0,
+    "average_model_calls": 4.0,
+    "average_latency_ms": 20957.0,
+    "consistency_rate": 1.0
+  },
+  "comparison": {
+    "baseline": {
+      "architecture": "general",
+      "observation_count": 1,
+      "case_count": 1,
+      "task_success_rate": 1.0,
+      "exact_tool_selection_rate": 1.0,
+      "invalid_tool_call_rate": 0.0,
+      "redundant_tool_call_rate": 0.0,
+      "citation_compliance_rate": 1.0,
+      "high_risk_error_count": 0,
+      "average_input_tokens": 38439.0,
+      "average_output_tokens": 1755.0,
+      "average_model_calls": 4.0,
+      "average_latency_ms": 34580.0,
+      "consistency_rate": 1.0
+    },
+    "candidate": {
+      "architecture": "profiles",
+      "observation_count": 1,
+      "case_count": 1,
+      "task_success_rate": 1.0,
+      "exact_tool_selection_rate": 1.0,
+      "invalid_tool_call_rate": 0.0,
+      "redundant_tool_call_rate": 0.0,
+      "citation_compliance_rate": 1.0,
+      "high_risk_error_count": 0,
+      "average_input_tokens": 22225.0,
+      "average_output_tokens": 996.0,
+      "average_model_calls": 4.0,
+      "average_latency_ms": 20957.0,
+      "consistency_rate": 1.0
+    },
+    "candidate_eligible_for_default": true,
+    "blocking_reasons": []
+  },
+  "by_capability_domain": {
+    "PROPOSAL": {
+      "baseline": {
+        "architecture": "general:PROPOSAL",
+        "observation_count": 1,
+        "case_count": 1,
+        "task_success_rate": 1.0,
+        "exact_tool_selection_rate": 1.0,
+        "invalid_tool_call_rate": 0.0,
+        "redundant_tool_call_rate": 0.0,
+        "citation_compliance_rate": 1.0,
+        "high_risk_error_count": 0,
+        "average_input_tokens": 38439.0,
+        "average_output_tokens": 1755.0,
+        "average_model_calls": 4.0,
+        "average_latency_ms": 34580.0,
+        "consistency_rate": 1.0
+      },
+      "candidate": {
+        "architecture": "profiles:PROPOSAL",
+        "observation_count": 1,
+        "case_count": 1,
+        "task_success_rate": 1.0,
+        "exact_tool_selection_rate": 1.0,
+        "invalid_tool_call_rate": 0.0,
+        "redundant_tool_call_rate": 0.0,
+        "citation_compliance_rate": 1.0,
+        "high_risk_error_count": 0,
+        "average_input_tokens": 22225.0,
+        "average_output_tokens": 996.0,
+        "average_model_calls": 4.0,
+        "average_latency_ms": 20957.0,
+        "consistency_rate": 1.0
+      },
+      "candidate_eligible_for_default": true,
+      "blocking_reasons": []
+    }
+  },
+  "observations": [
+    {
+      "architecture": "profiles",
+      "case_id": "proposal.submission_prepare",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "submission_diagnose_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "actual_tools": [
+        "submission_diagnose_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 22225,
+      "output_tokens": 996,
+      "model_calls": 4,
+      "latency_ms": 20957
+    },
+    {
+      "architecture": "general",
+      "case_id": "proposal.submission_prepare",
+      "repetition": 1,
+      "task_succeeded": true,
+      "expected_tools": [
+        "submission_diagnose_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "actual_tools": [
+        "submission_diagnose_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "allowed_tools": [
+        "project_status_get_v1",
+        "experiments_list_v1",
+        "experiment_get_v1",
+        "pending_work_list_v1",
+        "experiments_compare_v1",
+        "experiment_group_stats_v1",
+        "plan_check_explain_v1",
+        "submission_diagnose_v1",
+        "policy_draft_create_v1",
+        "policy_draft_update_v1",
+        "policy_draft_validate_v1",
+        "policy_draft_impact_get_v1",
+        "action_proposal_prepare_v1",
+        "action_proposal_prepare_plan_decision_v1",
+        "action_proposal_prepare_submission_decision_v1",
+        "research_report_prepare_v1",
+        "research_reports_list_v1",
+        "research_report_get_v1",
+        "research_memories_search_v1"
+      ],
+      "citation_compliant": true,
+      "input_tokens": 38439,
+      "output_tokens": 1755,
+      "model_calls": 4,
+      "latency_ms": 34580
+    }
+  ],
+  "traces": [
+    {
+      "case_id": "proposal.submission_prepare",
+      "repetition": 1,
+      "capability_domain": "PROPOSAL",
+      "thread_id": "aa0faa7c-6ee1-441a-93d0-513099f87cab",
+      "run_id": "70b3776c-faee-41a1-8c2b-734ff3a52f9b",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r18-proposal-v1",
+      "tool_catalog_version": "r18-proposal-v1",
+      "expected_tools": [
+        "submission_diagnose_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "actual_tools": [
+        "submission_diagnose_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "citation_count": 3,
+      "citation_entities": [
+        {
+          "evidence_kind": "ANALYSIS",
+          "entity_type": "SUBMISSION_DIAGNOSIS",
+          "entity_id": "97d2d952-6675-42ce-a299-654d94e0061b"
+        },
+        {
+          "evidence_kind": "CONFIRMED_FACT",
+          "entity_type": "SUBMISSION",
+          "entity_id": "97d2d952-6675-42ce-a299-654d94e0061b"
+        },
+        {
+          "evidence_kind": "ACTION_PROPOSAL",
+          "entity_type": "ACTION_PROPOSAL",
+          "entity_id": "d57b661e-c357-4e83-80a2-9de2d0ff82f2"
+        }
+      ],
+      "answer_sha256": "b74834ffa3a45b8ee127473862bf3c6a7f942d8f04c9abff95cdc0f60056c7be",
+      "usage": {
+        "input_tokens": 22225,
+        "latency_ms": 20957,
+        "output_tokens": 996
+      }
+    },
+    {
+      "case_id": "proposal.submission_prepare",
+      "repetition": 1,
+      "capability_domain": "GENERAL",
+      "thread_id": "4439632a-61e7-40df-9361-a4692309121c",
+      "run_id": "7104e829-9d96-4937-84d9-0553718bfea9",
+      "status": "SUCCEEDED",
+      "error": null,
+      "provider": "bailian",
+      "model_id": "qwen3.7-plus",
+      "prompt_version": "r15e-b-v1",
+      "tool_catalog_version": "r15e-b-v1",
+      "expected_tools": [
+        "submission_diagnose_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "actual_tools": [
+        "submission_diagnose_v1",
+        "action_proposal_prepare_submission_decision_v1"
+      ],
+      "citation_count": 3,
+      "citation_entities": [
+        {
+          "evidence_kind": "CONFIRMED_FACT",
+          "entity_type": "SUBMISSION",
+          "entity_id": "97d2d952-6675-42ce-a299-654d94e0061b"
+        },
+        {
+          "evidence_kind": "ANALYSIS",
+          "entity_type": "SUBMISSION_DIAGNOSIS",
+          "entity_id": "97d2d952-6675-42ce-a299-654d94e0061b"
+        },
+        {
+          "evidence_kind": "ACTION_PROPOSAL",
+          "entity_type": "ACTION_PROPOSAL",
+          "entity_id": "d57b661e-c357-4e83-80a2-9de2d0ff82f2"
+        }
+      ],
+      "answer_sha256": "813dc569be0b8c800af858159c64e1210a13b3e511943c4df7a2c4a8cb94581b",
+      "usage": {
+        "input_tokens": 38439,
+        "latency_ms": 34580,
+        "output_tokens": 1755
+      }
+    }
+  ]
+}

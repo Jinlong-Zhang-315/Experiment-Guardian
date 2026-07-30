@@ -10,6 +10,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from experiment_guardian.application.agent_profiles import specialized_profile_for_capability
 from experiment_guardian.application.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -43,6 +44,7 @@ from experiment_guardian.domain.agent import (
     ExternalAgentTaskStartResult,
 )
 from experiment_guardian.domain.enums import (
+    AgentCapabilityDomain,
     AgentContextSummaryStatus,
     AgentEvidenceKind,
     AgentMessageRole,
@@ -154,6 +156,7 @@ class AgentConversationService:
                 project_id=project.id,
                 created_by=identity.user_id,
                 origin=AgentThreadOrigin.WEB,
+                capability_domain=request.capability_domain,
                 title=request.title or "新对话",
                 status=AgentThreadStatus.ACTIVE,
                 last_sequence=0,
@@ -170,7 +173,10 @@ class AgentConversationService:
                     target_type="AGENT_THREAD",
                     target_id=thread.id,
                     before_value=None,
-                    after_value={"session_id": str(identity.token_id)},
+                    after_value={
+                        "session_id": str(identity.token_id),
+                        "capability_domain": request.capability_domain.value,
+                    },
                 )
             )
             return self._thread_summary(thread)
@@ -257,6 +263,7 @@ class AgentConversationService:
                     project_id=project.id,
                     created_by=identity.user_id,
                     origin=AgentThreadOrigin.EXTERNAL_MCP,
+                    capability_domain=AgentCapabilityDomain.GENERAL,
                     title=request.title or request.task_description[:40],
                     status=AgentThreadStatus.ACTIVE,
                     last_sequence=1,
@@ -292,6 +299,7 @@ class AgentConversationService:
                     prompt_version=EXTERNAL_PROMPT_VERSION,
                     tool_catalog_version=EXTERNAL_TOOL_CATALOG_VERSION,
                     context_snapshot={
+                        "capability_domain": "EXTERNAL_COLLABORATION",
                         "external_task": {
                             "task_context_hash": source_hash,
                             "context_id": str(bundle.context.context_id),
@@ -304,7 +312,7 @@ class AgentConversationService:
                             "intent_version": (
                                 bundle.active_intent.version if bundle.active_intent else None
                             ),
-                        }
+                        },
                     },
                     usage={},
                     generation=0,
@@ -793,6 +801,8 @@ class AgentConversationService:
                 if thread.title == "新对话":
                     thread.title = request.content[:40]
 
+                profile = specialized_profile_for_capability(thread.capability_domain)
+
                 run = AgentRun(
                     thread_id=thread.id,
                     team_id=thread.team_id,
@@ -808,14 +818,24 @@ class AgentConversationService:
                     prompt_version=(
                         EXTERNAL_PROMPT_VERSION
                         if thread.origin is AgentThreadOrigin.EXTERNAL_MCP
+                        else profile.prompt_version
+                        if profile is not None
                         else PROMPT_VERSION
                     ),
                     tool_catalog_version=(
                         EXTERNAL_TOOL_CATALOG_VERSION
                         if thread.origin is AgentThreadOrigin.EXTERNAL_MCP
+                        else profile.tool_catalog_version
+                        if profile is not None
                         else TOOL_CATALOG_VERSION
                     ),
-                    context_snapshot={},
+                    context_snapshot={
+                        "capability_domain": (
+                            "EXTERNAL_COLLABORATION"
+                            if thread.origin is AgentThreadOrigin.EXTERNAL_MCP
+                            else thread.capability_domain.value
+                        )
+                    },
                     usage={},
                     generation=0,
                     attempt_count=0,
@@ -938,7 +958,13 @@ class AgentConversationService:
                     model_id=self._settings.agent_model_id,
                     prompt_version=old.prompt_version,
                     tool_catalog_version=old.tool_catalog_version,
-                    context_snapshot={"retry_of": str(old.id)},
+                    context_snapshot={
+                        "retry_of": str(old.id),
+                        "capability_domain": old.context_snapshot.get(
+                            "capability_domain",
+                            AgentCapabilityDomain.GENERAL.value,
+                        ),
+                    },
                     usage={},
                     generation=0,
                     attempt_count=0,
@@ -1112,6 +1138,7 @@ class AgentConversationService:
             project_id=thread.project_id,
             title=thread.title,
             origin=thread.origin,
+            capability_domain=thread.capability_domain,
             status=thread.status,
             created_at=thread.created_at,
             updated_at=thread.updated_at,
@@ -1206,6 +1233,12 @@ class AgentConversationService:
             max_attempts=run.max_attempts,
             provider=run.provider,
             model_id=run.model_id,
+            run_kind=run.run_kind,
+            capability_domain=str(
+                run.context_snapshot.get("capability_domain", AgentCapabilityDomain.GENERAL.value)
+            ),
+            prompt_version=run.prompt_version,
+            tool_catalog_version=run.tool_catalog_version,
             usage=run.usage,
             model_calls=[self._model_call_view(item) for item in calls],
             error=run.error,

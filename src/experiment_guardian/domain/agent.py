@@ -18,10 +18,12 @@ from experiment_guardian.domain.agent_research import (
 from experiment_guardian.domain.contracts import ContractModel, ProjectContextBundle
 from experiment_guardian.domain.enums import (
     AgentCallStatus,
+    AgentCapabilityDomain,
     AgentContextSummaryStatus,
     AgentEvidenceKind,
     AgentMessageRole,
     AgentModelCallPurpose,
+    AgentRunKind,
     AgentRunStatus,
     AgentThreadOrigin,
     AgentThreadStatus,
@@ -34,6 +36,7 @@ MAX_AGENT_MESSAGE_BYTES = 8 * 1024
 
 class AgentThreadCreateRequest(ContractModel):
     title: str | None = Field(default=None, min_length=1, max_length=120)
+    capability_domain: AgentCapabilityDomain = AgentCapabilityDomain.GENERAL
 
 
 class AgentThreadUpdateRequest(ContractModel):
@@ -58,6 +61,7 @@ class AgentThreadSummary(ContractModel):
     project_id: UUID
     title: str
     origin: AgentThreadOrigin = AgentThreadOrigin.WEB
+    capability_domain: AgentCapabilityDomain = AgentCapabilityDomain.GENERAL
     status: AgentThreadStatus
     created_at: datetime
     updated_at: datetime
@@ -124,6 +128,10 @@ class AgentRunView(AgentRunReceipt):
     max_attempts: int
     provider: str
     model_id: str
+    run_kind: AgentRunKind
+    capability_domain: str = Field(min_length=1, max_length=50)
+    prompt_version: str
+    tool_catalog_version: str
     usage: dict[str, Any] = Field(default_factory=dict)
     model_calls: list["AgentModelCallView"] = Field(default_factory=list, max_length=50)
     error: dict[str, Any] | None = None

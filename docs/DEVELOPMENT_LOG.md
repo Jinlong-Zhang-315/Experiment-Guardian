@@ -2091,6 +2091,109 @@ Agent Run、ModelCall、ToolCall、Citation、Event、lease、generation 和审�
 * 验收证明治理和证据链可工作，不证明真实训练行为或实验结果正确。R17d 不新增自动训练、代码
   修改、任意 SQL、委托审批或新的治理状态机，也未自动 commit/tag。
 
+## 2026-07-30 / R18a：内部 Agent 能力域隔离基础
+
+版本：`working tree`，产品版本保持 `1.0.0`。
+
+### 更新内容
+
+* 审计 Agent Runtime、双节点 LangGraph、全部 Prompt/工具目录、Run 类型、Action Proposal、
+  Worker、外部 MCP、计划审核、研究报告和现有 eval case。确认外部协作与计划审核已经专业化，
+  Web 通用 `r15e-b-v1` 的 16 工具累积目录才是主要上下文过载点。
+* 新增 `AgentCapabilityDomain` 和 revision 27。Web Agent Thread 可固定 `GENERAL`、`ANALYSIS`、
+  `POLICY`、`RESEARCH` 或 `PROPOSAL`；旧数据回填为 `GENERAL`，外部 MCP 和计划审核仍走原专用配置。
+* 新增 `agent_profiles.py`，为四个能力域分别冻结 System Prompt、工具目录、Evidence 类型、输出
+  Schema、摘要引用策略和回答边界。继续复用同一 `GovernanceAgentRuntime` 和 Provider Port。
+* 新增 9/5/9/8 个工具的专业目录。目录显式列出允许工具，未来通用目录新增工具不会自动泄漏
+  到既有能力域。Web 新对话提供能力域分段选择，Run 详情显示实际能力域与 Prompt/目录版本。
+* 新增 `agent_evaluation.py` 与 `evaluate_agent_architecture.py`，统一统计任务成功、工具序列、无效/
+  冗余调用、Citation、高风险错误、Token、模型调用数、延迟和重复一致性，并实现默认切换门禁。
+
+### 修复的问题
+
+* Policy/Plan/Submission Proposal 的前置读取原先主要依赖 Prompt。Runtime 现在要求同一 Run 内
+  已成功完成同目标 validate+impact、plan explain 或 submission diagnose；目标不一致和跳步
+  均在 Proposal 创建前失败。
+* 被确定性编排门禁拒绝的模型工具请求仍写入 FAILED AgentToolCall 和 RunEvent，不会形成审计
+  空洞。正式 Proposal 确认、recent-auth、RBAC、版本复核和事务执行保持不变。
+* 专业输出向 Provider 暴露裁剪后的 JSON Schema，避免分析/策略/提案 Run 误填 Research Report
+  或 Plan Review 字段；Research Run 仅保留报告字段和其允许的 Evidence 类型。
+
+### 数据库迁移
+
+* revision `20260730_27` 为 `agent_threads` 增加非空 `capability_domain` 和合法值约束；旧 Thread
+  使用 `GENERAL`。降级删除该列，不删除 Thread、Message、Run、Citation 或任何正式业务对象。
+
+### 验证结果
+
+* 专业目录、输出 Schema、确定性路由、Proposal 前置目标匹配、评测门及拒绝审计均新增测试。
+* Python 默认全量收集 356 项：337 项通过，19 项按真实云、MinIO、CockroachDB 或百炼开关跳过；
+  Ruff 全仓通过，mypy 检查 87 个源码文件通过。
+* Web ESLint、8 个 Vitest 文件共 17 项和 production build 通过。能力域选择、请求参数和 Run
+  配置可观测字段均有组件测试覆盖。
+* SQLite 全迁移往返通过；真实 CockroachDB 两项验收在本轮改动后通过，覆盖 revision 27 字段、
+  完整 Plan Check 链与原有并发恢复语义。后续重复压力运行中，本机积累的 schema GC job 使一次
+  “降级到 revision 03 后再升级 head”超过 210 秒后被人工终止；首次 head 升级及 revision 27
+  检查已完成，需在清理本地测试库或 CI CockroachDB 上继续观察迁移往返耗时。
+* 架构评测 CLI 可从仓库根目录直接启动，无需 editable install；单元测试覆盖指标计算和默认
+  切换的 fail-closed 门禁。
+
+### 已知遗留项
+
+* `GENERAL` 仍是兼容默认。专业配置尚未完成相同数据、相同百炼模型、每 case 三次的真实对比，
+  因此不能声称工具选择率、Token 或延迟已经改善。
+* Proposal 正式安全边界已由确定性服务保证；是否把“准备”进一步改为专用应用 Workflow，留到
+  R18b 数据证明现有硬门禁仍不足时再决定。
+* 不引入 Supervisor、多 Agent Handoff、自动 SQL、自动训练或新的正式写权限。
+
+## 2026-07-30 / R18b：真实百炼 Agent 架构验证
+
+版本：`working tree`，产品版本保持 `1.0.0`。
+
+### 更新内容
+
+* 新增 `evaluate_agent_profiles_live.py`，通过 local_owner 和公开 Web API 在同一正式数据快照上
+  成对运行 `GENERAL` 与专业配置，采集工具序列、Citation、Token、模型调用、延迟和正式状态
+  前后快照；Thread 自动归档，测试 Proposal 使用正式取消 API 清理。
+* 用真实 `qwen3.7-plus` 完成 10 个 case、每 case 3 次的 60 Run 主评测，并额外执行 2 Run
+  Submission Proposal 实链。去敏报告保存到 `artifacts/r18b-agent-architecture-live.json` 和
+  `artifacts/r18b-proposal-workflow-live.json`。
+* 专业配置通过质量门后，Web 新会话默认选择 `ANALYSIS`。API 缺省值和既有 Thread 继续使用
+  `GENERAL`，所有历史 Prompt、工具目录和 Run 快照保持可还原。
+
+### 修复的问题
+
+* 无 Research Report 或 Research Memory 时，查询工具现在返回查询级 `ANALYSIS` Evidence，
+  “没有结果”也可以被引用和审计。
+* 专业输出 Prompt 和百炼 JSON Schema 强制顶层 Citation 与 section 引用对齐，修复偶发的最终
+  输出校验失败；默认切换质量门增加任务、工具、Citation 和一致性绝对下限。
+* revision `20260730_28` 将 Agent Citation check constraint 与六种领域 Evidence 对齐，并阻止
+  含新 Evidence 的不安全降级。迁移物理约束名使用 `op.f`，真实 CockroachDB 已完成
+  `28 -> 27 -> 28` 往返验证。
+* Agent Run Processor 将 SQLAlchemy `IntegrityError` 归类为不可重试且去敏的
+  `DATA_INTEGRITY_ERROR`，避免确定性迁移/约束错误重复消耗模型调用并泄露 SQL 参数。
+
+### 验证结果
+
+* 真实百炼协议测试 10 项通过，覆盖 embedding、摘要、Function Calling、严格 JSON、工具选择和
+  excessive-agency 拒绝；真实本地 Compose Agent 集成 1 项通过。
+* 主评测两组任务成功、工具序列、Citation 和一致性均为 100%，无效/冗余调用为 0，高风险错误
+  为 0。专业配置平均输入 Token -45.91%、输出 Token -39.43%、延迟 -36.20%，模型调用 +3.33%。
+* Proposal 实链两组均准确执行 diagnose -> prepare，Action Proposal Citation 成功持久化并清理，
+  正式 Context、Intent、Plan Check、Submission 和 Experiment 快照不变。
+* Python 默认全量 340 项通过、19 项按真实云/基础设施开关跳过；Ruff 全仓和 mypy 87 个源码
+  文件通过。Web 8 个 Vitest 文件共 17 项、ESLint 和 production build 通过。
+* SQLite 全迁移往返通过；隔离 CockroachDB 完整迁移与事务链 1 项通过（326.85 秒），覆盖
+  revision 28。仅保留 SQLAlchemy Cockroach 方言无法反射 `VECTOR` 的已知 warning。
+
+### 已知遗留项
+
+* 固定快照只有 1 个正式 Experiment，且没有活动 Policy Draft 和 Research Report；当前结论足以
+  支持 Web 默认 `ANALYSIS`，不足以删除 `GENERAL` 或声称覆盖全部研究场景。
+* Proposal 专业配置在边界回答中平均多一次结构化输出修复；安全和延迟指标仍通过，后续用更广
+  样本观察，不为此引入新的 Agent 或 Workflow。
+* 本轮真实测试只验收本地百炼线路，不代表 AWS/Cognito/SQS/Bedrock 云环境已完成真实部署验收。
+
 ## 新日志模板
 
 ```text
