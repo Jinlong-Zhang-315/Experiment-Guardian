@@ -1,5 +1,6 @@
 """R15b 计划解释与提交诊断工具的权限和动态状态测试。"""
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -10,13 +11,68 @@ from experiment_guardian.application.agent_tools import AgentToolRegistry
 from experiment_guardian.application.errors import AuthorizationError
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.domain.enums import TeamRole, WorkflowJobStatus
-from experiment_guardian.infrastructure.models import TeamMember, User, WorkflowJob
+from experiment_guardian.infrastructure.models import (
+    ProjectContext,
+    TeamMember,
+    User,
+    WorkflowJob,
+)
 from experiment_guardian.infrastructure.repositories import SqlAlchemyProjectRepository
 from tests.integration.test_async_review_slice import prepare_summary
 from tests.integration.test_plan_check_slice import (
     command,
     initialize_policy,
 )
+
+
+def test_plan_review_policy_projection_omits_large_active_config(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    identity, project_id, _, _ = initialize_policy(plan_check_session_factory)
+    with plan_check_session_factory() as session, session.begin():
+        context = session.scalar(
+            select(ProjectContext).where(ProjectContext.project_id == project_id)
+        )
+        assert context is not None
+        context.active_config = {
+            **context.active_config,
+            "large_uncontrolled_section": {
+                f"field_{index}": "x" * 120 for index in range(400)
+            },
+        }
+
+    result = AgentToolRegistry(
+        plan_check_session_factory, SqlAlchemyProjectRepository()
+    ).execute(
+        tool_name="project_status_get_v1",
+        arguments={},
+        project_id=project_id,
+        identity=identity,
+        evidence_prefix="ev_1",
+        catalog_version="r17b-plan-review-v3",
+    )
+    serialized = json.dumps(
+        result.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    policy = result.content["policy"]
+    summary = policy["active_config_summary"]
+    governed = {item["parameter_path"]: item for item in summary["governed_values"]}
+
+    assert len(serialized) < 32768
+    assert policy["projection"] == "COMPACT_AGENT_POLICY_V1"
+    assert policy["authoritative"] is True
+    assert len(policy["policy_hash"]) == 64
+    assert "active_config" not in policy["context_payload"]
+    assert summary["body_omitted"] is True
+    assert summary["path_count"] >= 403
+    assert governed["dataset.protocol"]["current_value"] == "40/20"
+    assert governed["model.backbone"]["current_value"] == "shift-gcn"
+    assert governed["model.fusion"]["current_value"] == 0.2
+    assert result.evidence[0].entity_type == "POLICY_BUNDLE"
+    assert "active_config" not in result.evidence[0].payload
 
 
 def test_plan_explanation_uses_current_approval_columns_not_stale_report(

@@ -46,6 +46,7 @@
 | 2026-07-27 | R15e-b | `working tree` | 候选 Research Memory 与召回 |
 | 2026-07-27 | R15e-c | `working tree` | Agent provider parity 与观测 |
 | 2026-07-27 | R16-L | `working tree` | 本地百炼 release candidate hardening |
+| 2026-07-30 | R18b.1 | `working tree` | 大型 Policy 的计划审核上下文修复 |
 
 ## R0：需求分析与 MVP 收敛
 
@@ -2193,6 +2194,36 @@ Agent Run、ModelCall、ToolCall、Citation、Event、lease、generation 和审�
 * Proposal 专业配置在边界回答中平均多一次结构化输出修复；安全和延迟指标仍通过，后续用更广
   样本观察，不为此引入新的 Agent 或 Workflow。
 * 本轮真实测试只验收本地百炼线路，不代表 AWS/Cognito/SQS/Bedrock 云环境已完成真实部署验收。
+
+## 2026-07-30 / R18b.1：大型 Policy 的计划审核上下文修复
+
+版本：`working tree`，无数据库迁移。
+
+### 更新内容
+
+* 新增 `r17b-plan-review-v3` 工具目录。计划审核仍使用同一个有界 ReAct Runtime，但
+  `project_status_get_v1` 改为专用紧凑策略投影；旧 v1/v2 目录继续保留用于历史 Run 还原。
+* 紧凑投影保留 Context/Intent 版本、完整正式约束、Context/Intent 高信号字段、受约束路径
+  当前值、完整 Policy hash 和 `active_config` 路径数量；不把完整配置正文重复送入模型。
+* 数据库中的 `ExperimentPlanRevision.policy_snapshot`、结构化硬检查、Policy 新鲜度判断和正式
+  MCP `project_get_context` 均保持完整，不改变正式事实源或审批状态机。
+
+### 修复的问题
+
+* TDSM 正式配置包含 382 个扁平路径时，旧计划审核工具结果为 64,017 bytes，超过 32 KiB
+  安全上限并形成不可重试 `INVALID_INPUT`。新投影为 21,782 bytes，可在原上限内审核。
+* Evidence payload 不再复制整份 Policy Bundle，避免无关上下文降低工具选择和审核质量。
+
+### 验证结果
+
+* 大配置回归覆盖正文省略、正式约束值、Policy hash、Citation 实体和 32 KiB 上限。
+* Agent 工具、计划契约与能力域针对性测试 20 项通过；相关 Ruff 和 mypy 检查通过。
+* 使用本地 CockroachDB 的真实 TDSM 项目完成 v2/v3 字节对比，约束数量均保持 9。
+
+### 已知遗留项
+
+* 已失败的 revision 3 审核记录保持不可变；部署新 Worker 后需在 Web 计划工作台点击“重试审核”，
+  新 Run 才会使用 v3 目录。不能原地改写失败 Run。
 
 ## 新日志模板
 

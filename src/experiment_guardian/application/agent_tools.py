@@ -68,6 +68,8 @@ from experiment_guardian.domain.enums import (
     TeamRole,
     WorkflowJobStatus,
 )
+from experiment_guardian.domain.experiment_plan import formal_policy_snapshot
+from experiment_guardian.domain.plan_check import flatten_configuration
 from experiment_guardian.domain.policy_draft import (
     PolicyDraftCreateInput,
     PolicyDraftRevisionInput,
@@ -100,7 +102,8 @@ TOOL_CATALOG_VERSION = "r15e-b-v1"
 LEGACY_EXTERNAL_TOOL_CATALOG_VERSION = "r17a-external-v1"
 EXTERNAL_TOOL_CATALOG_VERSION = "r17a-external-v2"
 LEGACY_PLAN_REVIEW_TOOL_CATALOG_VERSION = "r17b-plan-review-v1"
-PLAN_REVIEW_TOOL_CATALOG_VERSION = "r17b-plan-review-v2"
+LEGACY_PLAN_REVIEW_TOOL_CATALOG_V2 = "r17b-plan-review-v2"
+PLAN_REVIEW_TOOL_CATALOG_VERSION = "r17b-plan-review-v3"
 AgentToolDefinition = tuple[
     type[ContractModel],
     str,
@@ -387,6 +390,17 @@ class AgentToolRegistry:
                 "research_memories_search_v1",
             }
         }
+        self._plan_review_definitions: AgentToolDefinitions = {
+            **self._external_definitions,
+            "project_status_get_v1": (
+                _EmptyArgs,
+                (
+                    "读取当前正式策略的紧凑审核投影，包括版本、Context、Intent、正式约束、"
+                    "受约束路径当前值和完整配置哈希；完整 active_config 不进入模型上下文。"
+                ),
+                self._project_status_compact,
+            ),
+        }
 
     @property
     def specs(self) -> list[AgentToolSpec]:
@@ -461,8 +475,10 @@ class AgentToolRegistry:
             return self._external_definitions
         if catalog_version == LEGACY_PLAN_REVIEW_TOOL_CATALOG_VERSION:
             return self._external_v1_definitions
-        if catalog_version == PLAN_REVIEW_TOOL_CATALOG_VERSION:
+        if catalog_version == LEGACY_PLAN_REVIEW_TOOL_CATALOG_V2:
             return self._external_definitions
+        if catalog_version == PLAN_REVIEW_TOOL_CATALOG_VERSION:
+            return self._plan_review_definitions
         if catalog_version == ANALYSIS_TOOL_CATALOG_VERSION:
             return self._analysis_definitions
         if catalog_version == POLICY_TOOL_CATALOG_VERSION:
@@ -521,6 +537,109 @@ class AgentToolRegistry:
                             f"{len(bundle.constraints)} 条正式约束"
                         ),
                         payload=structured,
+                    )
+                ],
+            )
+
+    def _project_status_compact(
+        self,
+        *,
+        validated: _EmptyArgs,
+        project_id: UUID,
+        identity: RequestIdentity,
+        evidence_prefix: str,
+    ) -> AgentToolResult:
+        """返回计划审核所需的正式策略投影，不复制完整 active_config。"""
+
+        del validated
+        self._require_scope(identity, "project:read")
+        with self._session_factory() as session:
+            project = self._require_project(session, project_id, identity)
+            bundle = self._projects.load_context_bundle(
+                session,
+                project_id=project_id,
+                user_id=identity.user_id,
+                team_id=identity.team_id,
+            )
+            full_snapshot, policy_hash = formal_policy_snapshot(bundle)
+            context_payload = dict(full_snapshot["context_payload"])
+            active_config = context_payload.pop("active_config")
+            flattened = flatten_configuration(active_config)
+            governed_values = [
+                {
+                    "parameter_path": item.parameter_path,
+                    "present": item.parameter_path in flattened,
+                    "current_value": flattened.get(item.parameter_path),
+                    "protection_level": item.protection_level.value,
+                }
+                for item in bundle.constraints
+            ]
+            compact_policy = {
+                "projection": "COMPACT_AGENT_POLICY_V1",
+                "authoritative": True,
+                "policy_hash": policy_hash,
+                "context": full_snapshot["context"],
+                "active_intent": full_snapshot["active_intent"],
+                "constraints": full_snapshot["constraints"],
+                "context_payload": context_payload,
+                "intent_payload": full_snapshot["intent_payload"],
+                "active_config_summary": {
+                    "body_omitted": True,
+                    "path_count": len(flattened),
+                    "governed_values": governed_values,
+                },
+                "human_readable": (
+                    bundle.human_readable.model_dump(mode="json")
+                    if bundle.human_readable is not None
+                    else None
+                ),
+            }
+            evidence_id = f"{evidence_prefix}_1"
+            evidence_reference = {
+                "projection": compact_policy["projection"],
+                "policy_hash": policy_hash,
+                "context_id": str(bundle.context.context_id),
+                "context_version": bundle.context.version,
+                "intent_id": (
+                    str(bundle.active_intent.intent_id) if bundle.active_intent else None
+                ),
+                "intent_version": (
+                    bundle.active_intent.version if bundle.active_intent else None
+                ),
+                "active_config_path_count": len(flattened),
+            }
+            return AgentToolResult(
+                content={
+                    "project": {
+                        "name": project.name,
+                        "description": project.description,
+                    },
+                    "policy": compact_policy,
+                    "evidence_id": evidence_id,
+                    "governance_notice": (
+                        "这是当前完整正式策略的紧凑审核投影。治理判断以 policy_hash 对应的"
+                        "数据库完整结构化快照和服务端硬检查为准；active_config 正文未交给模型。"
+                    ),
+                },
+                evidence=[
+                    AgentEvidence(
+                        evidence_id=evidence_id,
+                        evidence_kind=AgentEvidenceKind.CONFIRMED_FACT,
+                        entity_type="POLICY_BUNDLE",
+                        entity_id=bundle.context.context_id,
+                        entity_version=(
+                            f"context:{bundle.context.version}/intent:"
+                            f"{bundle.active_intent.version if bundle.active_intent else 'none'}"
+                        ),
+                        label=f"{project.name} 当前正式策略（紧凑审核投影）",
+                        excerpt=(
+                            f"Context v{bundle.context.version}；"
+                            "Intent v"
+                            f"{bundle.active_intent.version if bundle.active_intent else '无'}；"
+                            f"{len(bundle.constraints)} 条正式约束；"
+                            f"active_config {len(flattened)} 个路径"
+                        ),
+                        payload=evidence_reference,
                     )
                 ],
             )

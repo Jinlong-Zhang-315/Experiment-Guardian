@@ -69,7 +69,7 @@ from experiment_guardian.infrastructure.repositories import (
 )
 
 PLAN_REVIEW_PROMPT_VERSION = "r17b-plan-review-v1"
-PLAN_REVIEW_TOOL_CATALOG_VERSION = "r17b-plan-review-v2"
+PLAN_REVIEW_TOOL_CATALOG_VERSION = "r17b-plan-review-v3"
 PLAN_SUBMIT_OPERATION = "experiment_plan.submit"
 PLAN_REVISE_OPERATION = "experiment_plan.revise"
 PLAN_RETRY_OPERATION = "experiment_plan.retry_review"

@@ -1,7 +1,7 @@
 # Experiment Guardian 当前框架图
 
 更新时间：2026-07-30
-当前实现：v1.0.0 / R18b 内部 Agent 能力域真实百炼验证
+当前实现：v1.0.0 / R18b.1 大型 Policy 计划审核上下文修复
 
 R17 外部协作与发布路线已收口。R18 收窄内部 Agent 上下文和工具暴露，不修改正式治理链；
 R18b 已通过真实百炼成对评测。审计和评测结果见 `AGENT_ARCHITECTURE_REVIEW.md`。
@@ -314,7 +314,10 @@ external_agent_plan_submit / external_agent_plan_revise / external_agent_plan_ge
            |      +--> full plan/evidence + formal policy snapshot/hash
            |      +--> deterministic YAML/JSON + LOCKED hard check
            +--> AgentRun kind=EXPERIMENT_PLAN_REVIEW
-           |      +--> r17b prompt + r17b-plan-review-v2 read-only catalog
+           |      +--> r17b prompt + r17b-plan-review-v3 read-only catalog
+           |      |      +--> compact policy projection (< 32 KiB)
+           |      |      +--> versions + constraints + governed values + full policy hash
+           |      |      +--> complete active_config remains in DB hard checks, not model context
            |      +--> at most 2 text-only automatic revisions
            |      +--> policy drift checked before model call
            +--> ExperimentPlanReview

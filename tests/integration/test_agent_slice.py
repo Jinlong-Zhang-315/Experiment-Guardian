@@ -993,7 +993,7 @@ def test_external_mcp_task_reuses_agent_runtime_and_is_visible_from_web(
         item.name
         for item in AgentToolRegistry(
             plan_check_session_factory, SqlAlchemyProjectRepository()
-        ).specs_for_version("r17b-plan-review-v2")
+        ).specs_for_version("r17b-plan-review-v3")
     } == external_tool_names
     assert not any(
         name.startswith(("policy_draft_", "action_proposal_")) for name in external_tool_names
