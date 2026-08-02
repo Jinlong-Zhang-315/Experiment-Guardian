@@ -25,6 +25,7 @@ from experiment_guardian.domain.enums import (
     ExperimentMode,
     ExperimentStatus,
     IntentStatus,
+    MaterialOrigin,
     ProtectionLevel,
     ReviewEligibility,
     RiskSeverity,
@@ -65,6 +66,100 @@ class ConfigurationDocument(ContractModel):
         return self
 
 
+class MaterialProvenance(ContractModel):
+    """Artifact 或本地字段相对于当前治理链路的结构化来源。"""
+
+    classification: MaterialOrigin = MaterialOrigin.UNSPECIFIED
+    source_reference: str | None = Field(default=None, min_length=1, max_length=1500)
+    source_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    derivation_method: str | None = Field(default=None, min_length=1, max_length=1000)
+    note: str | None = Field(default=None, min_length=1, max_length=2000)
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "classification": {
+                                "enum": [
+                                    "HISTORICAL_SOURCE",
+                                    "TEST_FIXTURE",
+                                    "DERIVED_FROM_LOG",
+                                ]
+                            }
+                        },
+                        "required": ["classification"],
+                    },
+                    "then": {"required": ["source_reference", "note"]},
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "classification": {"const": "DERIVED_FROM_LOG"}
+                        },
+                        "required": ["classification"],
+                    },
+                    "then": {
+                        "required": [
+                            "source_reference",
+                            "source_sha256",
+                            "derivation_method",
+                            "note",
+                        ]
+                    },
+                },
+            ],
+            "examples": [
+                {"classification": "CURRENT_RUN"},
+                {
+                    "classification": "HISTORICAL_SOURCE",
+                    "source_reference": "results/run-315/val_log.txt",
+                    "note": "原始训练完成后收集，未经过运行前治理检查",
+                },
+                {
+                    "classification": "DERIVED_FROM_LOG",
+                    "source_reference": "val_log.txt",
+                    "source_sha256": "a" * 64,
+                    "derivation_method": "从 Best Test Acc 行确定性提取 result.json",
+                    "note": "派生 JSON，不是原始训练输出",
+                },
+            ]
+        }
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_source_sha256(cls, value: Any) -> Any:
+        if isinstance(value, dict) and isinstance(value.get("source_sha256"), str):
+            return {**value, "source_sha256": value["source_sha256"].lower()}
+        return value
+
+    @model_validator(mode="after")
+    def validate_origin_details(self) -> "MaterialProvenance":
+        non_current = {
+            MaterialOrigin.HISTORICAL_SOURCE,
+            MaterialOrigin.TEST_FIXTURE,
+            MaterialOrigin.DERIVED_FROM_LOG,
+        }
+        if self.classification in non_current and (
+            self.source_reference is None or self.note is None
+        ):
+            raise ValueError("非当前运行材料必须提供 source_reference 和 note")
+        if self.classification is MaterialOrigin.DERIVED_FROM_LOG and (
+            self.source_sha256 is None or self.derivation_method is None
+        ):
+            raise ValueError(
+                "DERIVED_FROM_LOG 必须提供源日志 source_sha256 和 derivation_method"
+            )
+        if self.classification in {
+            MaterialOrigin.UNSPECIFIED,
+            MaterialOrigin.CURRENT_RUN,
+        } and (self.source_sha256 is not None or self.derivation_method is not None):
+            raise ValueError("只有派生材料可以填写 source_sha256 或 derivation_method")
+        return self
+
+
 class FieldEvidence(ContractModel):
     """一个关键字段的值及其证据元数据。
 
@@ -79,6 +174,31 @@ class FieldEvidence(ContractModel):
     collection_tool: str = Field(min_length=1, max_length=200)
     applicability: EvidenceApplicability = EvidenceApplicability.APPLICABLE
     not_applicable_reason: str | None = None
+    provenance: MaterialProvenance = Field(default_factory=MaterialProvenance)
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "value": "3.12.13",
+                    "evidence_type": "LOCAL_ATTESTED",
+                    "source": "python --version",
+                    "collected_at": "2026-07-30T12:00:00Z",
+                    "collection_tool": "local-preflight/1.0",
+                    "applicability": "APPLICABLE",
+                },
+                {
+                    "value": None,
+                    "evidence_type": "LOCAL_ATTESTED",
+                    "source": "local preflight",
+                    "collected_at": "2026-07-30T12:00:00Z",
+                    "collection_tool": "local-preflight/1.0",
+                    "applicability": "NOT_APPLICABLE",
+                    "not_applicable_reason": "本次运行不使用 CUDA",
+                },
+            ]
+        }
+    )
 
     @model_validator(mode="after")
     def require_not_applicable_reason(self) -> "FieldEvidence":
@@ -86,9 +206,19 @@ class FieldEvidence(ContractModel):
 
         if self.applicability is EvidenceApplicability.NOT_APPLICABLE:
             if not self.not_applicable_reason:
-                raise ValueError("NOT_APPLICABLE 证据必须说明不适用原因")
+                raise ValueError(
+                    "NOT_APPLICABLE 证据必须说明不适用原因；最小示例: "
+                    '{"value":null,"evidence_type":"LOCAL_ATTESTED",'
+                    '"source":"local preflight","collected_at":"2026-07-30T12:00:00Z",'
+                    '"collection_tool":"local-preflight/1.0",'
+                    '"applicability":"NOT_APPLICABLE",'
+                    '"not_applicable_reason":"本次运行不使用该组件"}'
+                )
             if self.value is not None:
-                raise ValueError("NOT_APPLICABLE 证据不能同时携带实际值")
+                raise ValueError(
+                    "NOT_APPLICABLE 证据不能同时携带实际值；请将 value 设为 null 并提供 "
+                    "not_applicable_reason"
+                )
         if (
             self.applicability is EvidenceApplicability.APPLICABLE
             and self.not_applicable_reason is not None
@@ -100,7 +230,9 @@ class FieldEvidence(ContractModel):
 
 
 class LocalEnvironment(ContractModel):
-    python: FieldEvidence | None = None
+    """本地运行环境；Python 是核心证据，CUDA/PyTorch 可明确声明不适用。"""
+
+    python: FieldEvidence
     cuda: FieldEvidence | None = None
     pytorch: FieldEvidence | None = None
 
@@ -112,16 +244,76 @@ class LocalAttestation(ContractModel):
     验证工作区、checkpoint 或输出目录的真实状态。
     """
 
-    working_tree_clean: FieldEvidence | None = None
-    git_branch: FieldEvidence | None = None
-    git_commit: FieldEvidence | None = None
-    run_command: FieldEvidence | None = None
-    output_directory_exists: FieldEvidence | None = None
+    working_tree_clean: FieldEvidence
+    git_branch: FieldEvidence
+    git_commit: FieldEvidence
+    run_command: FieldEvidence
+    output_directory_exists: FieldEvidence
     checkpoint_exists: FieldEvidence | None = None
     checkpoint_path: FieldEvidence | None = None
-    config_sha256: FieldEvidence | None = None
+    config_sha256: FieldEvidence
     git_diff_sha256: FieldEvidence | None = None
-    environment: LocalEnvironment = Field(default_factory=LocalEnvironment)
+    environment: LocalEnvironment
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "working_tree_clean": {
+                        "value": True,
+                        "evidence_type": "LOCAL_ATTESTED",
+                        "source": "git status --porcelain",
+                        "collected_at": "2026-07-30T12:00:00Z",
+                        "collection_tool": "local-preflight/1.0",
+                    },
+                    "git_branch": {
+                        "value": "main",
+                        "evidence_type": "LOCAL_ATTESTED",
+                        "source": "git branch --show-current",
+                        "collected_at": "2026-07-30T12:00:00Z",
+                        "collection_tool": "local-preflight/1.0",
+                    },
+                    "git_commit": {
+                        "value": "a1b2c3d4",
+                        "evidence_type": "LOCAL_ATTESTED",
+                        "source": "git rev-parse HEAD",
+                        "collected_at": "2026-07-30T12:00:00Z",
+                        "collection_tool": "local-preflight/1.0",
+                    },
+                    "run_command": {
+                        "value": "python train.py --config config.yaml",
+                        "evidence_type": "LOCAL_ATTESTED",
+                        "source": "planned command",
+                        "collected_at": "2026-07-30T12:00:00Z",
+                        "collection_tool": "local-preflight/1.0",
+                    },
+                    "output_directory_exists": {
+                        "value": False,
+                        "evidence_type": "LOCAL_ATTESTED",
+                        "source": "local filesystem",
+                        "collected_at": "2026-07-30T12:00:00Z",
+                        "collection_tool": "local-preflight/1.0",
+                    },
+                    "config_sha256": {
+                        "value": "a" * 64,
+                        "evidence_type": "LOCAL_ATTESTED",
+                        "source": "sha256sum config.yaml",
+                        "collected_at": "2026-07-30T12:00:00Z",
+                        "collection_tool": "local-preflight/1.0",
+                    },
+                    "environment": {
+                        "python": {
+                            "value": "3.12.13",
+                            "evidence_type": "LOCAL_ATTESTED",
+                            "source": "python --version",
+                            "collected_at": "2026-07-30T12:00:00Z",
+                            "collection_tool": "local-preflight/1.0",
+                        }
+                    },
+                }
+            ]
+        }
+    )
 
     @model_validator(mode="after")
     def require_local_evidence_type(self) -> "LocalAttestation":
@@ -255,6 +447,19 @@ class LocalAttestation(ContractModel):
         if isinstance(git_commit, str) and re.fullmatch(GIT_COMMIT_PATTERN, git_commit) is None:
             raise ValueError("git_commit 本地证据必须是 7 到 64 位十六进制值")
         return self
+
+
+class McpIdentityDiagnostic(ContractModel):
+    """当前 MCP 凭据的非敏感绑定信息，不包含 Token、哈希或密钥材料。"""
+
+    authentication_method: Literal["MCP_TOKEN", "MCP_OAUTH"]
+    user_id: UUID
+    team_id: UUID
+    project_id: UUID
+    scopes: list[str]
+    credential_expires_at: datetime | None = None
+    static_token_restart_required: bool
+    credential_reload_instruction: str = Field(min_length=1, max_length=500)
 
 
 class ParameterConstraint(ContractModel):
@@ -459,6 +664,22 @@ class SubmissionArtifactInput(ContractModel):
     mime_type: str = Field(min_length=1, max_length=100)
     size_bytes: int = Field(strict=True, ge=1, le=MAX_ARTIFACT_BYTES)
     sha256: str = Field(pattern=SHA256_PATTERN)
+    provenance: MaterialProvenance = Field(default_factory=MaterialProvenance)
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "filename": "config.yaml",
+                    "artifact_type": "CONFIG",
+                    "mime_type": "application/yaml",
+                    "size_bytes": 1024,
+                    "sha256": "a" * 64,
+                    "provenance": {"classification": "CURRENT_RUN"},
+                }
+            ]
+        }
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -469,6 +690,11 @@ class SubmissionArtifactInput(ContractModel):
 
     @model_validator(mode="after")
     def validate_filename_and_media_type(self) -> "SubmissionArtifactInput":
+        if (
+            self.provenance.classification is MaterialOrigin.DERIVED_FROM_LOG
+            and self.artifact_type is not ArtifactType.RESULT
+        ):
+            raise ValueError("只有 RESULT Artifact 可以标记为 DERIVED_FROM_LOG")
         if (
             self.artifact_type in {ArtifactType.CONFIG, ArtifactType.RESULT}
             and self.size_bytes > MAX_CONFIGURATION_BYTES
@@ -552,6 +778,23 @@ class SubmissionPrepareCommand(ContractModel):
             raise ValueError("Submission 必须恰好包含一个 CONFIG 和一个 RESULT")
         if counts[ArtifactType.NOTE] > 1 or counts[ArtifactType.MANIFEST] > 1:
             raise ValueError("NOTE 和 MANIFEST 最多各包含一个")
+        logs_by_hash = {
+            item.sha256: item.filename
+            for item in self.files
+            if item.artifact_type is ArtifactType.LOG
+        }
+        for item in self.files:
+            provenance = item.provenance
+            if provenance.classification is not MaterialOrigin.DERIVED_FROM_LOG:
+                continue
+            if (
+                provenance.source_sha256 not in logs_by_hash
+                or logs_by_hash[provenance.source_sha256] != provenance.source_reference
+            ):
+                raise ValueError(
+                    "DERIVED_FROM_LOG RESULT 必须引用同一 Submission 中 filename 和 SHA-256 "
+                    "均匹配的 LOG Artifact"
+                )
         return self
 
 
@@ -574,6 +817,7 @@ class ArtifactUploadTarget(ContractModel):
     mime_type: str
     size_bytes: int
     sha256: str = Field(pattern=SHA256_PATTERN)
+    provenance: MaterialProvenance = Field(default_factory=MaterialProvenance)
     upload_url: str = Field(min_length=1)
     required_headers: dict[str, str]
     expires_at: datetime
@@ -724,6 +968,47 @@ class SummaryUsage(ContractModel):
     output_tokens: int | None = Field(default=None, ge=0)
 
 
+class MaterialProvenanceFact(ContractModel):
+    """审核和摘要中使用的不可变材料来源事实。"""
+
+    subject: str = Field(min_length=1, max_length=500)
+    artifact_type: ArtifactType | None = None
+    filename: str | None = Field(default=None, min_length=1, max_length=255)
+    sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    cloud_hash_verified: bool | None = None
+    provenance: MaterialProvenance
+
+
+class SubmissionMaterialProvenance(ContractModel):
+    """面向人类审核的确定性来源摘要，不由模型自由改写。"""
+
+    facts: list[MaterialProvenanceFact] = Field(default_factory=list, max_length=32)
+    contains_non_current_material: bool
+    contains_unspecified_material: bool
+    historical_material_was_prevalidated: Literal[False] | None = None
+    disclaimer: str = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_derived_flags(self) -> "SubmissionMaterialProvenance":
+        classifications = {item.provenance.classification for item in self.facts}
+        non_current = bool(
+            classifications
+            & {
+                MaterialOrigin.HISTORICAL_SOURCE,
+                MaterialOrigin.TEST_FIXTURE,
+                MaterialOrigin.DERIVED_FROM_LOG,
+            }
+        )
+        unspecified = MaterialOrigin.UNSPECIFIED in classifications
+        if self.contains_non_current_material != non_current:
+            raise ValueError("contains_non_current_material 必须由来源事实推导")
+        if self.contains_unspecified_material != unspecified:
+            raise ValueError("contains_unspecified_material 必须由来源事实推导")
+        if self.historical_material_was_prevalidated is not (False if non_current else None):
+            raise ValueError("历史或测试材料不得声称原始运行已经过运行前治理验证")
+        return self
+
+
 class GeneratedSummary(ContractModel):
     """模型生成的解释性摘要，不属于 CLOUD_VERIFIED 证据。"""
 
@@ -737,6 +1022,7 @@ class GeneratedSummary(ContractModel):
     generated_at: datetime
     usage: SummaryUsage = Field(default_factory=SummaryUsage)
     disclaimer: str = Field(min_length=1, max_length=1000)
+    material_provenance: SubmissionMaterialProvenance | None = None
 
 
 class WorkflowJobReceipt(ContractModel):
@@ -1049,6 +1335,7 @@ class SubmissionReceipt(ContractModel):
     source_hash: str = Field(pattern=SHA256_PATTERN)
     generated_at: datetime
     disclaimer: str = "该回执提高风险可见性，不代表实验行为或结果已被完整验证。"
+    material_provenance: SubmissionMaterialProvenance | None = None
 
     @model_validator(mode="after")
     def critical_risk_cannot_be_confirmed(self) -> "SubmissionReceipt":
@@ -1124,6 +1411,8 @@ class ExperimentArtifactView(ContractModel):
     artifact_type: ArtifactType
     s3_version_id: str
     evidence_type: Literal[EvidenceType.CLOUD_VERIFIED] = EvidenceType.CLOUD_VERIFIED
+    material_origin: MaterialOrigin
+    provenance: MaterialProvenance
 
 
 class ExperimentQueryResult(ContractModel):
@@ -1158,7 +1447,10 @@ class ExperimentQueryResult(ContractModel):
     git_commit: str
     command: str | None = None
     checkpoint: str | None = None
-    artifacts: list[ExperimentArtifactView] = Field(default_factory=list)
+    artifacts: list[ExperimentArtifactView] = Field(
+        default_factory=list,
+        description="仅 FULL 详情返回；SUMMARY 候选结果固定为空列表。",
+    )
 
     @model_validator(mode="after")
     def label_historical_and_unconfirmed_results(self) -> "ExperimentQueryResult":

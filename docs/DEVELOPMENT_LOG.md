@@ -47,6 +47,10 @@
 | 2026-07-27 | R15e-c | `working tree` | Agent provider parity 与观测 |
 | 2026-07-27 | R16-L | `working tree` | 本地百炼 release candidate hardening |
 | 2026-07-30 | R18b.1 | `working tree` | 大型 Policy 的计划审核上下文修复 |
+| 2026-08-01 | R18b.2 | `working tree` | MCP 嵌套输入契约与项目身份诊断 |
+| 2026-08-01 | R18b.3 | `working tree` | Submission 材料来源与历史回放边界 |
+| 2026-08-01 | R18b.4 | `working tree` | 本地百炼思考摘要超时窗口 |
+| 2026-08-02 | R18b.5 | `working tree` | 查询契约、模型诊断与主指标修复 |
 
 ## R0：需求分析与 MVP 收敛
 
@@ -2224,6 +2228,182 @@ Agent Run、ModelCall、ToolCall、Citation、Event、lease、generation 和审�
 
 * 已失败的 revision 3 审核记录保持不可变；部署新 Worker 后需在 Web 计划工作台点击“重试审核”，
   新 Run 才会使用 v3 目录。不能原地改写失败 Run。
+
+## 2026-08-01 / R18b.2：MCP 嵌套输入契约与项目身份诊断
+
+版本：`working tree`，无数据库迁移。
+
+### 更新内容
+
+* `experiment_check_plan` 直接暴露 `LocalAttestation` 和 `InvariantAttestation` Pydantic
+  Schema；Git 状态、branch、commit、命令、输出目录、配置哈希和 Python 环境与运行时规则
+  一致地标为必填。
+* `submission_prepare` 直接暴露 `SubmissionArtifactInput` 和 `FinalRunEvidence`，文件类型、大小、
+  MIME、SHA-256、最终证据字段和不变量声明不再显示为任意 JSON 对象。
+* `FieldEvidence`、本地声明、Artifact 和最终运行证据增加 MCP 可发现的合法示例；
+  `NOT_APPLICABLE` 错误同时提示 `value=null` 与 `not_applicable_reason`。
+* 新增只读 `mcp_identity_get`，返回当前凭据绑定的 user/team/project、Scope、认证方式和过期时间，
+  不返回 Token、Token hash 或内部凭据 ID。stdio 响应明确提示切换静态 Token 需要重启或重连。
+
+### 修复的问题
+
+* 修复 MCP `tools/list` 把严格嵌套输入描述成 `additionalProperties: true`，导致 Coding Agent 只能
+  通过服务端报错猜测字段的问题。
+* 修复切换项目后缺少无敏感信息诊断入口的问题，同时保持一个 Token 只绑定一个项目的安全边界。
+* 数值指标在 MCP 边界使用 strict int/float，避免布尔值在进入领域校验前被强制转换为数值。
+
+### 验证结果
+
+* 实际调用 FastMCP `list_tools`，确认嵌套 `$defs`、必填字段、枚举、示例和
+  `additionalProperties: false` 均已生成。
+* MCP、Plan Check、Submission 契约与异步摘要定向测试 60 项通过。
+* Python 全量收集 362 项并执行到 100%，其中 19 项按真实云、MinIO、CockroachDB 或百炼
+  集成开关跳过；其余测试全部通过。
+* Ruff 全仓通过；mypy 检查 87 个源码文件通过。
+* 重建并重启本地 API 镜像后健康检查通过；从新镜像实际读取到 14 个 MCP 工具，确认
+  `mcp_identity_get` 已注册，Plan Check 与 Submission 的嵌套参数均引用严格 Schema。
+
+### 已知遗留项
+
+* stdio 子进程无法热读取父 Shell 后续变更的环境变量；这是进程和安全边界，不实现运行时 Token
+  替换。用户应调用诊断工具核对身份并在切换项目时重启或重连 MCP。
+* `TEST_FIXTURE`、`HISTORICAL_SOURCE`、`DERIVED_FROM_LOG` 尚未成为结构化来源字段；该需求需
+  独立设计迁移、API 兼容、摘要输入和 Web 展示，不与本轮接口契约修复混合。
+
+## 2026-08-01 / R18b.3：Submission 材料来源与历史回放边界
+
+版本：`working tree`，数据库 revision `20260801_29`。
+
+### 更新内容
+
+* 新增 `UNSPECIFIED / CURRENT_RUN / HISTORICAL_SOURCE / TEST_FIXTURE /
+  DERIVED_FROM_LOG` 五类材料来源，以及来源引用、源 SHA-256、派生方法和说明的严格契约。
+* Artifact 独立保存可索引的来源分类和完整来源详情；最终 Git、命令、配置哈希、checkpoint、
+  baseline 和环境证据复用同一来源契约。
+* 非当前材料必须给出来源引用和说明；`DERIVED_FROM_LOG` 只允许用于 RESULT，且必须匹配同一
+  Submission 中 LOG 的文件名与 SHA-256，避免把 TXT 结果线索伪装成原生 JSON 结果。
+* 摘要输入、生成摘要元数据、确定性审核回执、embedding 文档、内部 Agent Submission 诊断和
+  Submission Proposal 冻结快照均包含来源事实。LLM Prompt 要求保留来源边界，但 Web 的固定
+  警示不依赖模型自由文本是否正确复述。
+* 当存在历史、夹具、派生或未声明材料时，程序会在模型摘要正文前追加确定性来源分类计数和
+  免责声明；即使模型遗漏来源，摘要正文也不会静默隐藏该边界。
+* Web Submission 审核页显著显示历史、夹具、派生和未声明来源；Artifact 列表逐项显示分类及
+  来源说明。来源标签只改善可追溯性，本轮不改变风险等级和正式确认权限。
+
+### 修复的问题
+
+* 历史日志、模拟配置和派生结果不再只能写在自由文本中，也不会被统一描述成当前运行原生材料。
+* 旧 Artifact 在迁移中回填 `UNSPECIFIED`，不会因为升级被错误标记为 `CURRENT_RUN`。
+* 旧审核回执的 source hash 和旧 Proposal 状态哈希保持兼容；只有实际声明非默认来源的新记录
+  才把来源加入不可变哈希。
+
+### 数据库迁移
+
+* revision 29 为 `artifacts` 增加 `material_origin`、`provenance` 和
+  `(submission_id, material_origin)` 索引；旧数据安全回填为未声明来源。
+* 当数据库已经存在非 `UNSPECIFIED` 来源时拒绝降级，避免删除已经用于审核的来源审计语义。
+
+### 验证结果
+
+* 来源契约、MCP Schema、持久化、摘要和审核回执定向测试 58 项通过。
+* Python 全量收集 368 项并执行到 100%，其中 19 项按真实云、MinIO、CockroachDB 或百炼
+  集成开关跳过；其余测试全部通过。Ruff 全仓和 mypy 88 个源码文件通过。
+* SQLite 完整 Alembic 升降级链通过。真实本地 CockroachDB 已升级到 revision 29，现有 10 个
+  Artifact 全部回填为 `UNSPECIFIED`，来源复合索引已验证。
+* 前端 ESLint、18 项 Vitest 和 production build 通过。Playwright 桌面/移动用例已尝试，但宿主机
+  Chromium 仍因缺少 `libatk-1.0.so.0` 无法启动，不能记录为浏览器 E2E 通过。
+* API、Worker、Agent Worker 和 Web 镜像已重建；API health、Web HTTP 入口以及新镜像中的 MCP
+  来源枚举和嵌套 Schema 均已验证。
+
+### 已知遗留项
+
+* 来源分类当前是披露信息，不自动产生 HIGH/CRITICAL 风险；需要先用真实 TDSM 历史回放样本
+  验收，再决定哪些混合来源应提高审核门槛。
+* `UNSPECIFIED` 为旧客户端兼容保留。新 Coding Agent 应显式声明来源，Web 会对未声明材料提示。
+
+## 2026-08-01 / R18b.4：本地百炼思考摘要超时窗口
+
+版本：`working tree`，无数据库迁移。
+
+### 更新内容
+
+* 保留 `qwen3.7-plus` 的默认思考模式，不向摘要请求注入 `enable_thinking=false`。
+* 本地百炼读取超时由 60 秒提高到 180 秒；Submission Worker 租约同步由 120 秒提高到
+  300 秒，继续保留 5 次最大尝试和现有退避策略。
+* `.env.local.example` 和本地部署文档同步说明模型超时必须短于 Worker 租约。
+
+### 修复的问题
+
+* TDSM 历史回放 Submission 的 6.3 KB 摘要输入在思考模式下稳定触发 60 秒
+  `ReadTimeout`；通用错误文案此前容易被误解为百炼整体不可用。
+* 避免仅放宽 HTTP 超时后，数据库 Job 租约在模型返回前过期并被其他 Worker 接管。
+
+### 验证结果
+
+* 最小真实百炼摘要调用成功；相同 Submission 输入在旧 60 秒配置下复现
+  `httpx.ReadTimeout`，证明故障位于完整思考摘要的响应时间窗口。
+* 通过正式 `submission_finalize` 恢复路径将原 DEAD_LETTER Job 重新武装为 generation 4；同一
+  Submission 在保留思考模式下约 91 秒生成 1510 字符摘要，随后 embedding 和审核回执一次
+  成功，最终进入 `NEEDS_REVIEW / COMPLETED`。
+* 重建后的 Worker 实际读取到 `BAILIAN_READ_TIMEOUT_SECONDS=180`、
+  `WORKER_LEASE_SECONDS=300` 和 `WORKER_MAX_ATTEMPTS=5`；API health 正常。
+
+### 已知遗留项
+
+* 百炼 HTTP 异常的脱敏错误分类已在 R18b.5 补齐；完整模型调用耗时继续由现有观测记录承担。
+* 模型即使成功返回，也必须继续满足 3000 字符摘要上限；放宽超时不会放宽内容契约。
+
+## 2026-08-02 / R18b.5：查询契约、模型诊断与主指标修复
+
+版本：`working tree`，数据库 revision `20260802_30`。
+
+### 更新内容
+
+* `MaterialProvenance` 的 MCP JSON Schema 增加条件 `if/then`：历史、夹具和派生材料显式要求
+  `source_reference` 与 `note`，派生日志结果还要求 `source_sha256` 与
+  `derivation_method`；运行时 validator 继续作为最终边界。
+* 百炼适配器增加脱敏的 provider error 分类，区分超时、网络、认证/权限、模型或 API 不存在、
+  无效请求、限流、5xx 和无效响应。摘要 Job 保存分类、provider、可选 HTTP 状态和
+  retryable，不保存上游响应正文。
+* `experiments_query` 明确区分 SUMMARY 候选和 FULL 详情；FULL Artifact 直接返回
+  `material_origin` 与严格 `provenance`。
+* Web 正式实验列表保持轻量，选中记录后加载 FULL 详情，展示主指标、固定版本材料、来源边界、
+  最终运行证据和历史歧义。Submission 页面直接展示结构化后台错误。
+
+### 修复的问题
+
+* 修复非当前材料在 tools/list 看似可省略来源引用、但运行时拒绝的契约错配。
+* 修复百炼 401、429、5xx 和 ReadTimeout 全部显示为“服务暂时不可用”的诊断缺口；认证、模型
+  不存在和无效请求不再执行无意义自动重试；修正配置后仍可用新幂等键手动恢复。
+* 修复正式 Experiment 的 Artifact 来源只保存在数据库、FULL 查询却不返回的问题。
+* 修复确认服务从错误的 Context 快照层级读取主指标，导致 `zsl_test_acc` 被保存为
+  `is_primary=false`。未来确认交叉核对 Plan Check 快照和绑定 Context；revision 30 回填既有记录。
+
+### 数据库迁移
+
+* revision 30 不改变表结构，按 `Experiment -> RunManifest -> PlanCheck` 和绑定
+  `ProjectContext` 的版本链重新计算 `experiment_metrics.is_primary`。
+* 迁移不修改指标值；数据修复不可逆，降级时保留已校正的主指标事实。
+
+### 验证结果
+
+* MCP Schema、百炼 HTTP mock、摘要 Job、正式确认/查询、Web 管理和完整 Alembic 迁移定向测试
+  通过；Ruff、mypy、前端 ESLint、20 项 Vitest 和 production build 通过。
+* 真实本地 CockroachDB 已升级到 revision 30。TDSM Experiment
+  `ae892b46-f7fe-4e29-b6ff-b021b675eb31` 的 `zsl_test_acc` 已由 false 校正为 true，
+  `best_epoch` 保持 false，两个指标值均未修改。
+* 重建 API、Worker、Agent Worker 和 Web 后，真实 Web API 返回 FULL、四个 Artifact 来源、
+  最终运行证据、历史歧义和唯一主指标。
+* Python 全量收集 375 项并执行到 100%，其中 19 项按真实云、MinIO、CockroachDB 或百炼
+  集成开关跳过，其余 356 项通过。Ruff 全仓和 mypy 88 个源码文件通过。
+* 已重建 API 容器的实际 MCP `tools/list` 返回两条 provenance 条件规则，并明确标出历史材料的
+  `source_reference/note` 要求以及 experiments_query 的 SUMMARY/FULL/provenance 语义。
+
+### 已知遗留项
+
+* 历史训练缺失的原始 Git、命令和环境无法补造；正式详情现在明确展示测试夹具来源和
+  `num_epoch=1` 与历史日志轮数不一致的说明。
+* 百炼错误分类只保存安全诊断元数据，不保存可能含敏感内容的上游响应正文。
 
 ## 新日志模板
 

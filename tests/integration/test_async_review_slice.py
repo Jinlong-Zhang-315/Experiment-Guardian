@@ -137,6 +137,7 @@ def test_review_job_persists_embedding_receipt_and_needs_review(
         assert receipt["requires_owner"] is False
         assert receipt["summary_available"] is True
         assert "完整验证" in receipt["disclaimer"]
+        assert receipt["material_provenance"]["contains_unspecified_material"] is True
 
     identity = RequestIdentity(
         user_id=owner.user_id,

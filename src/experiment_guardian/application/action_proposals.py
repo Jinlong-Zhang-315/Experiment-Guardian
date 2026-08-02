@@ -1091,6 +1091,14 @@ class ActionProposalService:
                 "s3_key": item.s3_key,
                 "sha256": item.sha256,
                 "artifact_type": item.artifact_type.value,
+                **(
+                    {
+                        "material_origin": item.material_origin.value,
+                        "provenance": item.provenance,
+                    }
+                    if item.material_origin.value != "UNSPECIFIED"
+                    else {}
+                ),
                 "cloud_hash_verified": item.cloud_hash_verified,
                 "verified_at": item.verified_at.isoformat() if item.verified_at else None,
                 "verification_evidence": item.verification_evidence,

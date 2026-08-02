@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from experiment_guardian.domain.contracts import (
     GIT_COMMIT_PATTERN,
@@ -60,6 +60,23 @@ class InvariantAttestation(ContractModel):
     collected_at: datetime
     collection_tool: str = Field(min_length=1, max_length=200)
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "invariant_id": "constraint:protocol",
+                    "status": "SATISFIED",
+                    "explanation": "本地配置仍使用正式 protocol",
+                    "evidence_references": ["config.yaml#dataset.protocol"],
+                    "evidence_type": "LOCAL_ATTESTED",
+                    "source": "local configuration",
+                    "collected_at": "2026-07-30T12:00:00Z",
+                    "collection_tool": "local-preflight/1.0",
+                }
+            ]
+        }
+    )
+
     @model_validator(mode="after")
     def validate_attestation(self) -> InvariantAttestation:
         if self.collected_at.tzinfo is None or self.collected_at.utcoffset() is None:
@@ -84,6 +101,38 @@ class FinalRunEvidence(ContractModel):
     environment: FieldEvidence | None = None
     invariant_attestations: list[InvariantAttestation] = Field(default_factory=list, max_length=50)
     deviation_explanation: str | None = Field(default=None, max_length=4000)
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "git_commit": {
+                        "value": "a1b2c3d4",
+                        "evidence_type": "LOCAL_ATTESTED",
+                        "source": "git rev-parse HEAD",
+                        "collected_at": "2026-07-30T12:00:00Z",
+                        "collection_tool": "local-preflight/1.0",
+                    },
+                    "run_command": {
+                        "value": "python train.py --config config.yaml",
+                        "evidence_type": "LOCAL_ATTESTED",
+                        "source": "executed command",
+                        "collected_at": "2026-07-30T12:00:00Z",
+                        "collection_tool": "local-preflight/1.0",
+                    },
+                    "config_sha256": {
+                        "value": "a" * 64,
+                        "evidence_type": "LOCAL_ATTESTED",
+                        "source": "sha256sum config.yaml",
+                        "collected_at": "2026-07-30T12:00:00Z",
+                        "collection_tool": "local-preflight/1.0",
+                    },
+                    "invariant_attestations": [],
+                    "deviation_explanation": None,
+                }
+            ]
+        }
+    )
 
     @model_validator(mode="after")
     def validate_final_evidence(self) -> FinalRunEvidence:

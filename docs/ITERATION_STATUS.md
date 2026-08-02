@@ -1,8 +1,8 @@
 # Experiment Guardian 迭代实现与计划
 
-更新时间：2026-07-30
-当前完成轮次：R18b.1 大型 Policy 的计划审核上下文修复
-下一步：重试 TDSM revision 3 审核并继续阶段 C/D 本地真实数据验证
+更新时间：2026-08-01
+当前完成轮次：R18b.3 Submission 材料来源与历史回放边界
+下一步：使用 TDSM 历史回放样本验收来源标签、摘要和审核展示，再按实际结果决定是否调整风险等级
 
 本文维护每轮交付和紧邻下一步。详细修改见 `DEVELOPMENT_LOG.md`，当前文本框架图见
 `ARCHITECTURE.md`。
@@ -44,6 +44,10 @@
 | R18a | 内部 Agent 能力域隔离 | 完成 | 会话级确定性路由、专用目录/Schema、Proposal 前置硬门禁 |
 | R18b | 真实百炼架构验证 | 完成 | 60 Run 成对评测、Proposal 实链、默认 ANALYSIS、迁移约束修复 |
 | R18b.1 | 大型 Policy 计划审核修复 | 完成 | v3 紧凑正式策略投影、完整快照与硬检查保持不变 |
+| R18b.2 | MCP 嵌套契约与身份诊断 | 完成 | 严格 `$defs`、合法示例、项目绑定诊断、不泄露凭据 |
+| R18b.3 | Submission 材料来源 | 完成 | Artifact/最终证据来源、派生绑定、摘要回执与 Web 固定披露 |
+| R18b.4 | 百炼思考摘要超时 | 完成 | 180 秒读取窗口、300 秒 Worker 租约、真实 Submission 恢复 |
+| R18b.5 | 查询契约与模型诊断 | 完成 | 条件 Schema、错误分类、FULL provenance、主指标修复 |
 
 ## R15：内部实验治理 Agent 路线
 
@@ -451,8 +455,10 @@
 
 ## 唯一下一步
 
-当前不继续重构 Agent 拓扑。后续只在积累更多正式 Experiment、Policy Draft、Research Report
-和高风险 Submission 样本后扩大真实回归集；在没有更广数据前不删除 `GENERAL` 历史兼容模式。
+使用 TDSM 的 `TEST_FIXTURE + HISTORICAL_SOURCE + DERIVED_FROM_LOG` 样本实际走一次
+Submission 闭环，核对 Coding Agent 填参、摘要复述和 Web 审核认知。来源目前只负责准确披露，
+不自动改变审核资格；是否把特定来源组合提升为 HIGH/阻断规则，应基于验收结果单独决定。
+在没有更广数据前不删除 `GENERAL` 历史兼容模式。
 
 ## 每轮更新规则
 

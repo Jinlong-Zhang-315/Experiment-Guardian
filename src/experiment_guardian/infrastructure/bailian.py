@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from experiment_guardian.application.errors import ServiceUnavailableError
+from experiment_guardian.application.errors import ModelProviderError, ServiceUnavailableError
 from experiment_guardian.application.ports import (
     AgentChatModel,
     EmbeddingGenerator,
@@ -29,6 +29,72 @@ MAX_SUMMARY_RESPONSE_BYTES = 64 * 1024
 MAX_EMBEDDING_RESPONSE_BYTES = 512 * 1024
 MAX_AGENT_RESPONSE_BYTES = 512 * 1024
 REQUIRED_DIMENSION = 1024
+
+
+def _bailian_http_error(exc: Exception) -> ModelProviderError:
+    if isinstance(exc, httpx.TimeoutException):
+        return ModelProviderError(
+            "百炼模型请求超时",
+            provider="bailian",
+            category="TIMEOUT",
+            retryable=True,
+        )
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in {401, 403}:
+            return ModelProviderError(
+                "百炼认证失败或模型访问权限不足",
+                provider="bailian",
+                category="AUTHENTICATION_FAILED",
+                retryable=False,
+                http_status=status,
+            )
+        if status == 404:
+            return ModelProviderError(
+                "百炼模型或 API 地址不存在",
+                provider="bailian",
+                category="MODEL_NOT_FOUND",
+                retryable=False,
+                http_status=status,
+            )
+        if status == 429:
+            return ModelProviderError(
+                "百炼请求受到限流",
+                provider="bailian",
+                category="RATE_LIMITED",
+                retryable=True,
+                http_status=status,
+            )
+        if status >= 500:
+            return ModelProviderError(
+                "百炼模型服务端暂时不可用",
+                provider="bailian",
+                category="PROVIDER_UNAVAILABLE",
+                retryable=True,
+                http_status=status,
+            )
+        return ModelProviderError(
+            "百炼拒绝了模型请求",
+            provider="bailian",
+            category="INVALID_REQUEST",
+            retryable=False,
+            http_status=status,
+        )
+    return ModelProviderError(
+        "无法连接百炼模型服务",
+        provider="bailian",
+        category="NETWORK_ERROR",
+        retryable=True,
+    )
+
+
+def _invalid_bailian_response(message: str) -> ModelProviderError:
+    return ModelProviderError(
+        message,
+        provider="bailian",
+        category="INVALID_RESPONSE",
+        retryable=True,
+    )
 
 
 class _BailianClient:
@@ -61,15 +127,15 @@ class _BailianClient:
             response = self._client.post(f"{self._base_url}{path}", json=payload)
             response.raise_for_status()
         except (httpx.HTTPError, OSError) as exc:
-            raise ServiceUnavailableError("百炼模型服务暂时不可用") from exc
+            raise _bailian_http_error(exc) from exc
         if len(response.content) > max_bytes:
-            raise ServiceUnavailableError("百炼模型响应超过大小上限")
+            raise _invalid_bailian_response("百炼模型响应超过大小上限")
         try:
             decoded = response.json()
         except ValueError as exc:
-            raise ServiceUnavailableError("百炼返回了非 JSON 响应") from exc
+            raise _invalid_bailian_response("百炼返回了非 JSON 响应") from exc
         if not isinstance(decoded, dict):
-            raise ServiceUnavailableError("百炼返回了无效的 JSON 对象")
+            raise _invalid_bailian_response("百炼返回了无效的 JSON 对象")
         return decoded
 
     def stream_sse(
@@ -117,7 +183,7 @@ class _BailianClient:
         except ServiceUnavailableError:
             raise
         except (httpx.HTTPError, OSError) as exc:
-            raise ServiceUnavailableError("百炼模型流式服务暂时不可用") from exc
+            raise _bailian_http_error(exc) from exc
 
 
 class BailianSummaryGenerator(SummaryTextGenerator):
@@ -191,7 +257,7 @@ class BailianSummaryGenerator(SummaryTextGenerator):
                 output_tokens=_optional_nonnegative_int(usage.get("completion_tokens")),
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise ServiceUnavailableError("百炼返回了无效的摘要响应") from exc
+            raise _invalid_bailian_response("百炼返回了无效的摘要响应") from exc
 
 
 class BailianEmbeddingGenerator(EmbeddingGenerator):

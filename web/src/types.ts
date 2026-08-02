@@ -82,6 +82,29 @@ export interface PlanCheck {
   allowed_actions: string[];
 }
 
+export interface MaterialProvenance {
+  classification: "UNSPECIFIED" | "CURRENT_RUN" | "HISTORICAL_SOURCE" | "TEST_FIXTURE" | "DERIVED_FROM_LOG";
+  source_reference?: string;
+  source_sha256?: string;
+  derivation_method?: string;
+  note?: string;
+}
+
+export interface SubmissionMaterialProvenance {
+  facts: Array<{
+    subject: string;
+    artifact_type?: string;
+    filename?: string;
+    sha256?: string;
+    cloud_hash_verified?: boolean;
+    provenance: MaterialProvenance;
+  }>;
+  contains_non_current_material: boolean;
+  contains_unspecified_material: boolean;
+  historical_material_was_prevalidated?: false;
+  disclaimer: string;
+}
+
 export interface Submission {
   submission_id: string;
   run_manifest_id: string;
@@ -94,6 +117,7 @@ export interface Submission {
   generated_summary?: Record<string, unknown>;
   review_receipt?: Record<string, unknown>;
   invariant_check?: Record<string, unknown> & { overall_status?: string };
+  material_provenance?: SubmissionMaterialProvenance;
   risks: Array<Record<string, unknown> & { severity: string; message: string }>;
   artifacts: Array<{
     artifact_id: string;
@@ -101,6 +125,8 @@ export interface Submission {
     artifact_type: string;
     size_bytes: number;
     cloud_hash_verified: boolean;
+    material_origin?: MaterialProvenance["classification"];
+    provenance?: MaterialProvenance;
   }>;
   created_at: string;
   updated_at: string;
@@ -127,6 +153,33 @@ export interface Experiment {
   summary: Record<string, unknown>;
   confirmed_at: string;
   created_at: string;
+  detail_level: "SUMMARY";
+}
+
+export interface ExperimentDetail extends Omit<Experiment, "detail_level"> {
+  detail_level: "FULL";
+  metrics: Array<{
+    name: string;
+    value: number;
+    split: string;
+    aggregation_type: string;
+    epoch?: number;
+    is_primary: boolean;
+  }>;
+  artifacts: Array<{
+    artifact_id: string;
+    filename: string;
+    mime_type: string;
+    size_bytes: number;
+    sha256: string;
+    artifact_type: string;
+    cloud_hash_verified: boolean;
+    s3_version_id?: string;
+    material_origin: MaterialProvenance["classification"];
+    provenance: MaterialProvenance;
+  }>;
+  material_provenance: SubmissionMaterialProvenance;
+  final_run_evidence?: Record<string, unknown>;
 }
 
 export interface Page<T> { items: T[]; next_cursor?: string }
@@ -804,6 +857,8 @@ export interface SubmissionDecisionActionProposal extends ActionProposalBase {
       size_bytes: number;
       sha256: string;
       artifact_type: string;
+      material_origin?: MaterialProvenance["classification"];
+      provenance?: MaterialProvenance;
       cloud_hash_verified: boolean;
       verified_at?: string;
       verification_evidence?: Record<string, unknown>;

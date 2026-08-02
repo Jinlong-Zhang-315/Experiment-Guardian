@@ -111,6 +111,8 @@ def test_submission_schema_keeps_r12b_embedding_separate() -> None:
     } <= set(submission.columns.keys())
     assert "embedding" not in submission.columns
     assert "review_receipt" in submission.columns
+    assert {"material_origin", "provenance"} <= set(artifact.columns.keys())
+    assert "ix_artifact_submission_origin" in {index.name for index in artifact.indexes}
     embedding = Base.metadata.tables["submission_embeddings"]
     assert {
         "submission_id",

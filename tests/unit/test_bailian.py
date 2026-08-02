@@ -6,7 +6,7 @@ import math
 import httpx
 import pytest
 
-from experiment_guardian.application.errors import ServiceUnavailableError
+from experiment_guardian.application.errors import ModelProviderError, ServiceUnavailableError
 from experiment_guardian.domain.agent import (
     AgentChatMessage,
     AgentResponseFormat,
@@ -105,8 +105,39 @@ def test_bailian_timeout_is_retryable_service_failure() -> None:
         model_id="qwen-summary",
         client=_client(handler),
     )
-    with pytest.raises(ServiceUnavailableError, match="暂时不可用"):
+    with pytest.raises(ModelProviderError, match="请求超时") as raised:
         generator.generate(system_prompt="system", user_prompt="facts")
+    assert raised.value.category == "TIMEOUT"
+    assert raised.value.retryable is True
+    assert raised.value.http_status is None
+
+
+@pytest.mark.parametrize(
+    ("status", "category", "retryable"),
+    [
+        (401, "AUTHENTICATION_FAILED", False),
+        (403, "AUTHENTICATION_FAILED", False),
+        (404, "MODEL_NOT_FOUND", False),
+        (422, "INVALID_REQUEST", False),
+        (429, "RATE_LIMITED", True),
+        (503, "PROVIDER_UNAVAILABLE", True),
+    ],
+)
+def test_bailian_http_failures_have_sanitized_categories(
+    status: int, category: str, retryable: bool
+) -> None:
+    generator = BailianSummaryGenerator(
+        api_key="secret",
+        base_url="https://bailian.example/v1",
+        model_id="qwen-summary",
+        client=_client(lambda _: httpx.Response(status, json={"secret": "not persisted"})),
+    )
+    with pytest.raises(ModelProviderError) as raised:
+        generator.generate(system_prompt="system", user_prompt="facts")
+    assert raised.value.category == category
+    assert raised.value.retryable is retryable
+    assert raised.value.http_status == status
+    assert "not persisted" not in str(raised.value)
 
 
 def test_bailian_embedding_validates_dimension_and_normalizes() -> None:

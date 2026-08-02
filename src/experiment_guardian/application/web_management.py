@@ -18,6 +18,9 @@ from experiment_guardian.application.errors import (
     ResourceNotFoundError,
 )
 from experiment_guardian.application.identity import RequestIdentity
+from experiment_guardian.application.material_provenance import (
+    build_submission_material_provenance,
+)
 from experiment_guardian.application.ports import ArtifactStorage
 from experiment_guardian.domain.contracts import HumanReadablePolicy
 from experiment_guardian.domain.enums import (
@@ -44,6 +47,8 @@ from experiment_guardian.domain.web_management import (
     ArtifactDownloadResult,
     ArtifactWebView,
     ContextVersionSummary,
+    ExperimentDetailWebView,
+    ExperimentMetricWebView,
     ExperimentPage,
     ExperimentWebView,
     PlanCheckPage,
@@ -61,6 +66,7 @@ from experiment_guardian.infrastructure.models import (
     AuditLog,
     Experiment,
     ExperimentIntent,
+    ExperimentMetric,
     ExperimentSubmission,
     IdempotencyRecord,
     PlanCheck,
@@ -565,14 +571,14 @@ class WebManagementService:
 
     def get_experiment(
         self, *, project_id: UUID, experiment_id: UUID, identity: RequestIdentity
-    ) -> ExperimentWebView:
+    ) -> ExperimentDetailWebView:
         self._require_scope(identity, "experiment:read")
         with self._session_factory() as session:
             self._require_project(session, project_id, identity)
             row = session.get(Experiment, experiment_id)
             if row is None or row.project_id != project_id:
                 raise ResourceNotFoundError("项目中不存在该 Experiment")
-            return self._experiment_view(row)
+            return self._experiment_detail_view(session, row)
 
     def create_artifact_download(
         self, *, project_id: UUID, artifact_id: UUID, identity: RequestIdentity
@@ -728,6 +734,9 @@ class WebManagementService:
         artifacts = session.scalars(
             select(Artifact).where(Artifact.submission_id == row.id).order_by(Artifact.filename)
         ).all()
+        material_provenance = build_submission_material_provenance(
+            artifacts, row.evidence_snapshot
+        )
         actions: list[str] = []
         if (
             row.status is SubmissionStatus.NEEDS_REVIEW
@@ -757,6 +766,7 @@ class WebManagementService:
                 if isinstance(row.analysis_snapshot, dict)
                 else None
             ),
+            material_provenance=material_provenance,
             risks=[
                 {
                     "risk_id": str(item.id),
@@ -785,6 +795,8 @@ class WebManagementService:
                     artifact_type=item.artifact_type.value,
                     cloud_hash_verified=item.cloud_hash_verified,
                     s3_version_id=item.s3_version_id,
+                    material_origin=item.material_origin.value,
+                    provenance=item.provenance,
                 )
                 for item in artifacts
             ],
@@ -816,4 +828,70 @@ class WebManagementService:
             summary=row.summary_snapshot,
             confirmed_at=row.confirmed_at,
             created_at=row.created_at,
+        )
+
+    @classmethod
+    def _experiment_detail_view(
+        cls, session: Session, row: Experiment
+    ) -> ExperimentDetailWebView:
+        submission = session.get(ExperimentSubmission, row.submission_id)
+        if submission is None or submission.project_id != row.project_id:
+            raise ConflictError("正式 Experiment 的 Submission 追溯缺失")
+        artifacts = list(
+            session.scalars(
+                select(Artifact)
+                .where(Artifact.experiment_id == row.id)
+                .order_by(Artifact.artifact_type, Artifact.filename)
+            ).all()
+        )
+        metrics = list(
+            session.scalars(
+                select(ExperimentMetric)
+                .where(ExperimentMetric.experiment_id == row.id)
+                .order_by(ExperimentMetric.is_primary.desc(), ExperimentMetric.name)
+            ).all()
+        )
+        summary = cls._experiment_view(row).model_dump(mode="python")
+        summary["detail_level"] = "FULL"
+        evidence_snapshot = (
+            submission.evidence_snapshot
+            if isinstance(submission.evidence_snapshot, dict)
+            else {}
+        )
+        return ExperimentDetailWebView(
+            **summary,
+            metrics=[
+                ExperimentMetricWebView(
+                    name=item.name,
+                    value=item.value,
+                    split=item.split,
+                    aggregation_type=item.aggregation_type,
+                    epoch=item.epoch,
+                    is_primary=item.is_primary,
+                )
+                for item in metrics
+            ],
+            artifacts=[
+                ArtifactWebView(
+                    artifact_id=item.id,
+                    filename=item.filename,
+                    mime_type=item.mime_type,
+                    size_bytes=item.size_bytes,
+                    sha256=item.sha256,
+                    artifact_type=item.artifact_type.value,
+                    cloud_hash_verified=item.cloud_hash_verified,
+                    s3_version_id=item.s3_version_id,
+                    material_origin=item.material_origin.value,
+                    provenance=item.provenance,
+                )
+                for item in artifacts
+            ],
+            material_provenance=build_submission_material_provenance(
+                artifacts, evidence_snapshot
+            ),
+            final_run_evidence=(
+                evidence_snapshot.get("final_run_evidence")
+                if isinstance(evidence_snapshot.get("final_run_evidence"), dict)
+                else None
+            ),
         )

@@ -1,11 +1,11 @@
 # Experiment Guardian 当前框架图
 
-更新时间：2026-07-30
-当前实现：v1.0.0 / R18b.1 大型 Policy 计划审核上下文修复
+更新时间：2026-08-01
+当前实现：v1.0.0 / R18b.5 查询契约与模型诊断加固
 
 R17 外部协作与发布路线已收口。R18 收窄内部 Agent 上下文和工具暴露，不修改正式治理链；
 R18b 已通过真实百炼成对评测。审计和评测结果见 `AGENT_ARCHITECTURE_REVIEW.md`。
-数据库 head：`20260730_28`
+数据库 head：`20260802_30`
 
 除明确标记“计划”的章节外，本文描述当前仓库已经实现的结构。`[DONE]` 表示已有代码与
 自动化验证，`[EXTERNAL]` 表示由部署环境提供，`[MANUAL]` 表示真实云服务仍需部署环境验收。
@@ -174,7 +174,7 @@ src/experiment_guardian/
 |   +-- agent.py                Thread/Message/Run/SSE/retry API
 |                               + Policy Draft and Action Proposal API
 |
-+-- mcp_server/server.py        七个正式治理 + 三个外部协作工具 + HTTP health
++-- mcp_server/server.py        七个正式治理 + 六个外部协作 + 身份诊断 + HTTP health
 |
 +-- application/
 |   +-- web_auth.py             Cognito/local_owner、Session、CSRF、撤销
@@ -182,6 +182,7 @@ src/experiment_guardian/
 |   +-- services.py             Context/Plan/Manifest/Submission 主线
 |   +-- experiments.py          正式确认与结构化/向量查询
 |   +-- submission_analysis.py  可恢复确定性分析
+|   +-- material_provenance.py Artifact/最终证据来源的确定性汇总
 |   +-- async_summary.py        Outbox/SQS/摘要
 |   +-- async_review.py         embedding/确定性回执
 |   +-- agent.py                对话、幂等入队、归档、恢复与身份解析
@@ -384,14 +385,14 @@ scripts/verify_r17d_local.py
   |-- Owner Web decision -> immutable plan decision / submission confirmation
   |-- MinIO -------------> presigned PUT + real VersionId + fixed-version verify
   |-- DB Worker ---------> deterministic analysis + real Bailian summary/embedding
-  |-- experiments_query -> confirmed Experiment trace
+  |-- experiments_query -> SUMMARY candidates / FULL trace + Artifact provenance
   +-- final context read -> Context/Intent/Constraint must remain unchanged
 
 parallel release regressions
   |-- DatabaseOutboxQueue: claim/lease/generation/retry/dead-letter
   |-- Agent CockroachDB: concurrent claim/recovery/idempotency
   |-- Playwright: desktop/mobile invariant checkpoint visibility
-  +-- migration head: 20260728_26 (R17d has no migration)
+  +-- migration head: 20260802_30
 ```
 
 ## 数据关系
@@ -411,14 +412,14 @@ User(cognito_sub)
          |                     |      +--0..1 RunManifest(schema v1/v2, immutable)
          |                     |
          +-- McpOAuthClient ---+--< ExperimentSubmission
-              one project      |      +--< Artifact(S3 VersionId/evidence)
+              one project      |      +--< Artifact(S3 VersionId/evidence/material provenance)
                                |      +--< SubmissionRisk
                                |      +--0..1 SubmissionEmbedding VECTOR(1024)
                                |      +--< WorkflowJob --< OutboxEvent
                                |
                                +--< Experiment
                                       +-- Submission/Manifest/Plan/Intent/Context trace
-                                      +--< ExperimentMetric
+                                      +--< ExperimentMetric(primary flag from bound Context)
                                       +--< Memory VECTOR(1024)
                                       +--< Artifact association
                                |
@@ -464,6 +465,7 @@ Owner Cognito login
       -> READY: version/hash-bound Markdown
       -> FAILED: formal policy remains active; Owner may regenerate
 -> Researcher OAuth MCP project_get_context
+   -> mcp_identity_get may verify project/scopes without exposing credentials
    -> human_readable for understanding + complete structured authority
 -> experiment_check_plan
    -> BLOCKED: stop
@@ -472,6 +474,8 @@ Owner Cognito login
 -> run_manifest_create from frozen Plan Check snapshots
 -> user runs experiment outside Guardian
 -> submission_prepare -> S3 presigned PUT with checksum and no overwrite
+   -> freeze per-Artifact/final-evidence material provenance
+      -> historical/test/derived sources never imply original pre-run validation
 -> submission_finalize -> fixed VersionId/cloud hash verification
 -> deterministic parse/manifest/duplicate/risk workflow
 -> SQS 或 DB Queue Worker -> constrained summary -> embedding -> deterministic receipt

@@ -134,6 +134,12 @@ def test_foundation_and_plan_check_migrations_are_independently_reversible(
     assert {"verified_at", "verification_evidence", "s3_version_id"} <= {
         item["name"] for item in inspector.get_columns("artifacts")
     }
+    assert {"material_origin", "provenance"} <= {
+        item["name"] for item in inspector.get_columns("artifacts")
+    }
+    assert "ix_artifact_submission_origin" in {
+        item["name"] for item in inspector.get_indexes("artifacts")
+    }
     assert set(inspector.get_table_names()) >= SUBMISSION_ANALYSIS_TABLES
     assert {
         "workflow_status",

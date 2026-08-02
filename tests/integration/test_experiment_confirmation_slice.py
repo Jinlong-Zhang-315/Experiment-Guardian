@@ -17,6 +17,7 @@ from experiment_guardian.application.experiments import (
     ExperimentReviewService,
 )
 from experiment_guardian.application.identity import RequestIdentity
+from experiment_guardian.application.web_management import WebManagementService
 from experiment_guardian.domain.administration import (
     SubmissionDecisionRequest,
     SubmissionDecisionResult,
@@ -135,6 +136,14 @@ def test_approval_creates_formal_trace_and_supports_both_query_modes(
         assert embedding is not None
         assert memory.content_sha256 == embedding.input_sha256
         assert session.scalar(select(func.count()).select_from(ExperimentMetric)) >= 1
+        metrics = list(
+            session.scalars(
+                select(ExperimentMetric).where(
+                    ExperimentMetric.experiment_id == experiment.id
+                )
+            ).all()
+        )
+        assert [item.name for item in metrics if item.is_primary] == ["top1"]
         artifacts = list(session.scalars(select(Artifact)).all())
         assert artifacts and all(item.experiment_id == experiment.id for item in artifacts)
 
@@ -169,6 +178,26 @@ def test_approval_creates_formal_trace_and_supports_both_query_modes(
     assert details[0].retrieval_role == "STRUCTURED_RECORD"
     assert details[0].config_snapshot is not None
     assert details[0].artifacts
+    assert all(
+        artifact.provenance.classification is artifact.material_origin
+        for artifact in details[0].artifacts
+    )
+
+    web_detail = WebManagementService(
+        plan_check_session_factory,
+        SqlAlchemyProjectRepository(),
+        SimpleNamespace(),
+        900,
+    ).get_experiment(
+        project_id=project_id,
+        experiment_id=result.experiment_id,
+        identity=identity(owner, project_id, "experiment:read"),
+    )
+    assert web_detail.detail_level == "FULL"
+    assert web_detail.artifacts
+    assert web_detail.material_provenance.facts
+    assert web_detail.final_run_evidence is None
+    assert [item.name for item in web_detail.metrics if item.is_primary] == ["top1"]
 
     with plan_check_session_factory() as session, session.begin():
         other_project = Project(team_id=owner.team_id, name="Other Project")

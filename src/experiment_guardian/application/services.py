@@ -47,6 +47,7 @@ from experiment_guardian.domain.contracts import (
     ExperimentQueryCommand,
     ExperimentQueryResult,
     GeneratedSummary,
+    MaterialProvenance,
     PlanEvaluationInput,
     ProjectContextBundle,
     RiskItem,
@@ -146,10 +147,32 @@ MISSING_INFORMATION_CODES = {
 
 
 def _canonical_hash(value: Any) -> str:
+    value = _strip_default_material_provenance(value)
     payload = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _strip_default_material_provenance(value: Any) -> Any:
+    """让升级前后的幂等请求在未声明来源时保持相同哈希。"""
+
+    if isinstance(value, list):
+        return [_strip_default_material_provenance(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "provenance" and isinstance(item, dict) and item == {
+            "classification": "UNSPECIFIED",
+            "source_reference": None,
+            "source_sha256": None,
+            "derivation_method": None,
+            "note": None,
+        }:
+            continue
+        normalized[key] = _strip_default_material_provenance(item)
+    return normalized
 
 
 def _same_json_value(left: Any, right: Any) -> bool:
@@ -165,6 +188,7 @@ class _PreparedArtifact:
     size_bytes: int
     sha256: str
     s3_key: str
+    provenance: MaterialProvenance
 
 
 @dataclass(frozen=True, slots=True)
@@ -930,6 +954,8 @@ class GuardianApplication:
                         ),
                         sha256=item.sha256,
                         artifact_type=item.artifact_type,
+                        material_origin=item.provenance.classification,
+                        provenance=item.provenance.model_dump(mode="json"),
                         cloud_hash_verified=False,
                     )
                     session.add(artifact)
@@ -952,6 +978,10 @@ class GuardianApplication:
                                 "run_manifest_id": str(manifest.id),
                                 "status": submission.status.value,
                                 "artifact_ids": [str(item.id) for item in artifacts],
+                                "material_origins": {
+                                    item.filename: item.material_origin.value
+                                    for item in artifacts
+                                },
                                 "token_id": str(identity.token_id),
                                 "source_agent": submission.source_agent,
                             },
@@ -1003,6 +1033,7 @@ class GuardianApplication:
                     "artifact_type": item.artifact_type.value,
                     "declared_sha256": item.sha256,
                     "declared_size_bytes": item.size_bytes,
+                    "provenance": item.provenance.model_dump(mode="json"),
                 }
                 for item in command.files
             ],
@@ -1086,6 +1117,7 @@ class GuardianApplication:
                     size_bytes=item.size_bytes,
                     sha256=item.sha256,
                     s3_key=item.s3_key,
+                    provenance=MaterialProvenance.model_validate(item.provenance),
                 )
                 for item in artifacts
             ),
@@ -1127,6 +1159,7 @@ class GuardianApplication:
                         mime_type=artifact.mime_type,
                         size_bytes=artifact.size_bytes,
                         sha256=artifact.sha256,
+                        provenance=artifact.provenance,
                         upload_url=signed.upload_url,
                         required_headers=signed.required_headers,
                         expires_at=expires_at,
@@ -1300,9 +1333,18 @@ class GuardianApplication:
                 if existing.operation_status is IdempotencyOperationStatus.IN_PROGRESS:
                     raise ConflictError("相同 Idempotency-Key 的 finalize 操作仍在处理")
 
-            if (
+            processing_error = (
+                submission.processing_error
+                if isinstance(submission.processing_error, dict)
+                else {}
+            )
+            manually_recoverable_provider_failure = bool(
+                submission.status is SubmissionStatus.FAILED
+                and processing_error.get("manual_recovery_allowed") is True
+            )
+            if submission.upload_verified_at is not None and (
                 submission.status is SubmissionStatus.PROCESSING
-                and submission.upload_verified_at is not None
+                or manually_recoverable_provider_failure
             ):
                 if existing is not None:
                     raise ConflictError("恢复提交分析必须使用新的 Idempotency-Key")
@@ -1887,6 +1929,7 @@ class GuardianApplication:
                 size_bytes=item.size_bytes,
                 sha256=item.sha256,
                 s3_key=item.s3_key,
+                provenance=MaterialProvenance.model_validate(item.provenance),
             )
             for item in artifacts
         )
@@ -1903,6 +1946,7 @@ class GuardianApplication:
                     "size_bytes": item.size_bytes,
                     "sha256": item.sha256,
                     "s3_key": item.s3_key,
+                    "provenance": item.provenance.model_dump(mode="json"),
                 }
                 for item in artifacts
             ]

@@ -554,8 +554,8 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
             "config_sha256": local.config_sha256,
             "environment.python": local.environment.python,
         }
-        for field_path, evidence in core_evidence.items():
-            if not _is_applicable(evidence):
+        for field_path, core_item in core_evidence.items():
+            if not _is_applicable(core_item):
                 needs_approval = True
                 risks.append(
                     RiskItem(
@@ -575,8 +575,8 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
             "environment.cuda": local.environment.cuda,
             "environment.pytorch": local.environment.pytorch,
         }
-        for field_path, evidence in optional_evidence.items():
-            if evidence is None:
+        for field_path, optional_item in optional_evidence.items():
+            if optional_item is None:
                 needs_approval = True
                 risks.append(
                     RiskItem(
@@ -614,16 +614,16 @@ def evaluate_plan(data: PlanEvaluationInput) -> PlanEvaluationResult:
             ("run_command", data.run_command, local.run_command),
             ("checkpoint_path", data.checkpoint, local.checkpoint_path),
         )
-        for field_path, expected, evidence in consistency_checks:
+        for field_path, expected, consistency_item in consistency_checks:
             if (
                 expected is not None
-                and _is_applicable(evidence)
-                and not _strict_json_equal(evidence.value, expected)
+                and _is_applicable(consistency_item)
+                and not _strict_json_equal(consistency_item.value, expected)
             ):
                 needs_approval = True
                 risks.append(
                     _risk_from_local_evidence(
-                        evidence=evidence,
+                        evidence=consistency_item,
                         code="LOCAL_ATTESTATION_CONFLICT",
                         severity=RiskSeverity.HIGH,
                         message=f"本地 Agent 对 {field_path} 的声明与检查请求不一致",

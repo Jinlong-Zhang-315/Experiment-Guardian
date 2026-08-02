@@ -25,6 +25,7 @@ async def test_mcp_exposes_formal_and_external_collaboration_tools() -> None:
 
     assert names == {
         "project_get_context",
+        "mcp_identity_get",
         "experiment_check_plan",
         "run_manifest_create",
         "submission_prepare",
@@ -45,6 +46,115 @@ async def test_mcp_exposes_formal_and_external_collaboration_tools() -> None:
         assert "requester_id" not in properties
         if tool.name == "submission_finalize":
             assert set(properties) == {"submission_id", "idempotency_key"}
+    query_description = next(
+        tool.description for tool in tools if tool.name == "experiments_query"
+    )
+    assert "SUMMARY" in query_description
+    assert "FULL" in query_description
+    assert "provenance" in query_description
+
+
+@pytest.mark.asyncio
+async def test_mcp_exposes_strict_nested_governance_contracts() -> None:
+    tools = {tool.name: tool for tool in await mcp.list_tools()}
+
+    identity_output = tools["mcp_identity_get"].outputSchema
+    assert identity_output is not None
+    assert {"token_id", "access_token", "token_hash"}.isdisjoint(
+        identity_output["properties"]
+    )
+
+    plan_schema = tools["experiment_check_plan"].inputSchema
+    plan_definitions = plan_schema["$defs"]
+    assert plan_schema["properties"]["local_attestation"] == {
+        "$ref": "#/$defs/LocalAttestation"
+    }
+    assert set(plan_definitions["LocalAttestation"]["required"]) == {
+        "working_tree_clean",
+        "git_branch",
+        "git_commit",
+        "run_command",
+        "output_directory_exists",
+        "config_sha256",
+        "environment",
+    }
+    assert plan_definitions["LocalAttestation"]["additionalProperties"] is False
+    assert plan_definitions["LocalEnvironment"]["required"] == ["python"]
+    assert plan_definitions["FieldEvidence"]["additionalProperties"] is False
+    assert len(plan_definitions["FieldEvidence"]["examples"]) == 2
+    invariant_schema = plan_schema["properties"]["invariant_attestations"]["anyOf"][0]
+    assert invariant_schema["items"] == {"$ref": "#/$defs/InvariantAttestation"}
+
+    submission_schema = tools["submission_prepare"].inputSchema
+    submission_definitions = submission_schema["$defs"]
+    assert submission_schema["properties"]["files"]["items"] == {
+        "$ref": "#/$defs/SubmissionArtifactInput"
+    }
+    assert submission_definitions["SubmissionArtifactInput"]["additionalProperties"] is False
+    assert submission_definitions["SubmissionArtifactInput"]["properties"]["provenance"] == {
+        "$ref": "#/$defs/MaterialProvenance"
+    }
+    assert set(
+        submission_definitions["MaterialOrigin"]["enum"]
+    ) == {
+        "UNSPECIFIED",
+        "CURRENT_RUN",
+        "HISTORICAL_SOURCE",
+        "TEST_FIXTURE",
+        "DERIVED_FROM_LOG",
+    }
+    provenance_conditions = submission_definitions["MaterialProvenance"]["allOf"]
+    assert provenance_conditions[0]["then"]["required"] == [
+        "source_reference",
+        "note",
+    ]
+    assert set(provenance_conditions[1]["then"]["required"]) == {
+        "source_reference",
+        "source_sha256",
+        "derivation_method",
+        "note",
+    }
+    final_schema = submission_schema["properties"]["final_run_evidence"]["anyOf"][0]
+    assert final_schema == {"$ref": "#/$defs/FinalRunEvidence"}
+    assert submission_definitions["FinalRunEvidence"]["additionalProperties"] is False
+    assert set(submission_definitions["FinalRunEvidence"]["properties"]) == {
+        "git_commit",
+        "run_command",
+        "config_sha256",
+        "checkpoint",
+        "baseline_reference",
+        "environment",
+        "invariant_attestations",
+        "deviation_explanation",
+    }
+
+
+def test_mcp_identity_diagnostic_returns_no_credential_material(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = RequestIdentity(
+        user_id=uuid4(),
+        team_id=uuid4(),
+        token_id=uuid4(),
+        project_id=uuid4(),
+        scopes=frozenset({"project:read", "experiment:check"}),
+        authentication_method="MCP_TOKEN",
+        credential_expires_at=datetime(2026, 8, 30, tzinfo=UTC),
+    )
+    monkeypatch.setattr(
+        server,
+        "get_identity_provider",
+        lambda: SimpleNamespace(current_identity=lambda: identity),
+    )
+
+    result = server.mcp_identity_get()
+    payload = result.model_dump(mode="json")
+
+    assert payload["project_id"] == str(identity.project_id)
+    assert payload["scopes"] == ["experiment:check", "project:read"]
+    assert payload["static_token_restart_required"] is True
+    assert "重新启动" in payload["credential_reload_instruction"]
+    assert {"token_id", "access_token", "token_hash"}.isdisjoint(payload)
 
 
 def test_external_agent_tools_use_server_identity(

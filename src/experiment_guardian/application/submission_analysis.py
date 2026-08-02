@@ -193,6 +193,8 @@ class SubmissionAnalysisService:
                             "artifact_type": item.artifact_type.value,
                             "sha256": item.sha256,
                             "version_id": item.s3_version_id,
+                            "material_origin": item.material_origin.value,
+                            "provenance": item.provenance,
                         }
                         for item in artifacts
                     ],

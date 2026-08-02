@@ -55,6 +55,7 @@ from experiment_guardian.domain.enums import (
     ExperimentStatus,
     IdempotencyOperationStatus,
     IntentStatus,
+    MaterialOrigin,
     OutboxStatus,
     PolicyDraftReadiness,
     PolicyDraftSource,
@@ -706,6 +707,7 @@ class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         ),
         CheckConstraint("length(sha256) = 64", name="artifact_sha256_length"),
         Index("ix_artifact_submission_type", "submission_id", "artifact_type"),
+        Index("ix_artifact_submission_origin", "submission_id", "material_origin"),
     )
 
     submission_id: Mapped[UUID] = mapped_column(
@@ -720,6 +722,12 @@ class Artifact(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     artifact_type: Mapped[ArtifactType] = mapped_column(
         enum_column(ArtifactType, "artifact_type"), nullable=False
     )
+    material_origin: Mapped[MaterialOrigin] = mapped_column(
+        enum_column(MaterialOrigin, "material_origin", length=32),
+        default=MaterialOrigin.UNSPECIFIED,
+        nullable=False,
+    )
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     cloud_hash_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     verification_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON)

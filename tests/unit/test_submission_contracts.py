@@ -53,6 +53,58 @@ def test_valid_declaration_normalizes_hash_and_metrics() -> None:
     assert command.metrics_summary == {"top1": 0.83}
 
 
+def test_historical_and_derived_material_provenance_is_explicit_and_linked() -> None:
+    value = payload()
+    log = artifact("val_log.txt", "LOG", "text/plain")
+    log["sha256"] = "B" * 64
+    log["provenance"] = {
+        "classification": "HISTORICAL_SOURCE",
+        "source_reference": "results/run-315/val_log.txt",
+        "note": "原始训练结束后收集",
+    }
+    value["files"].append(log)  # type: ignore[union-attr]
+    value["files"][0]["provenance"] = {  # type: ignore[index]
+        "classification": "TEST_FIXTURE",
+        "source_reference": "fixture/config.yaml",
+        "note": "用于治理链路验证，不代表原始运行配置",
+    }
+    value["files"][1]["provenance"] = {  # type: ignore[index]
+        "classification": "DERIVED_FROM_LOG",
+        "source_reference": "val_log.txt",
+        "source_sha256": "B" * 64,
+        "derivation_method": "确定性提取 Best Test Acc",
+        "note": "派生 JSON，不是原始输出",
+    }
+
+    command = SubmissionPrepareCommand.model_validate(value)
+
+    assert command.files[0].provenance.classification.value == "TEST_FIXTURE"
+    assert command.files[1].provenance.source_sha256 == "b" * 64
+
+
+def test_non_current_provenance_requires_basis_and_derived_log_must_match() -> None:
+    missing_basis = payload()
+    missing_basis["files"][0]["provenance"] = {  # type: ignore[index]
+        "classification": "TEST_FIXTURE"
+    }
+    with pytest.raises(ValidationError, match="source_reference"):
+        SubmissionPrepareCommand.model_validate(missing_basis)
+
+    wrong_source = payload()
+    wrong_source["files"].append(  # type: ignore[union-attr]
+        artifact("val_log.txt", "LOG", "text/plain")
+    )
+    wrong_source["files"][1]["provenance"] = {  # type: ignore[index]
+        "classification": "DERIVED_FROM_LOG",
+        "source_reference": "other_log.txt",
+        "source_sha256": "A" * 64,
+        "derivation_method": "parse metric",
+        "note": "derived result",
+    }
+    with pytest.raises(ValidationError, match="同一 Submission"):
+        SubmissionPrepareCommand.model_validate(wrong_source)
+
+
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [

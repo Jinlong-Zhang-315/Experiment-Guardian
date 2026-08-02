@@ -12,6 +12,10 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
 from experiment_guardian.application.errors import ServiceUnavailableError
+from experiment_guardian.application.material_provenance import (
+    MaterialProvenanceError,
+    build_submission_material_provenance,
+)
 from experiment_guardian.application.ports import (
     EmbeddingGenerator,
     QueueDelivery,
@@ -24,6 +28,7 @@ from experiment_guardian.domain.contracts import (
     ReviewFact,
     ReviewTrace,
     RiskItem,
+    SubmissionMaterialProvenance,
     SubmissionReceipt,
     WorkflowQueueEnvelope,
 )
@@ -398,6 +403,13 @@ class SubmissionReviewProcessor:
                 raise ReviewSourceError("审核所需的 result.json 解析结果不存在")
             parsed_result = result_wrapper["parsed"]
             risks = self._submissions.list_risks(session, submission.id)
+            artifacts = self._submissions.list_artifacts(session, submission.id)
+            try:
+                material_provenance = build_submission_material_provenance(
+                    artifacts, submission.evidence_snapshot
+                )
+            except MaterialProvenanceError as exc:
+                raise ReviewSourceError(str(exc)) from exc
             receipt = self._build_receipt(
                 submission=submission,
                 manifest=manifest,
@@ -407,6 +419,7 @@ class SubmissionReviewProcessor:
                 risks=risks,
                 snapshot=snapshot,
                 approved=approval is not None,
+                material_provenance=material_provenance,
             )
             document_text = self._build_embedding_document(receipt, risks)
             return _PreparedReview(
@@ -426,6 +439,7 @@ class SubmissionReviewProcessor:
         risks: list[SubmissionRisk],
         snapshot: dict[str, Any],
         approved: bool,
+        material_provenance: SubmissionMaterialProvenance,
     ) -> SubmissionReceipt:
         intent_time = _as_utc(intent.confirmed_at or intent.created_at)
         manifest_time = _as_utc(manifest.created_at)
@@ -554,6 +568,7 @@ class SubmissionReviewProcessor:
             "key_results": [item.model_dump(mode="json") for item in key_results],
             "risks": [item.model_dump(mode="json") for item in risk_items],
             "review_eligibility": eligibility.value,
+            "material_provenance": material_provenance.model_dump(mode="json"),
         }
         receipt = SubmissionReceipt(
             submission_id=submission.id,
@@ -595,6 +610,7 @@ class SubmissionReviewProcessor:
             source_hash=canonical_json_hash(source_payload),
             generated_at=datetime.now(UTC),
             disclaimer=REVIEW_DISCLAIMER,
+            material_provenance=material_provenance,
         )
         encoded = json.dumps(
             receipt.model_dump(mode="json"),
@@ -673,6 +689,8 @@ class SubmissionReviewProcessor:
             "omitted_metric_count": len(optional_results),
             "omitted_lower_risk_count": len(lower_risks),
         }
+        if receipt.material_provenance is not None:
+            document["material_provenance"] = receipt.material_provenance.model_dump(mode="json")
         if len(_canonical_text(document)) > MAX_EMBEDDING_INPUT_CHARACTERS:
             raise ReviewSourceError("检索文档必要事实超过 16000 字符上限")
         for result in optional_results:
@@ -919,20 +937,20 @@ def review_receipt_source_hash(
 ) -> str:
     """按 R12b 原始字段重建回执来源哈希，发现持久化内容漂移。"""
 
-    return canonical_json_hash(
-        {
-            "submission_id": str(receipt.submission_id),
-            "objective": receipt.objective_evidence.model_dump(mode="json"),
-            "trace": receipt.trace.model_dump(mode="json"),
-            "run_conditions": [item.model_dump(mode="json") for item in receipt.run_conditions],
-            "allowed_changes": [
-                item.model_dump(mode="json") for item in receipt.allowed_changes
-            ],
-            "key_results": [item.model_dump(mode="json") for item in receipt.key_results],
-            "risks": [risk_item_from_model(item).model_dump(mode="json") for item in risks],
-            "review_eligibility": review_eligibility_for_risks(risks).value,
-        }
-    )
+    payload = {
+        "submission_id": str(receipt.submission_id),
+        "objective": receipt.objective_evidence.model_dump(mode="json"),
+        "trace": receipt.trace.model_dump(mode="json"),
+        "run_conditions": [item.model_dump(mode="json") for item in receipt.run_conditions],
+        "allowed_changes": [item.model_dump(mode="json") for item in receipt.allowed_changes],
+        "key_results": [item.model_dump(mode="json") for item in receipt.key_results],
+        "risks": [risk_item_from_model(item).model_dump(mode="json") for item in risks],
+        "review_eligibility": review_eligibility_for_risks(risks).value,
+    }
+    # 旧回执没有该字段，不能因升级后的默认值改变其不可变 source_hash。
+    if receipt.material_provenance is not None:
+        payload["material_provenance"] = receipt.material_provenance.model_dump(mode="json")
+    return canonical_json_hash(payload)
 
 
 def build_embedding_document(

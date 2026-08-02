@@ -36,6 +36,11 @@ BAILIAN_EMBEDDING_MODEL=...
 这些配置为空时 Settings 会在 API/Worker 启动前明确失败，不会退回 Bedrock、伪造摘要或补齐
 向量。
 
+本地示例保留百炼模型的默认思考行为，并为非流式治理摘要配置 `180` 秒读取超时。对应的
+`WORKER_LEASE_SECONDS` 为 `300` 秒，必须长于单次模型请求，避免模型仍在生成时数据库 Job
+租约先到期。修改这两个值后需要重新创建 API、Worker 和 Agent Worker 容器才能生效；不要只
+提高模型超时而保留更短的 Worker 租约。
+
 启动并查看一次性任务：
 
 ```bash
@@ -147,6 +152,38 @@ docker compose --env-file .env.local run --rm api \
   experiment-guardian-admin issue-mcp-token \
   --owner-email owner@example.com --project-id "$PROJECT_ID"
 ```
+
+将新 Token 配置到 Codex/stdio MCP 后，必须重新启动或重新连接 MCP 进程。Shell 中后续执行
+`export MCP_ACCESS_TOKEN=...` 不会修改已经运行的子进程环境。新会话应先调用
+`mcp_identity_get`，核对返回的 `project_id`、`scopes` 和过期时间；该工具不会返回 Token 值、
+Token 哈希或内部凭据 ID。
+
+`experiment_check_plan` 和 `submission_prepare` 已在 MCP `tools/list` 中完整展开
+`FieldEvidence`、`LocalEnvironment`、`LocalAttestation`、`InvariantAttestation`、Artifact 和
+`FinalRunEvidence` Schema。客户端应按工具 Schema 构造参数，不需要从服务端源码猜测嵌套字段。
+
+历史回放或测试夹具必须显式填写结构化来源。例如从 `val_log.txt` 派生结果：
+
+```json
+{
+  "filename": "result.json",
+  "artifact_type": "RESULT",
+  "mime_type": "application/json",
+  "size_bytes": 256,
+  "sha256": "<result-json-sha256>",
+  "provenance": {
+    "classification": "DERIVED_FROM_LOG",
+    "source_reference": "val_log.txt",
+    "source_sha256": "<uploaded-log-sha256>",
+    "derivation_method": "从 Best Test Acc 行确定性提取 result.json",
+    "note": "派生 JSON，不是原始训练输出"
+  }
+}
+```
+
+同一 Submission 还必须上传文件名为 `val_log.txt` 且 SHA-256 匹配的 LOG。历史日志使用
+`HISTORICAL_SOURCE`，模拟配置、Git commit 和命令使用 `TEST_FIXTURE`。缺省值
+`UNSPECIFIED` 仅用于旧客户端兼容，Web 会明确提示来源尚未声明。
 
 ## 本地基础设施验收
 

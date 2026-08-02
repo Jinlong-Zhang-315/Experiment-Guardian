@@ -16,7 +16,7 @@ from experiment_guardian.application.errors import (
     ServiceUnavailableError,
 )
 from experiment_guardian.application.identity import RequestIdentity
-from experiment_guardian.application.services import GuardianApplication
+from experiment_guardian.application.services import GuardianApplication, _canonical_hash
 from experiment_guardian.domain.contracts import (
     PresignedUpload,
     StoredObjectMetadata,
@@ -171,6 +171,37 @@ def prepare_command(
     )
 
 
+def test_unspecified_provenance_keeps_pre_upgrade_idempotency_hash() -> None:
+    legacy = {"files": [{"filename": "config.yaml", "sha256": "a" * 64}]}
+    upgraded = {
+        "files": [
+            {
+                "filename": "config.yaml",
+                "sha256": "a" * 64,
+                "provenance": {
+                    "classification": "UNSPECIFIED",
+                    "source_reference": None,
+                    "source_sha256": None,
+                    "derivation_method": None,
+                    "note": None,
+                },
+            }
+        ]
+    }
+    explicit = {
+        "files": [
+            {
+                "filename": "config.yaml",
+                "sha256": "a" * 64,
+                "provenance": {"classification": "CURRENT_RUN"},
+            }
+        ]
+    }
+
+    assert _canonical_hash(legacy) == _canonical_hash(upgraded)
+    assert _canonical_hash(legacy) != _canonical_hash(explicit)
+
+
 def initialize_manifest(
     factory: sessionmaker[Session],
 ) -> tuple[RequestIdentity, UUID, UUID]:
@@ -268,6 +299,7 @@ def test_researcher_can_prepare_persisted_submission_with_fresh_replay_urls(
         )
         artifacts = session.scalars(select(Artifact)).all()
         assert all(not item.cloud_hash_verified for item in artifacts)
+        assert all(item.material_origin.value == "UNSPECIFIED" for item in artifacts)
 
     changed = request.model_copy(deep=True)
     changed.metrics_summary["top1"] = 0.84
@@ -277,6 +309,41 @@ def test_researcher_can_prepare_persisted_submission_with_fresh_replay_urls(
     second_run = request.model_copy(update={"idempotency_key": uuid4()})
     second = service.submission_prepare(second_run, identity)
     assert second.submission_id != first.submission_id
+
+
+def test_prepare_persists_structured_material_provenance(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    owner, project_id, manifest_id = initialize_manifest(plan_check_session_factory)
+    storage = FakeStorage()
+    service = build_submission_service(plan_check_session_factory, storage)
+    raw = prepare_command(project_id=project_id, manifest_id=manifest_id).model_dump(mode="json")
+    raw["idempotency_key"] = str(uuid4())
+    raw["files"][0]["provenance"] = {
+        "classification": "TEST_FIXTURE",
+        "source_reference": "fixture/config.yaml",
+        "note": "治理链路测试配置，不代表历史训练配置",
+    }
+    raw["files"][1]["provenance"] = {"classification": "CURRENT_RUN"}
+    request = SubmissionPrepareCommand.model_validate(raw)
+
+    result = service.submission_prepare(
+        request, submission_identity(owner, project_id)
+    )
+
+    assert result.artifact_uploads[0].provenance.classification.value in {
+        "TEST_FIXTURE",
+        "CURRENT_RUN",
+    }
+    with plan_check_session_factory() as session:
+        artifacts = session.scalars(
+            select(Artifact).where(Artifact.submission_id == result.submission_id)
+        ).all()
+        by_name = {item.filename: item for item in artifacts}
+        assert by_name["config.yaml"].material_origin.value == "TEST_FIXTURE"
+        assert by_name["config.yaml"].provenance["source_reference"] == (
+            "fixture/config.yaml"
+        )
 
 
 def test_presign_failure_keeps_one_received_draft_and_same_key_recovers(

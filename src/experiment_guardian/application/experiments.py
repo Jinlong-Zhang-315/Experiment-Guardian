@@ -38,6 +38,7 @@ from experiment_guardian.domain.contracts import (
     ExperimentQueryCommand,
     ExperimentQueryResult,
     GeneratedSummary,
+    MaterialProvenance,
     SubmissionReceipt,
     SubmittedResultDocument,
 )
@@ -668,11 +669,10 @@ class ExperimentReviewService:
         session.add(experiment)
         session.flush()
 
-        primary_metric = None
-        if isinstance(plan.context_snapshot, dict):
-            raw_primary = plan.context_snapshot.get("primary_metric")
-            if isinstance(raw_primary, dict) and isinstance(raw_primary.get("name"), str):
-                primary_metric = raw_primary["name"]
+        primary_metric = _primary_metric_name(
+            plan.context_snapshot,
+            context.primary_metric,
+        )
         session.add_all(
             [
                 ExperimentMetric(
@@ -997,10 +997,42 @@ class ExperimentQueryService:
                     artifact_type=item.artifact_type,
                     s3_version_id=item.s3_version_id or "",
                     evidence_type=EvidenceType.CLOUD_VERIFIED,
+                    material_origin=item.material_origin,
+                    provenance=_validated_artifact_provenance(item),
                 )
                 for item in artifacts
             ],
         )
+
+
+def _validated_artifact_provenance(artifact: Artifact) -> MaterialProvenance:
+    try:
+        provenance = MaterialProvenance.model_validate(artifact.provenance)
+    except ValidationError as exc:
+        raise ConflictError("正式 Experiment 的 Artifact provenance 无效") from exc
+    if provenance.classification is not artifact.material_origin:
+        raise ConflictError("正式 Experiment 的 Artifact 来源分类不一致")
+    return provenance
+
+
+def _primary_metric_name(
+    context_snapshot: dict[str, object], context_primary_metric: dict[str, object]
+) -> str | None:
+    snapshot_primary: object = context_snapshot.get("primary_metric")
+    payload = context_snapshot.get("payload")
+    if isinstance(payload, dict):
+        snapshot_primary = payload.get("primary_metric", snapshot_primary)
+    snapshot_name = (
+        snapshot_primary.get("name") if isinstance(snapshot_primary, dict) else None
+    )
+    context_name = context_primary_metric.get("name")
+    if snapshot_name is not None and not isinstance(snapshot_name, str):
+        raise ConflictError("Plan Check 的主指标快照无效")
+    if context_name is not None and not isinstance(context_name, str):
+        raise ConflictError("Context 的主指标定义无效")
+    if snapshot_name and context_name and snapshot_name != context_name:
+        raise ConflictError("Plan Check 与绑定 Context 的主指标不一致")
+    return snapshot_name or context_name
 
 
 def _canonical_hash(value: object) -> str:

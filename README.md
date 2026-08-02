@@ -39,6 +39,8 @@ Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Contex
 * 数据库游标驱动的解析、Manifest 校验、结构化查重和风险工作流；
 * CockroachDB Outbox、SQS 或数据库队列、租约 Worker、Bedrock/百炼摘要和 1024 维 embedding；
 * High/Critical 强制展开的短审核回执，Critical 不能批准；
+* Artifact 和最终运行证据使用 `CURRENT_RUN / HISTORICAL_SOURCE / TEST_FIXTURE /
+  DERIVED_FROM_LOG / UNSPECIFIED` 结构化来源；历史、夹具和派生材料在摘要与 Web 审核中固定披露；
 * 正式确认单事务和 project/protocol/status 等结构化过滤先行的向量候选查询；
 * React/Vite 五页 Web 工作台，治理 Agent 页内含 Policy Bundle 草稿及 Policy/Plan/Submission 提案工作台；
 * Cognito Managed Login、服务端 Web Session、CSRF、撤销和近期认证；
@@ -74,9 +76,10 @@ Owner 通过 Cognito 或仅限本机的 local_owner 登录并发布正式 Contex
   Schema；Proposal 缺少同 Run、同目标前置诊断时由服务端拒绝并审计。真实百炼 60 Run 成对
   评测通过后，Web 新会话默认使用 `ANALYSIS`；API 缺省值和旧 Thread 仍保持 `GENERAL`。
 
-MCP 暴露七个正式治理工具和六个外部协作工具：
+MCP 暴露七个正式治理工具、六个外部协作工具和一个只读身份诊断工具：
 
 ```text
+mcp_identity_get
 project_get_context
 experiment_check_plan
 run_manifest_create
@@ -91,6 +94,14 @@ external_agent_plan_submit
 external_agent_plan_revise
 external_agent_plan_get
 ```
+
+`mcp_identity_get` 只返回当前凭据绑定的 user/team/project、Scope、认证方式和过期时间，绝不
+返回 Token、哈希或密钥。stdio MCP 切换项目 Token 后必须重启或重新连接进程；建议在开始任务
+前先调用该工具核对 `project_id`。`experiment_check_plan` 和 `submission_prepare` 的嵌套输入会
+直接暴露严格 Pydantic Schema、必填字段、枚举和最小示例，不再以任意 JSON 对象描述。
+`submission_prepare.files[].provenance` 和 `final_run_evidence.*.provenance` 用于声明材料来源。
+`DERIVED_FROM_LOG` 结果必须绑定同一 Submission 中 LOG 的文件名和 SHA-256；来源分类不会把
+本地声明提升为云端验证事实。
 
 `project_get_context` 同时返回 `human_readable` 和完整结构化 Context/Intent/Constraints。
 自然语言说明只用于阅读和 Agent 理解，任何执行、检查和治理决定仍以结构化字段为准。
@@ -220,7 +231,7 @@ experiment-guardian-api
 
 默认 API：`http://127.0.0.1:8000`，OpenAPI：`/docs`。
 
-当前 Alembic head 为 `20260730_28`：
+当前 Alembic head 为 `20260802_30`：
 
 ```text
 01 foundation/context
@@ -250,6 +261,8 @@ experiment-guardian-api
 26 approved-plan invariant checkpoints and schema v2 Run Manifests
 27 deterministic Web Agent capability domains
 28 current Agent Citation evidence kinds
+29 structured Artifact material provenance
+30 formal Experiment primary metric flag repair
 ```
 
 revision 24 将旧 Agent Thread/Run 回填为 Web 来源，并为外部 MCP 任务保存初始正式策略快照、
@@ -262,6 +275,12 @@ revision 25 新增计划、revision、审核和人类决定四张表，并为 Ag
 revision 26 为 Plan Check 增加可选的计划决定、批准快照和不变量检查，并允许新的计划绑定
 Manifest 使用 schema v2。旧 Plan Check 和 schema v1 Manifest 不回填、不重建。存在 v2
 Manifest 时降级会明确失败，避免修改或丢失不可变证据链。
+
+revision 29 将旧 Artifact 来源回填为 `UNSPECIFIED`，新增来源分类、详情和 Submission 内检索索引；
+存在已分类来源时拒绝降级，避免删除已进入摘要和审核回执的审计语义。
+
+revision 30 按 Experiment 绑定的 Plan Check/Context 版本重新计算 `experiment_metrics.is_primary`；
+它不修改指标名称或数值，降级时保留已经修正的事实标记。
 
 revision 27 为 Web Agent Thread 增加不可变能力域。旧 Thread 回填为 `GENERAL`，不会改变既有
 Prompt、工具目录或正式业务状态；降级只删除能力域列，不删除 Thread、Message 或 Run。

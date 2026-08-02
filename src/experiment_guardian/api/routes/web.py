@@ -18,8 +18,8 @@ from experiment_guardian.domain.contracts import (
 )
 from experiment_guardian.domain.web_management import (
     ArtifactDownloadResult,
+    ExperimentDetailWebView,
     ExperimentPage,
-    ExperimentWebView,
     PlanCheckPage,
     PlanCheckWebView,
     PolicyPublishRequest,
@@ -143,10 +143,13 @@ async def query_experiments(
     return list(get_experiment_query_service().query(request, identity))
 
 
-@router.get("/{project_id}/experiments/{experiment_id}", response_model=ExperimentWebView)
+@router.get(
+    "/{project_id}/experiments/{experiment_id}",
+    response_model=ExperimentDetailWebView,
+)
 async def get_experiment(
     project_id: UUID, experiment_id: UUID, identity: ApiIdentity
-) -> ExperimentWebView:
+) -> ExperimentDetailWebView:
     return get_web_management_service().get_experiment(
         project_id=project_id, experiment_id=experiment_id, identity=identity
     )

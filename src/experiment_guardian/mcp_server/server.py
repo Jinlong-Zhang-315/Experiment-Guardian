@@ -9,6 +9,7 @@ from uuid import UUID
 
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictFloat, StrictInt
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -19,6 +20,7 @@ from experiment_guardian.application.container import (
     get_identity_provider,
     get_mcp_token_verifier,
 )
+from experiment_guardian.application.errors import AuthenticationError
 from experiment_guardian.core.config import get_settings
 from experiment_guardian.domain.agent import (
     ExternalAgentQuestionRequest,
@@ -29,6 +31,8 @@ from experiment_guardian.domain.contracts import (
     ExperimentCheckPlanCommand,
     ExperimentQueryCommand,
     LocalAttestation,
+    McpIdentityDiagnostic,
+    SubmissionArtifactInput,
     SubmissionFinalizeCommand,
     SubmissionPrepareCommand,
 )
@@ -38,6 +42,7 @@ from experiment_guardian.domain.experiment_plan import (
     ExperimentPlanRevisionRequest,
     ExperimentPlanSubmitRequest,
 )
+from experiment_guardian.domain.invariant_check import FinalRunEvidence, InvariantAttestation
 from experiment_guardian.infrastructure.mcp_oauth import oauth_scope_map
 
 settings = get_settings()
@@ -90,6 +95,34 @@ async def health(_: Request) -> JSONResponse:
 
 
 @mcp.tool()
+def mcp_identity_get() -> McpIdentityDiagnostic:
+    """读取当前 MCP 凭据绑定的项目和权限；绝不返回 Token、Token 哈希或密钥。"""
+
+    identity = get_identity_provider().current_identity()
+    if identity.project_id is None or identity.authentication_method not in {
+        "MCP_TOKEN",
+        "MCP_OAUTH",
+    }:
+        raise AuthenticationError("当前请求不是项目绑定的 MCP 身份")
+    static_token = identity.authentication_method == "MCP_TOKEN"
+    return McpIdentityDiagnostic(
+        authentication_method=identity.authentication_method,
+        user_id=identity.user_id,
+        team_id=identity.team_id,
+        project_id=identity.project_id,
+        scopes=sorted(identity.scopes),
+        credential_expires_at=identity.credential_expires_at,
+        static_token_restart_required=static_token,
+        credential_reload_instruction=(
+            "stdio MCP 从启动进程的 MCP_ACCESS_TOKEN 读取身份；"
+            "切换项目后必须重新启动或重新连接 MCP。"
+            if static_token
+            else "远程 MCP 使用每个请求携带的 OAuth 凭据；重新授权或重新连接客户端后生效。"
+        ),
+    )
+
+
+@mcp.tool()
 def project_get_context(project_id: str) -> dict[str, Any]:
     """同时读取人类可读说明和完整结构化正式事实；所有治理决策必须以结构化数据为准。"""
 
@@ -109,9 +142,9 @@ def experiment_check_plan(
     config_content: str,
     command: str,
     git_commit: str,
-    local_attestation: dict[str, Any],
+    local_attestation: LocalAttestation,
     experiment_plan_decision_id: str | None = None,
-    invariant_attestations: list[dict[str, Any]] | None = None,
+    invariant_attestations: list[InvariantAttestation] | None = None,
     deviation_explanation: str | None = None,
 ) -> dict[str, Any]:
     """检查配置与正式意图的一致性；该结果不等于真实训练行为已验证正确。"""
@@ -130,7 +163,10 @@ def experiment_check_plan(
         experiment_plan_decision_id=(
             UUID(experiment_plan_decision_id) if experiment_plan_decision_id else None
         ),
-        invariant_attestations=invariant_attestations or [],
+        invariant_attestations=[
+            InvariantAttestation.model_validate(item).model_dump(mode="json")
+            for item in (invariant_attestations or [])
+        ],
         deviation_explanation=deviation_explanation,
     )
     result = get_guardian_use_cases().experiment_check_plan(payload, identity)
@@ -158,9 +194,9 @@ def submission_prepare(
     source_agent: str,
     collected_at: str,
     experiment_status: str,
-    metrics_summary: dict[str, Any],
-    files: list[dict[str, Any]],
-    final_run_evidence: dict[str, Any] | None = None,
+    metrics_summary: dict[str, StrictInt | StrictFloat],
+    files: list[SubmissionArtifactInput],
+    final_run_evidence: FinalRunEvidence | None = None,
 ) -> dict[str, Any]:
     """创建实验草稿并为白名单文件返回 S3 预签名上传地址。"""
 
@@ -174,7 +210,11 @@ def submission_prepare(
         experiment_status=SubmittedRunStatus(experiment_status.upper()),
         metrics_summary=metrics_summary,
         files=files,
-        final_run_evidence=final_run_evidence,
+        final_run_evidence=(
+            FinalRunEvidence.model_validate(final_run_evidence).model_dump(mode="json")
+            if final_run_evidence is not None
+            else None
+        ),
     )
     result = get_guardian_use_cases().submission_prepare(command, identity)
     return result.model_dump(mode="json")
@@ -219,7 +259,11 @@ def experiments_query(
     include_historical: bool = False,
     top_k: int = 10,
 ) -> list[dict[str, Any]]:
-    """先按项目/状态/协议等过滤正式记录，再将向量结果作为候选证据返回。"""
+    """查询正式实验。
+
+    传 query+protocol 时返回 SUMMARY 候选证据，artifacts 固定为空；只传 experiment_id
+    时返回该记录的 FULL 结构化详情，其中包含配置、命令、固定版本 Artifact 及其 provenance。
+    """
 
     safe_top_k = max(1, min(top_k, 50))
     statuses = {ExperimentStatus.COMPLETED, ExperimentStatus.FAILED}

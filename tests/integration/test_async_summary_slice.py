@@ -14,7 +14,11 @@ from experiment_guardian.application.async_summary import (
     SubmissionSummaryProcessor,
     SubmissionSummaryScheduler,
 )
-from experiment_guardian.application.errors import AuthorizationError, ServiceUnavailableError
+from experiment_guardian.application.errors import (
+    AuthorizationError,
+    ModelProviderError,
+    ServiceUnavailableError,
+)
 from experiment_guardian.application.identity import RequestIdentity
 from experiment_guardian.application.ports import (
     QueueDelivery,
@@ -155,15 +159,22 @@ def test_outbox_dispatch_and_summary_are_idempotent(
         assert submission.status is SubmissionStatus.PROCESSING
         assert submission.workflow_status is WorkflowStatus.QUEUED
         assert submission.processing_step is WorkflowStep.SUMMARY_GENERATION
-        assert submission.generated_summary["text"] == generator.text
+        assert submission.generated_summary["text"].endswith(generator.text)
+        assert submission.generated_summary["text"].startswith("材料来源边界：")
+        assert "UNSPECIFIED" in submission.generated_summary["text"]
         assert submission.generated_summary["provider"] == generator.provider
         assert submission.generated_summary["model_id"] == generator.model_id
         assert len(submission.generated_summary["source_hash"]) == 64
+        assert submission.generated_summary["material_provenance"][
+            "contains_unspecified_material"
+        ] is True
         assert job.status is WorkflowJobStatus.SUCCEEDED
         assert event.status is OutboxStatus.PUBLISHED
 
     system_prompt, user_prompt = generator.calls[0]
     assert "Do not create risks" in system_prompt
+    assert "DERIVED_FROM_LOG" in system_prompt
+    assert '"material_provenance"' in user_prompt
     assert "AUTO_FROM_INTENT" not in user_prompt
     assert "<UNTRUSTED_STRUCTURED_FACTS>" in user_prompt
     assert 'artifact_type":"LOG' not in user_prompt
@@ -233,6 +244,61 @@ def test_retryable_bedrock_failure_can_be_rearmed_with_new_finalize_key(
     # generation=1 的旧消息只会被确认，不会再次调用模型。
     assert processor.process_delivery(old_delivery)
     assert len(generator.calls) == 1
+
+
+def test_bailian_auth_failure_is_terminal_and_persists_sanitized_category(
+    plan_check_session_factory: sessionmaker[Session],
+) -> None:
+    owner, project_id, storage, service, command, _ = prepare_draft(
+        plan_check_session_factory
+    )
+    storage.accept_declared_uploads()
+    service.submission_finalize(command, finalize_identity(owner, project_id))
+
+    queue = FakeQueue()
+    generator = FakeSummaryGenerator()
+    generator.error = ModelProviderError(
+        "百炼认证失败或模型访问权限不足",
+        provider="bailian",
+        category="AUTHENTICATION_FAILED",
+        retryable=False,
+        http_status=401,
+    )
+    dispatcher, processor, _ = build_async_components(
+        plan_check_session_factory, queue, generator
+    )
+    assert dispatcher.dispatch_once()
+    assert processor.process_delivery(queue.delivery(receipt="auth-failure"))
+
+    with plan_check_session_factory() as session:
+        job = session.scalar(select(WorkflowJob))
+        submission = session.get(ExperimentSubmission, command.submission_id)
+        assert job is not None and submission is not None
+        assert job.status is WorkflowJobStatus.FAILED
+        assert job.last_error == submission.processing_error
+        assert job.last_error["code"] == "SUMMARY_GENERATION_AUTHENTICATION_FAILED"
+        assert job.last_error["provider"] == "bailian"
+        assert job.last_error["http_status"] == 401
+        assert job.last_error["retryable"] is False
+        assert job.last_error["manual_recovery_allowed"] is True
+        assert submission.status is SubmissionStatus.FAILED
+        assert submission.workflow_status is WorkflowStatus.TERMINAL_FAILURE
+
+    resumed = service.submission_finalize(
+        SubmissionFinalizeCommand(
+            submission_id=command.submission_id,
+            idempotency_key=uuid4(),
+        ),
+        finalize_identity(owner, project_id),
+    )
+    assert resumed.analysis is not None
+    assert resumed.analysis.workflow_status is WorkflowStatus.QUEUED
+    with plan_check_session_factory() as session:
+        job = session.scalar(select(WorkflowJob))
+        assert job is not None
+        assert job.generation == 2
+        assert job.attempt_count == 0
+        assert job.status is WorkflowJobStatus.PENDING_DISPATCH
 
 
 def test_terminal_source_corruption_does_not_retry_model(
@@ -432,7 +498,8 @@ def test_crash_after_model_output_can_repeat_generation_but_persists_one_summary
     with plan_check_session_factory() as session:
         submission = session.get(ExperimentSubmission, command.submission_id)
         assert submission is not None
-        assert submission.generated_summary["text"] == generator.text
+        assert submission.generated_summary["text"].endswith(generator.text)
+        assert "UNSPECIFIED" in submission.generated_summary["text"]
         assert session.scalar(select(func.count()).select_from(WorkflowJob)) == 2
 
 

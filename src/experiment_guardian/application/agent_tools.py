@@ -1453,6 +1453,8 @@ class AgentToolRegistry:
                         "id": str(item.id),
                         "type": item.artifact_type.value,
                         "filename": item.filename,
+                        "material_origin": item.material_origin.value,
+                        "provenance": item.provenance,
                         "size_bytes": item.size_bytes,
                         "cloud_hash_verified": item.cloud_hash_verified,
                         "fixed_version_present": bool(item.s3_version_id),
@@ -1496,6 +1498,11 @@ class AgentToolRegistry:
                     "highest_risk": (
                         receipt.highest_risk.value
                         if receipt is not None and receipt.highest_risk is not None
+                        else None
+                    ),
+                    "material_provenance": (
+                        receipt.material_provenance.model_dump(mode="json")
+                        if receipt is not None and receipt.material_provenance is not None
                         else None
                     ),
                     "approval_material_complete": not any(

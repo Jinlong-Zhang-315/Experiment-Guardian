@@ -208,6 +208,16 @@ class ArtifactType(StrEnum):
     MANIFEST = "MANIFEST"
 
 
+class MaterialOrigin(StrEnum):
+    """实验材料相对于当前治理链路的来源分类。"""
+
+    UNSPECIFIED = "UNSPECIFIED"
+    CURRENT_RUN = "CURRENT_RUN"
+    HISTORICAL_SOURCE = "HISTORICAL_SOURCE"
+    TEST_FIXTURE = "TEST_FIXTURE"
+    DERIVED_FROM_LOG = "DERIVED_FROM_LOG"
+
+
 class IdempotencyOperationStatus(StrEnum):
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"

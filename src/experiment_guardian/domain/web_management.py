@@ -1,7 +1,7 @@
 """R14 Web 管理端读取、版本发布和审核列表契约。"""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import Field, model_validator
@@ -16,6 +16,7 @@ from experiment_guardian.domain.contracts import (
     HumanReadablePolicy,
     PresignedDownload,
     ProjectContextBundle,
+    SubmissionMaterialProvenance,
 )
 from experiment_guardian.domain.enums import (
     ApprovalStatus,
@@ -124,6 +125,8 @@ class ArtifactWebView(ContractModel):
     artifact_type: str
     cloud_hash_verified: bool
     s3_version_id: str | None = None
+    material_origin: str
+    provenance: dict[str, Any]
 
 
 class SubmissionWebView(ContractModel):
@@ -139,6 +142,7 @@ class SubmissionWebView(ContractModel):
     generated_summary: dict[str, Any] | None = None
     review_receipt: dict[str, Any] | None = None
     invariant_check: dict[str, Any] | None = None
+    material_provenance: SubmissionMaterialProvenance
     risks: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[ArtifactWebView] = Field(default_factory=list)
     created_at: datetime
@@ -172,6 +176,24 @@ class ExperimentWebView(ContractModel):
     summary: dict[str, Any]
     confirmed_at: datetime
     created_at: datetime
+    detail_level: Literal["SUMMARY", "FULL"] = "SUMMARY"
+
+
+class ExperimentMetricWebView(ContractModel):
+    name: str
+    value: float
+    split: str
+    aggregation_type: str
+    epoch: int | None = None
+    is_primary: bool
+
+
+class ExperimentDetailWebView(ExperimentWebView):
+    detail_level: Literal["FULL"] = "FULL"
+    metrics: list[ExperimentMetricWebView] = Field(default_factory=list)
+    artifacts: list[ArtifactWebView] = Field(default_factory=list)
+    material_provenance: SubmissionMaterialProvenance
+    final_run_evidence: dict[str, Any] | None = None
 
 
 class ExperimentPage(ContractModel):

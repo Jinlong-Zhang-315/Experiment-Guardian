@@ -214,6 +214,7 @@ class SqlAlchemyWorkflowRepository:
         if job.status not in {
             WorkflowJobStatus.RETRYABLE_FAILURE,
             WorkflowJobStatus.DEAD_LETTER,
+            WorkflowJobStatus.FAILED,
         }:
             return job, False
         job.generation += 1
